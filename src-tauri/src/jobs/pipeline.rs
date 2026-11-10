@@ -406,7 +406,7 @@ async fn try_candidate(app: &AppHandle, id: Uuid, client: &SlskdClient, index: u
         j.status = JobStatus::Completed;
         j.output_path = Some(dest.clone());
     })?;
-    let arrival = Arrival { path: dest, replaces: job.replaces, playlist: None, playlist_id: job.playlist_id };
+    let arrival = Arrival { path: dest, replaces: job.replaces, playlist_id: job.playlist_id, ..Default::default() };
     crate::ingest::arrived(app, vec![arrival]).await;
     Ok(())
 }

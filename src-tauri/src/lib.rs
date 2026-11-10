@@ -129,6 +129,8 @@ pub fn run() {
             commands::library::cancel_library_task,
             commands::library::dismiss_library_items,
             commands::library::change_music_dir,
+            commands::library::consolidate_plan,
+            commands::library::consolidate_library,
             commands::collection::open_collection,
             commands::collection::collection_state,
             commands::collection::collection_tracks,

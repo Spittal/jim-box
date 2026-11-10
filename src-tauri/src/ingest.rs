@@ -71,8 +71,14 @@ pub async fn arrived(app: &AppHandle, arrivals: Vec<Arrival>) {
     if arrivals.is_empty() {
         return;
     }
-    app.state::<ArrivalQueue>().push(app, arrivals);
+    queue(app, arrivals);
     flush(app).await;
+}
+
+/// Queues files for the collection, and saves the queue, without taking it
+/// in yet: for a run of files that [`flush`] takes in together at the end.
+pub fn queue(app: &AppHandle, arrivals: Vec<Arrival>) {
+    app.state::<ArrivalQueue>().push(app, arrivals);
 }
 
 /// Takes everything waiting into the collection, if rekordbox allows it.

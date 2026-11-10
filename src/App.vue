@@ -57,6 +57,7 @@ function focusSearchBar() {
 function runCommand(command: string) {
   if (needsCredentials.value) return;
   if (command === 'settings') ui.toggleSettings();
+  else if (command === 'consolidate') ui.showConsolidate();
   else if (command === 'find') focusSearchBar();
   else if (command === 'find-online') {
     focusSearchBar();

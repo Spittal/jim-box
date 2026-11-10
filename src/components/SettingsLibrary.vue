@@ -2,6 +2,7 @@
 import { ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { open } from '@tauri-apps/plugin-dialog';
+import ConsolidateLibrary from '@/components/ConsolidateLibrary.vue';
 import SettingsSection from '@/components/SettingsSection.vue';
 import ToggleRow from '@/components/ToggleRow.vue';
 import { useSettingsStore } from '@/stores/settings';
@@ -89,6 +90,8 @@ async function savePaths() {
         </ul>
       </div>
     </div>
+
+    <ConsolidateLibrary />
 
     <div class="flex flex-col gap-2">
       <span class="text-xs text-text-secondary">Paths</span>

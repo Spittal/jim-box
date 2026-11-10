@@ -256,6 +256,19 @@ impl Collection {
             .collect()
     }
 
+    /// Every track whose file is somewhere other than under `dir`, with its
+    /// path. Tracks with no file of their own (streamed ones) are left out.
+    /// Reads the library if it hasn't been; empty when there is none. Blocking.
+    pub fn tracks_outside(&self, dir: &Path) -> Vec<(String, PathBuf)> {
+        let Ok(loaded) = self.loaded_or_read() else { return Vec::new() };
+        loaded
+            .by_path
+            .iter()
+            .filter(|(path, _)| Path::new(path).is_absolute() && !Path::new(path).starts_with(dir))
+            .map(|(path, id)| (id.clone(), PathBuf::from(path)))
+            .collect()
+    }
+
     fn loaded(&self) -> AppResult<Arc<Loaded>> {
         self.loaded
             .read()

@@ -29,6 +29,11 @@ pub struct Arrival {
     /// new one.
     #[serde(default)]
     pub replaces: Option<PathBuf>,
+    /// The same file, somewhere else: the track keeps the title, artist and
+    /// the rest that rekordbox has for it, where a new or changed file has
+    /// its tags read again.
+    #[serde(default)]
+    pub moved_only: bool,
     /// A top-level playlist to add the track to, by name, made if there isn't one.
     #[serde(default)]
     pub playlist: Option<String>,
@@ -162,7 +167,9 @@ fn take_in_one(writer: &mut Writer, arrival: &Arrival, playlists: &mut HashMap<S
         writer
             .relocate_with_undo(&[(id.clone(), path.to_path_buf())])
             .map_err(rekordbox_err)?;
-        writer.reload_tags(&id).map_err(rekordbox_err)?;
+        if !arrival.moved_only {
+            writer.reload_tags(&id).map_err(rekordbox_err)?;
+        }
         id
     } else if let Some(id) = at(writer, path)? {
         writer.reload_tags(&id).map_err(rekordbox_err)?;
@@ -286,7 +293,7 @@ mod tests {
         let (one, two) = (music.join("one.wav"), music.join("two.wav"));
         wav(&one);
         wav(&two);
-        let arrival = |path: &Path| Arrival { path: path.to_path_buf(), replaces: None, playlist: Some("From Spotify".into()), playlist_id: None };
+        let arrival = |path: &Path| Arrival { path: path.to_path_buf(), playlist: Some("From Spotify".into()), ..Default::default() };
 
         let taken = collection.take_in(&[arrival(&one), arrival(&music.join("missing.wav"))]).unwrap();
         assert!(taken[0].is_ok() && taken[1].is_err());
@@ -340,6 +347,30 @@ mod tests {
         assert_eq!(members(&collection, &list), vec![id]);
     }
 
+    #[test]
+    fn a_file_that_only_moved_keeps_what_rekordbox_has_for_it() {
+        let (dir, collection) = fixture();
+        let music = dir.path().join("music");
+        let (old, new) = (music.join("elsewhere/old.wav"), music.join("library/new.wav"));
+        wav(&old);
+        let id = collection.import(std::slice::from_ref(&old), None).unwrap().track_ids.remove(0);
+        let edit = super::super::Edit::SetField { track_id: id.clone(), field: "title".into(), value: "Named in rekordbox".into() };
+        collection.edit(edit).unwrap();
+        let title = |collection: &Collection| {
+            let rows = collection.tracks(&query(Source::Collection, Sort::Title), 0, 1000).unwrap().rows;
+            rows.into_iter().find(|row| row.id == id).unwrap().title
+        };
+
+        std::fs::create_dir_all(new.parent().unwrap()).unwrap();
+        std::fs::rename(&old, &new).unwrap();
+        let moved = Arrival { path: new.clone(), replaces: Some(old), moved_only: true, ..Default::default() };
+        assert_eq!(collection.take_in(&[moved]).unwrap(), vec![Ok(id.clone())]);
+        assert_eq!(collection.path_of(&id), Some(new));
+        // The file's tags have no title; reading them again would have put
+        // its file's name there instead.
+        assert_eq!(title(&collection), "Named in rekordbox");
+    }
+
     /// Imports into a copy of the installed rekordbox library; the original
     /// is only copied, never opened. Run with
     /// `cargo test live_ingest -- --ignored --nocapture`.
@@ -356,7 +387,7 @@ mod tests {
 
         let (old, new) = (dir.path().join("music/old.wav"), dir.path().join("music/new.wav"));
         wav(&old);
-        let arrival = Arrival { path: old.clone(), replaces: None, playlist: Some("jim-box test".into()), playlist_id: None };
+        let arrival = Arrival { path: old.clone(), playlist: Some("jim-box test".into()), ..Default::default() };
         let id = collection.take_in(&[arrival]).unwrap().remove(0).expect("imported");
         let after = collection.status().unwrap();
         assert_eq!((after.tracks, after.playlists), (before.tracks + 1, before.playlists + 1));

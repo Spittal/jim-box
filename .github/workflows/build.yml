@@ -64,13 +64,15 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Build
+        run: pnpm tauri build --target ${{ matrix.target }}
+
+      # After the build, which fetches slskd and builds the frontend: the app
+      # doesn't compile without them.
       - name: Test
         if: matrix.test
         working-directory: src-tauri
         run: cargo test --target ${{ matrix.target }}
-
-      - name: Build
-        run: pnpm tauri build --target ${{ matrix.target }}
 
       - uses: actions/upload-artifact@v4
         with:
