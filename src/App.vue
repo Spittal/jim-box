@@ -9,6 +9,7 @@ import CollectionView from '@/views/CollectionView.vue';
 import SettingsView from '@/views/SettingsView.vue';
 import SetupView from '@/views/SetupView.vue';
 import { useBrowseStore } from '@/stores/browse';
+import { useCollectionStore } from '@/stores/collection';
 import { useDaemonStore } from '@/stores/daemon';
 import { useJobsStore } from '@/stores/jobs';
 import { useSettingsStore } from '@/stores/settings';
@@ -30,6 +31,8 @@ const loaded = ref(false);
 useEvents();
 
 onMounted(async () => {
+  // The library is read while the rest loads, so the list is there sooner.
+  useCollectionStore().open();
   await Promise.all([settingsStore.load(), daemonStore.load(), jobsStore.load(), libraryStore.load()]);
   loaded.value = true;
 });

@@ -90,6 +90,11 @@ export const useBrowseStore = defineStore('browse', () => {
   const requested = new Set<number>();
   /** Identifies the list being shown, so late answers for an old one are dropped. */
   let listVersion = 0;
+  /**
+   * The rows held are the last list's, left showing until the new list's
+   * first rows arrive: switching lists or typing a filter doesn't flash empty.
+   */
+  let stale = false;
   /** The rows in view, as last reported by the list. */
   let visible = { first: 0, last: 0 };
 
@@ -101,23 +106,34 @@ export const useBrowseStore = defineStore('browse', () => {
       const result = await collection.tracks(query.value, page * PAGE, PAGE);
       if (version !== listVersion) return;
       total.value = result.total;
-      const next = new Map(pages.value);
+      const next = new Map(stale ? [] : pages.value);
+      stale = false;
       next.set(page, result.rows);
       pages.value = next;
       listError.value = null;
     } catch (e) {
       if (version !== listVersion) return;
       requested.delete(page);
+      if (stale) {
+        stale = false;
+        pages.value = new Map();
+        total.value = 0;
+      }
       listError.value = String(e);
     }
   }
 
-  /** Fetches the pages holding rows `first` up to `last`. */
+  /**
+   * Fetches the pages holding rows `first` up to `last`, and the ones within
+   * half a page of them, so rows are there before they scroll into view.
+   */
   function ensure(first: number, last: number) {
     visible = { first, last };
     if (!collection.status) return;
-    const from = Math.floor(first / PAGE);
-    const to = Math.floor(Math.max(first, last - 1) / PAGE);
+    const from = Math.floor(Math.max(0, first - PAGE / 2) / PAGE);
+    let to = Math.floor((Math.max(first, last - 1) + PAGE / 2) / PAGE);
+    // Not past the end, once the list's length is known.
+    if (!stale && total.value) to = Math.min(to, Math.floor((total.value - 1) / PAGE));
     for (let page = from; page <= to; page++) fetchPage(page);
   }
 
@@ -125,8 +141,7 @@ export const useBrowseStore = defineStore('browse', () => {
   function resetList() {
     listVersion++;
     requested.clear();
-    pages.value = new Map();
-    total.value = 0;
+    stale = true;
     selection.value = new Set();
     pendingSelection.value = new Set();
     resets.value++;
@@ -142,6 +157,23 @@ export const useBrowseStore = defineStore('browse', () => {
 
   function trackAt(index: number): CollectionTrack | null {
     return pages.value.get(Math.floor(index / PAGE))?.[index % PAGE] ?? null;
+  }
+
+  /**
+   * Shows a change to a track at once, ahead of the library being written
+   * and read again, which then replaces it with what was saved.
+   */
+  function patchTrack(id: string, patch: Partial<CollectionTrack>) {
+    for (const [page, rows] of pages.value) {
+      const at = rows.findIndex((r) => r.id === id);
+      if (at === -1) continue;
+      const patched = rows.slice();
+      patched[at] = { ...rows[at], ...patch };
+      const next = new Map(pages.value);
+      next.set(page, patched);
+      pages.value = next;
+      return;
+    }
   }
 
   /** A track among the rows fetched so far. */
@@ -301,6 +333,7 @@ export const useBrowseStore = defineStore('browse', () => {
     ensure,
     trackAt,
     loadedTrack,
+    patchTrack,
     selection,
     selectedIds,
     pendingSelection,

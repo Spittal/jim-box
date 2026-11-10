@@ -13,7 +13,7 @@ mod prepare;
 
 pub use edit::{Edit, EditOutcome};
 pub use ingest::{Arrival, ImportReport};
-pub use prepare::{GridChange, Preparation};
+pub use prepare::{Audio, GridChange, Preparation};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

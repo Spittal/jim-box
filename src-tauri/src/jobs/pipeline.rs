@@ -426,14 +426,17 @@ async fn download(app: &AppHandle, id: Uuid, client: &SlskdClient, candidate: &C
     loop {
         tokio::time::sleep(POLL_INTERVAL).await;
         let t = client.transfer(&candidate.username, &transfer.id).await?;
-        store.update(app, id, |j| {
-            j.progress = Some(TransferProgress {
-                bytes_transferred: t.bytes_transferred,
-                size: t.size,
-                speed: t.average_speed,
-                place_in_queue: t.place_in_queue,
-            })
-        })?;
+        let progress = Some(TransferProgress {
+            bytes_transferred: t.bytes_transferred,
+            size: t.size,
+            speed: t.average_speed,
+            place_in_queue: t.place_in_queue,
+        });
+        // A transfer waiting in a peer's queue reads the same for minutes:
+        // only tell the frontend (the whole job, each time) when it has moved.
+        if store.get(id)?.progress != progress {
+            store.update(app, id, |j| j.progress = progress)?;
+        }
 
         let give_up = |reason: &str| AppError::Slskd(format!("{reason} ({})", candidate.username));
         match t.phase() {

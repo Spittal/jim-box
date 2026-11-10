@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
-import { convertFileSrc } from '@tauri-apps/api/core';
+import { TrackAudio } from '@/audio/trackAudio';
 import { useCollectionStore } from '@/stores/collection';
 import type { Beat, CollectionEdit, CollectionTrack, Cue, GridChange, Preparation } from '@/types/collection';
 
@@ -51,8 +51,12 @@ const PALETTES: { id: Palette; label: string; kind: number }[] = [
   { id: 'blue', label: 'Blue', kind: 3 },
 ];
 
-const audio = ref<HTMLAudioElement | null>(null);
-const audioSrc = ref<string | null>(null);
+/** The track's audio: see `TrackAudio` for why it isn't an <audio> element. */
+const engine = new TrackAudio();
+/** The audio can be played and sought. */
+const ready = ref(false);
+/** The audio's own length, once it's known. */
+const audioMs = ref(0);
 const loading = ref(false);
 const error = ref<string | null>(null);
 const playing = ref(false);
@@ -77,9 +81,7 @@ const columns = computed(() => {
 });
 
 const durationMs = computed(() => {
-  const fromAudio = audio.value?.duration;
-  if (fromAudio && isFinite(fromAudio)) return fromAudio * 1000;
-  return prep.value?.durationMs || (props.track?.durationSecs ?? 0) * 1000;
+  return audioMs.value || prep.value?.durationMs || (props.track?.durationSecs ?? 0) * 1000;
 });
 const beats = computed(() => prep.value?.beats ?? []);
 /** Each beat's bar, counted from the first bar start. */
@@ -92,13 +94,25 @@ const hotCues = computed(() => PADS.map((_, slot) => cues.value.find((c) => c.sl
 
 // --- Loading -----------------------------------------------------------------
 
-async function loadPreparation() {
+/** Identifies the latest load, so an earlier one's late answer is dropped. */
+let latestLoad = 0;
+
+/**
+ * Reads the track's beat grid and cues, and its waveforms too unless only
+ * the grid or cues changed: the waveforms are hundreds of kilobytes.
+ */
+async function loadPreparation(withWaveform = true) {
   const id = props.track?.id;
   if (!id) return;
+  const load = ++latestLoad;
   try {
-    const [nextPrep, bytes] = await Promise.all([store.preparation(id), store.waveform(id)]);
-    if (props.track?.id !== id) return;
+    const [nextPrep, bytes] = await Promise.all([
+      store.preparation(id),
+      withWaveform ? store.waveform(id) : null,
+    ]);
+    if (props.track?.id !== id || load !== latestLoad) return;
     prep.value = nextPrep;
+    if (!bytes) return;
     const found = new Map<number, Uint8Array>();
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     for (let at = 0; at + 5 <= bytes.length; ) {
@@ -114,13 +128,14 @@ async function loadPreparation() {
 
 async function loadTrack() {
   const id = props.track?.id;
-  audio.value?.pause();
+  engine.unload();
+  ready.value = false;
+  audioMs.value = 0;
   playing.value = false;
   position.value = 0;
   activeLoop.value = null;
   prep.value = null;
   waves.value = new Map();
-  audioSrc.value = null;
   error.value = null;
   undoStack.value = [];
   taps.value = [];
@@ -129,38 +144,40 @@ async function loadTrack() {
   loading.value = true;
   loadPreparation();
   try {
-    const file = await store.previewAudio(id);
-    if (props.track?.id !== id) return;
-    audioSrc.value = convertFileSrc(file);
+    // Plays as soon as its first samples arrive: the player was opened to listen.
+    await engine.load(id);
   } catch (e) {
-    if (props.track?.id === id) error.value = String(e);
-  } finally {
-    if (props.track?.id === id) loading.value = false;
+    if (props.track?.id === id) {
+      error.value = String(e);
+      loading.value = false;
+    }
   }
 }
 
-/** Start as soon as the audio is decoded: the player was opened to listen. */
-let autoplay = true;
-function onCanPlay() {
-  if (autoplay) {
-    autoplay = false;
-    audio.value?.play();
-  }
-}
+engine.onstate = () => {
+  ready.value = engine.ready;
+  if (engine.ready) loading.value = false;
+  audioMs.value = engine.durationMs;
+  playing.value = engine.playing;
+  // Paused, the audio says exactly where; playing, each frame asks.
+  if (engine.ready && !engine.playing) position.value = engine.positionMs();
+};
+engine.onerror = (e) => {
+  error.value = `The audio couldn't be played: ${e}`;
+  loading.value = false;
+};
 
 // --- Transport ---------------------------------------------------------------
 
 function toggle() {
-  const el = audio.value;
-  if (!el || !audioSrc.value) return;
-  if (el.paused) el.play();
-  else el.pause();
+  if (engine.playing) engine.pause();
+  else engine.play();
 }
 
 function seek(ms: number) {
   const clamped = Math.max(0, Math.min(ms, durationMs.value));
   position.value = clamped;
-  if (audio.value && audioSrc.value) audio.value.currentTime = clamped / 1000;
+  engine.seek(clamped);
 }
 
 /** The index of the beat nearest a time, or -1 without a grid. */
@@ -199,21 +216,22 @@ function goToCue(cue: Cue) {
 
 // A click on each beat, to hear whether the grid sits on the music.
 const metronome = ref(false);
-let clicks: AudioContext | null = null;
 /** The time of the last beat a click was scheduled for. */
 let clickedUpTo = -1;
 
 function scheduleClicks(ms: number) {
   const list = beats.value;
-  if (!metronome.value || !list.length) return;
-  clicks ??= new AudioContext();
+  // On the audio's own clock, so a click lands on its beat.
+  const clicks = engine.context;
+  if (!metronome.value || !list.length || !clicks) return;
   // After a jump, beats click again from the new place.
   if (ms < clickedUpTo - 200 || ms > clickedUpTo + 2000) clickedUpTo = ms - 1;
   for (let i = Math.max(0, nearestBeat(ms) - 1); i < list.length && list[i][0] <= ms + 120; i++) {
     const [at, bar] = list[i];
     if (at <= clickedUpTo || at < ms) continue;
     clickedUpTo = at;
-    const when = clicks.currentTime + (at - ms) / 1000;
+    // `ms` is what's being heard, which was played a moment ago.
+    const when = Math.max(clicks.currentTime, clicks.currentTime + (at - ms) / 1000 - engine.latency);
     const oscillator = clicks.createOscillator();
     const gain = clicks.createGain();
     oscillator.frequency.value = bar === 1 ? 1760 : 1175;
@@ -225,22 +243,35 @@ function scheduleClicks(ms: number) {
   }
 }
 
+// The waveforms are drawn when something they show has changed, and a frame
+// is asked for only then or while playing: an idle player does no work.
 let frame = 0;
+let dirty = true;
+
+function invalidate() {
+  dirty = true;
+  if (!frame) frame = requestAnimationFrame(tick);
+}
+
 function tick() {
-  const el = audio.value;
-  if (el && audioSrc.value && !el.paused) {
-    let ms = el.currentTime * 1000;
+  frame = 0;
+  const running = engine.playing;
+  if (running) {
+    let ms = engine.positionMs();
     const loop = activeLoop.value;
     if (loop && ms >= loop.endMs) {
-      el.currentTime = loop.startMs / 1000;
+      engine.seek(loop.startMs);
       ms = loop.startMs;
     }
     position.value = ms;
     scheduleClicks(ms);
   }
-  drawDetail();
-  drawOverview();
-  frame = requestAnimationFrame(tick);
+  if (dirty) {
+    dirty = false;
+    drawDetail();
+    drawOverview();
+  }
+  if (running && !frame) frame = requestAnimationFrame(tick);
 }
 
 function onKey(event: KeyboardEvent) {
@@ -270,7 +301,7 @@ async function change(edit: CollectionEdit): Promise<boolean> {
   try {
     const outcome = await store.edit(edit);
     if (outcome === undefined) error.value = store.error;
-    await loadPreparation();
+    await loadPreparation(false);
     return outcome !== undefined;
   } finally {
     busy.value = false;
@@ -440,12 +471,49 @@ function blend(a: Rgb, b: Rgb, t: number): string {
   return `rgb(${c(0)},${c(1)},${c(2)})`;
 }
 
+// Every colour a slice can be, worked out once: slices are drawn by the
+// thousand each frame.
+/** RGB: by the nine bits of red, green and blue. */
+const RGB_COLORS = Array.from({ length: 512 }, (_, bits) => rgbOf(bits >> 6, (bits >> 3) & 7, bits & 7));
+/** Blue: by the three bits of whiteness. */
+const BLUE_COLORS = Array.from({ length: 8 }, (_, shade) => blend(LOW, ALL, shade / 7));
+
+/** The waveform being drawn. */
+interface Wave {
+  kind: number;
+  data: Uint8Array;
+  columns: number;
+}
+
+function currentWave(): Wave | null {
+  const p = palette.value;
+  const data = p && waves.value.get(p.kind);
+  return p && data ? { kind: p.kind, data, columns: columns.value } : null;
+}
+
+/** One pixel-wide bar, `height` (0 to 1) of `reach` tall. */
+function bar(
+  c: CanvasRenderingContext2D,
+  px: number,
+  base: number,
+  reach: number,
+  mirrored: boolean,
+  height: number,
+  color: string,
+) {
+  if (height <= 0) return;
+  const tall = Math.max(1, height * reach);
+  c.fillStyle = color;
+  c.fillRect(px, base - tall, 1, mirrored ? tall * 2 : tall);
+}
+
 /**
  * Draws one pixel-wide slice of waveform from the loudest of the columns
  * `from` to `to`: `reach` pixels up from `base`, and as far down when `mirrored`.
  */
 function drawSlice(
   c: CanvasRenderingContext2D,
+  wave: Wave,
   px: number,
   from: number,
   to: number,
@@ -453,56 +521,57 @@ function drawSlice(
   reach: number,
   mirrored: boolean,
 ) {
-  const p = palette.value;
-  const data = p && waves.value.get(p.kind);
-  if (!p || !data) return;
+  const { kind, data } = wave;
   const first = Math.max(0, from);
-  const last = Math.min(columns.value, Math.max(to, from + 1));
+  const last = Math.min(wave.columns, Math.max(to, from + 1));
   if (first >= last) return;
-  const fill = (height: number, color: string) => {
-    if (height <= 0) return;
-    const tall = Math.max(1, height * reach);
-    c.fillStyle = color;
-    c.fillRect(px, base - tall, 1, mirrored ? tall * 2 : tall);
-  };
 
-  if (p.kind === 7) {
+  if (kind === 7) {
     let low = 0;
     let mid = 0;
     let high = 0;
     for (let i = first; i < last; i++) {
-      low = Math.max(low, data[i * 3]);
-      mid = Math.max(mid, data[i * 3 + 1]);
-      high = Math.max(high, data[i * 3 + 2]);
+      const at = i * 3;
+      if (data[at] > low) low = data[at];
+      if (data[at + 1] > mid) mid = data[at + 1];
+      if (data[at + 2] > high) high = data[at + 2];
+    }
+    // The three bands, shortest first (v for value, b for band).
+    let v0 = low;
+    let b0 = 1;
+    let v1 = mid;
+    let b1 = 2;
+    let v2 = high;
+    let b2 = 4;
+    let swap: number;
+    if (v0 > v1) {
+      swap = v0; v0 = v1; v1 = swap;
+      swap = b0; b0 = b1; b1 = swap;
+    }
+    if (v1 > v2) {
+      swap = v1; v1 = v2; v2 = swap;
+      swap = b1; b1 = b2; b2 = swap;
+    }
+    if (v0 > v1) {
+      swap = v0; v0 = v1; v1 = swap;
+      swap = b0; b0 = b1; b1 = swap;
     }
     // From the outside in: each band's stretch covers the last, so a point
     // ends up in the colour of exactly the bands that reach it.
-    const reaches: [number, number][] = [
-      [low, 1],
-      [mid, 2],
-      [high, 4],
-    ];
-    reaches.sort((a, b) => a[0] - b[0]);
-    let combination = 7;
-    const stretches: [number, number][] = [];
-    for (const [value, band] of reaches) {
-      if (value > 0) stretches.push([value, combination]);
-      combination &= ~band;
-    }
-    for (let i = stretches.length - 1; i >= 0; i--) {
-      fill(Math.min(stretches[i][0], 127) / 127, BAND_COLORS[stretches[i][1]]);
-    }
-  } else if (p.kind === 5) {
+    bar(c, px, base, reach, mirrored, Math.min(v2, 127) / 127, BAND_COLORS[b2]);
+    bar(c, px, base, reach, mirrored, Math.min(v1, 127) / 127, BAND_COLORS[b1 | b2]);
+    bar(c, px, base, reach, mirrored, Math.min(v0, 127) / 127, BAND_COLORS[7]);
+  } else if (kind === 5) {
     let best = 0;
     for (let i = first; i < last; i++) {
       const word = (data[i * 2] << 8) | data[i * 2 + 1];
       if (((word >> 2) & 31) >= ((best >> 2) & 31)) best = word;
     }
-    fill(((best >> 2) & 31) / 31, rgbOf((best >> 13) & 7, (best >> 10) & 7, (best >> 7) & 7));
+    bar(c, px, base, reach, mirrored, ((best >> 2) & 31) / 31, RGB_COLORS[(best >> 7) & 511]);
   } else {
     let best = 0;
     for (let i = first; i < last; i++) if ((data[i] & 31) >= (best & 31)) best = data[i];
-    fill((best & 31) / 31, blend(LOW, ALL, (best >> 5) / 7));
+    bar(c, px, base, reach, mirrored, (best & 31) / 31, BLUE_COLORS[best >> 5]);
   }
 }
 
@@ -537,11 +606,14 @@ function drawDetail() {
     c.fillRect(x(cue.positionMs), 0, (cue.endMs - cue.positionMs) * pxPerMs, height);
   }
 
-  const columnsPerPx = COLUMNS_PER_SEC / 1000 / pxPerMs;
-  const firstColumn = (startMs / 1000) * COLUMNS_PER_SEC;
-  for (let px = 0; px < width; px++) {
-    const from = Math.floor(firstColumn + px * columnsPerPx);
-    drawSlice(c, px, from, Math.floor(firstColumn + (px + 1) * columnsPerPx), mid, reach, true);
+  const wave = currentWave();
+  if (wave) {
+    const columnsPerPx = COLUMNS_PER_SEC / 1000 / pxPerMs;
+    const firstColumn = (startMs / 1000) * COLUMNS_PER_SEC;
+    for (let px = 0; px < width; px++) {
+      const from = Math.floor(firstColumn + px * columnsPerPx);
+      drawSlice(c, wave, px, from, Math.floor(firstColumn + (px + 1) * columnsPerPx), mid, reach, true);
+    }
   }
 
   // The beat grid: a line through the whole waveform on every beat, grey,
@@ -620,9 +692,12 @@ function drawOverview() {
     image.height = canvas.height;
     const ic = image.getContext('2d')!;
     ic.scale(canvas.width / width, canvas.height / height);
-    const perPx = columns.value / width;
-    for (let px = 0; px < width; px++) {
-      drawSlice(ic, px, Math.floor(px * perPx), Math.floor((px + 1) * perPx), height, height - 7, false);
+    const wave = currentWave();
+    if (wave) {
+      const perPx = wave.columns / width;
+      for (let px = 0; px < width; px++) {
+        drawSlice(ic, wave, px, Math.floor(px * perPx), Math.floor((px + 1) * perPx), height, height - 7, false);
+      }
     }
     overviewImage = { key, canvas: image };
   }
@@ -701,6 +776,9 @@ function formatTime(ms: number) {
   return `${minutes}:${(total - minutes * 60).toFixed(1).padStart(4, '0')}`;
 }
 
+/** The time readout: a computed, so the player re-renders when the text changes, not every frame. */
+const timeLabel = computed(() => `${formatTime(position.value)} / ${formatTime(durationMs.value)}`);
+
 /** The playhead's bar and beat, as rekordbox counts them. */
 const barAndBeat = computed(() => {
   const at = nearestBeat(position.value);
@@ -714,23 +792,48 @@ const barAndBeat = computed(() => {
 watch(
   () => props.track?.id,
   () => {
-    autoplay = true;
     loadTrack();
   },
   { immediate: true },
 );
-// An analysis that finishes shows as a new BPM on the row.
-watch(() => [props.track?.bpm, props.track?.analysed], () => loadPreparation());
+// An analysis made elsewhere (rekordbox, then Refresh) shows as a new BPM on the row.
+watch([() => props.track?.bpm, () => props.track?.analysed], () => loadPreparation());
+// One made here is done when the track leaves the queue's running list.
+const analysing = computed(() => !!props.track && (store.analysis?.running.includes(props.track.id) ?? false));
+watch(analysing, (now, was) => {
+  if (was && !now) loadPreparation();
+});
+// And Refresh reads cues and grids changed in rekordbox.
+watch(
+  () => store.loading,
+  (now, was) => {
+    if (was && !now) loadPreparation();
+  },
+);
+
+// Everything the waveforms show. Sync, so a change made during a frame is
+// drawn by that frame.
+watch(
+  [position, zoom, palette, waves, prep, playing, durationMs, () => props.track?.id],
+  invalidate,
+  { flush: 'sync' },
+);
+// The canvases' own size, and the screen's pixel density.
+const resized = new ResizeObserver(invalidate);
 
 onMounted(() => {
-  frame = requestAnimationFrame(tick);
+  if (detail.value) resized.observe(detail.value);
+  if (overview.value) resized.observe(overview.value);
+  invalidate();
+  window.addEventListener('resize', invalidate);
   window.addEventListener('keydown', onKey);
 });
 onBeforeUnmount(() => {
   cancelAnimationFrame(frame);
+  resized.disconnect();
+  window.removeEventListener('resize', invalidate);
   window.removeEventListener('keydown', onKey);
-  audio.value?.pause();
-  clicks?.close();
+  engine.dispose();
 });
 
 const buttonClass =
@@ -741,21 +844,10 @@ const tabClass = 'px-2 py-0.5 text-[11px] disabled:opacity-30';
 
 <template>
   <section class="flex shrink-0 flex-col gap-1.5 border-b border-border px-4 pb-2 text-xs">
-    <audio
-      ref="audio"
-      :src="audioSrc ?? undefined"
-      preload="auto"
-      @play="playing = true"
-      @pause="playing = false"
-      @ended="playing = false"
-      @canplay="onCanPlay"
-      @error="audioSrc && (error = 'The audio couldn\'t be played.')"
-    />
-
     <div class="flex h-8 items-center gap-3">
       <button
         class="flex size-7 shrink-0 items-center justify-center rounded-full bg-surface-3 text-sm hover:bg-accent disabled:opacity-40"
-        :disabled="!audioSrc"
+        :disabled="!ready"
         :title="playing ? 'Pause (Space)' : 'Play (Space)'"
         @click="toggle"
       >
@@ -769,7 +861,7 @@ const tabClass = 'px-2 py-0.5 text-[11px] disabled:opacity-30';
           </p>
           <p class="font-mono text-[11px] leading-tight text-text-muted">
             <template v-if="loading">Decoding…</template>
-            <template v-else>{{ formatTime(position) }} / {{ formatTime(durationMs) }}</template>
+            <template v-else>{{ timeLabel }}</template>
             <span v-if="barAndBeat" class="ml-2" title="Bar and beat at the playhead">{{ barAndBeat }}</span>
             <span v-if="bpmHere" class="ml-2">{{ bpmHere.toFixed(2) }} BPM</span>
             <span v-if="track.key" class="ml-2">{{ track.key }}</span>

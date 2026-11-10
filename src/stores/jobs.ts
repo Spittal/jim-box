@@ -11,7 +11,7 @@ export function isActive(job: Job): boolean {
 }
 
 /** Still wanted: on its way, or stopped short of a file. Shown among the tracks. */
-export function isPending(job: Job): boolean {
+function isPending(job: Job): boolean {
   return isActive(job) || job.status === 'notFound' || job.status === 'failed';
 }
 

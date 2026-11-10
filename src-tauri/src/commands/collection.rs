@@ -1,5 +1,7 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use serde::Serialize;
+use tauri::ipc::{Channel, Response};
 use tauri::{AppHandle, Manager};
 
 use crate::analysis::{self, AnalysisProgress, AnalysisQueue};
@@ -8,7 +10,7 @@ use crate::ingest::{self, ArrivalQueue, Waiting};
 use crate::library;
 use crate::state::SettingsState;
 use crate::rekordbox::{
-    Collection, CollectionStatus, Edit, EditOutcome, ImportReport, PlaylistNode, Preparation, TrackPage,
+    Audio, Collection, CollectionStatus, Edit, EditOutcome, ImportReport, PlaylistNode, Preparation, TrackPage,
     TrackQuery,
 };
 
@@ -139,31 +141,49 @@ pub async fn track_preparation(app: AppHandle, track_id: String) -> AppResult<Pr
 
 /// A track's detailed waveform as bytes; see `Collection::waveform`.
 #[tauri::command]
-pub async fn track_waveform(app: AppHandle, track_id: String) -> AppResult<tauri::ipc::Response> {
+pub async fn track_waveform(app: AppHandle, track_id: String) -> AppResult<Response> {
     let bytes = library::blocking(move || app.state::<Collection>().waveform(&track_id)).await?;
-    Ok(tauri::ipc::Response::new(bytes))
+    Ok(Response::new(bytes))
 }
 
-/// Where the player's audio is kept: one decoded track at a time.
-pub fn preview_dir(app: &AppHandle) -> AppResult<PathBuf> {
-    let cache = app.path().app_cache_dir().map_err(|e| AppError::Io(std::io::Error::other(e)))?;
-    Ok(cache.join("preview"))
-}
+/// The player's audio being decoded: the latest stream asked for, which is
+/// the only one that carries on.
+#[derive(Default)]
+pub struct AudioStream(AtomicU64);
 
-/// Decodes a track for the player and returns the file to play. The file is
-/// on rekordbox's timeline, so cues and beats land where rekordbox has them.
+/// Decodes a track for the player, sending its audio over `on_audio` as it
+/// is decoded so playing starts at once: first eight bytes (the sample rate
+/// and about how many frames are coming, each a little-endian u32), then
+/// 16-bit stereo samples in pieces, then an empty message at the end. The
+/// audio is on rekordbox's timeline, so cues and beats land where rekordbox
+/// has them. `stream` is the caller's name for it; a later one replaces it.
 #[tauri::command]
-pub async fn track_preview_audio(app: AppHandle, track_id: String) -> AppResult<PathBuf> {
-    let dir = preview_dir(&app)?;
+pub async fn track_audio(
+    app: AppHandle,
+    track_id: String,
+    stream: u64,
+    on_audio: Channel<Response>,
+) -> AppResult<()> {
+    app.state::<AudioStream>().0.store(stream, Ordering::SeqCst);
     library::blocking(move || {
-        // The last track's audio goes: these are tens of megabytes each.
-        let _ = std::fs::remove_dir_all(&dir);
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |since| since.as_millis());
-        let out = dir.join(format!("{track_id}-{unique}.wav"));
-        app.state::<Collection>().write_preview(&track_id, &out)?;
-        Ok(out)
+        let current = || app.state::<AudioStream>().0.load(Ordering::SeqCst) == stream;
+        app.state::<Collection>().decode_audio(&track_id, |audio| {
+            let bytes = match audio {
+                Audio::Start { rate, frames } => [rate.to_le_bytes(), frames.to_le_bytes()].concat(),
+                Audio::Pcm(pcm) => pcm,
+            };
+            current() && on_audio.send(Response::new(bytes)).is_ok()
+        })?;
+        if current() {
+            let _ = on_audio.send(Response::new(Vec::new()));
+        }
+        Ok(())
     })
     .await
+}
+
+/// Stops decoding a stream the player no longer wants.
+#[tauri::command]
+pub fn stop_track_audio(current: tauri::State<'_, AudioStream>, stream: u64) {
+    let _ = current.0.compare_exchange(stream, 0, Ordering::SeqCst, Ordering::SeqCst);
 }

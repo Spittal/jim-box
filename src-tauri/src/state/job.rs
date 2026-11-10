@@ -94,7 +94,7 @@ pub struct SearchAttempt {
     pub rejected: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TransferProgress {
     pub bytes_transferred: u64,

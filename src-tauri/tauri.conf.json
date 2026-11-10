@@ -35,11 +35,7 @@
       }
     ],
     "security": {
-      "csp": null,
-      "assetProtocol": {
-        "enable": true,
-        "scope": ["$APPCACHE/preview/*"]
-      }
+      "csp": null
     },
     "macOSPrivateApi": true
   },

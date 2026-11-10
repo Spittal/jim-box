@@ -31,6 +31,8 @@ const library = useLibraryStore();
 // visible slice is in the DOM, so a large library scrolls like a small one.
 const ROW_HEIGHT = 28;
 const OVERSCAN = 12;
+/** The slice moves this many rows at a time, so scrolling renders it once per step, not once per row. */
+const STEP = 8;
 
 const scroller = ref<HTMLElement | null>(null);
 const scrollTop = ref(0);
@@ -40,10 +42,14 @@ const viewportHeight = ref(600);
 const pendingHeight = computed(() => pendingRows.value.length * ROW_HEIGHT);
 const listTop = computed(() => Math.max(0, scrollTop.value - pendingHeight.value));
 
-const firstVisible = computed(() => Math.max(0, Math.floor(listTop.value / ROW_HEIGHT) - OVERSCAN));
-const lastVisible = computed(() =>
-  Math.min(total.value, Math.ceil((listTop.value + viewportHeight.value) / ROW_HEIGHT) + OVERSCAN),
-);
+const firstVisible = computed(() => {
+  const first = Math.floor(listTop.value / ROW_HEIGHT) - OVERSCAN;
+  return Math.max(0, Math.floor(first / STEP) * STEP);
+});
+const lastVisible = computed(() => {
+  const last = Math.ceil((listTop.value + viewportHeight.value) / ROW_HEIGHT) + OVERSCAN;
+  return Math.min(total.value, Math.ceil(last / STEP) * STEP);
+});
 
 onMounted(() => browse.ensure(firstVisible.value, lastVisible.value));
 watch([firstVisible, lastVisible], ([first, last]) => browse.ensure(first, last));
@@ -62,13 +68,14 @@ const visibleRows = computed(() => {
 });
 
 function onScroll() {
-  if (!scroller.value) return;
-  scrollTop.value = scroller.value.scrollTop;
-  viewportHeight.value = scroller.value.clientHeight;
+  if (scroller.value) scrollTop.value = scroller.value.scrollTop;
 }
 
 // Keep the viewport height current as the list appears and the window resizes.
-const resizeObserver = new ResizeObserver(onScroll);
+const resizeObserver = new ResizeObserver(([entry]) => {
+  viewportHeight.value = entry.contentRect.height;
+  onScroll();
+});
 watch(scroller, (el) => {
   resizeObserver.disconnect();
   if (el) resizeObserver.observe(el);

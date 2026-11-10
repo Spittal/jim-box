@@ -139,13 +139,9 @@ export const useCollectionStore = defineStore('collection', () => {
   const waveform = async (trackId: string) =>
     new Uint8Array(await invoke<ArrayBuffer>('track_waveform', { trackId }));
 
-  /** Decodes a track for the player; returns the file to play. */
-  const previewAudio = (trackId: string) => invoke<string>('track_preview_audio', { trackId });
-
   return {
     preparation,
     waveform,
-    previewAudio,
     status,
     playlists,
     waiting,

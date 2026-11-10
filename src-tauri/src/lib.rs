@@ -71,6 +71,7 @@ pub fn run() {
             app.manage(LibraryStore::new());
             app.manage(ingest::ArrivalQueue::load(app.handle()));
             app.manage(analysis::AnalysisQueue::default());
+            app.manage(commands::collection::AudioStream::default());
             app.manage(playlist::PlaylistStore::load(app.handle()));
             let backups = app.path().app_data_dir()?.join("rekordbox-backups");
             app.manage(rekordbox::Collection::new(backups));
@@ -125,7 +126,8 @@ pub fn run() {
             commands::collection::analysis_progress,
             commands::collection::track_preparation,
             commands::collection::track_waveform,
-            commands::collection::track_preview_audio,
+            commands::collection::track_audio,
+            commands::collection::stop_track_audio,
             commands::playlist::import_spotify_playlist,
             commands::playlist::linked_playlist,
             commands::playlist::set_playlist_match,
@@ -135,9 +137,6 @@ pub fn run() {
 
     app.run(|handle, event| match event {
         RunEvent::Exit => {
-            if let Ok(dir) = commands::collection::preview_dir(handle) {
-                let _ = std::fs::remove_dir_all(dir);
-            }
             tauri::async_runtime::block_on(handle.state::<Daemon>().stop(handle));
         }
         #[cfg(target_os = "macos")]

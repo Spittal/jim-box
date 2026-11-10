@@ -184,46 +184,72 @@ impl Collection {
         Ok(bytes)
     }
 
-    /// Decodes a track's audio to a WAV at `out`, on the timeline rekordbox
-    /// keeps for the file: the one its cues and beat grid are measured on,
-    /// which for some MP3s is not where other players start. Blocking.
-    pub fn write_preview(&self, track_id: &str, out: &Path) -> AppResult<()> {
-        let path = self
-            .path_of(track_id)
-            .ok_or_else(|| AppError::Rekordbox("That track is no longer in the collection".into()))?;
+    /// Decodes a track's audio for the player, handing it to `sink` as it
+    /// goes so playing can start on the first of it: once what it is, then
+    /// the samples in pieces, a short one first. `sink` returns false to
+    /// stop. The audio is on the timeline rekordbox keeps for the file: the
+    /// one its cues and beat grid are measured on, which for some MP3s is
+    /// not where other players start. Blocking, for about a second.
+    pub fn decode_audio(&self, track_id: &str, mut sink: impl FnMut(Audio) -> bool) -> AppResult<()> {
+        let loaded = self.loaded_or_read()?;
+        let row = loaded
+            .index
+            .row_of(track_id)
+            .ok_or_else(|| AppError::Rekordbox("That track is no longer in the collection".into()))?
+            as usize;
+        let path = PathBuf::from(loaded.index.folder_path.get(row));
+        let length_secs = u64::from(loaded.index.length_sec[row]);
+        drop(loaded);
         if !path.is_file() {
             return Err(AppError::Rekordbox(format!("Its file is missing: {}", path.display())));
         }
         let mut stream = rbl_audio::MonoStream::open(&path)
             .map_err(|e| AppError::Rekordbox(format!("The file couldn't be decoded: {e}")))?;
+
         let mut pcm: Vec<u8> = Vec::new();
+        let mut started = false;
+        // Bytes to gather before handing them on: a fifth of a second to
+        // start with, then eight seconds at a time.
+        let mut piece = 0;
         while let Some((_, frames)) = stream.next_frames() {
             pcm.reserve(frames.len() * 4);
             for [left, right] in frames {
                 pcm.extend_from_slice(&left.to_le_bytes());
                 pcm.extend_from_slice(&right.to_le_bytes());
             }
+            if !started {
+                // The rate is sure once a packet has been decoded.
+                started = true;
+                let rate = stream.sample_rate();
+                let frames = stream.expected_frames().unwrap_or((length_secs + 1) * u64::from(rate));
+                if !sink(Audio::Start { rate, frames: u32::try_from(frames).unwrap_or(u32::MAX) }) {
+                    return Ok(());
+                }
+                piece = rate as usize * 4 / 5;
+            }
+            if pcm.len() >= piece {
+                piece = stream.sample_rate() as usize * 4 * 8;
+                if !sink(Audio::Pcm(std::mem::take(&mut pcm))) {
+                    return Ok(());
+                }
+            }
         }
-        // A WAV's sizes are 32-bit: longer than that (over six hours) is cut.
-        pcm.truncate((u32::MAX - 44) as usize / 4 * 4);
-        let rate = stream.sample_rate();
-        let mut wav = Vec::with_capacity(pcm.len() + 44);
-        wav.extend_from_slice(b"RIFF");
-        wav.extend_from_slice(&(36 + pcm.len() as u32).to_le_bytes());
-        wav.extend_from_slice(b"WAVEfmt ");
-        wav.extend_from_slice(&16u32.to_le_bytes());
-        wav.extend_from_slice(&1u16.to_le_bytes());
-        wav.extend_from_slice(&2u16.to_le_bytes());
-        wav.extend_from_slice(&rate.to_le_bytes());
-        wav.extend_from_slice(&(rate * 4).to_le_bytes());
-        wav.extend_from_slice(&4u16.to_le_bytes());
-        wav.extend_from_slice(&16u16.to_le_bytes());
-        wav.extend_from_slice(b"data");
-        wav.extend_from_slice(&(pcm.len() as u32).to_le_bytes());
-        wav.extend_from_slice(&pcm);
-        replace_file(out, &wav)?;
+        if !started {
+            return Err(AppError::Rekordbox("The file has no audio that could be decoded".into()));
+        }
+        if !pcm.is_empty() {
+            sink(Audio::Pcm(pcm));
+        }
         Ok(())
     }
+}
+
+/// A track's audio as [`Collection::decode_audio`] hands it out.
+pub enum Audio {
+    /// First: the sample rate, and about how many frames are coming.
+    Start { rate: u32, frames: u32 },
+    /// 16-bit stereo samples, little-endian, left then right.
+    Pcm(Vec<u8>),
 }
 
 /// Sets a cue or, with `end_ms`, a loop: on a hot cue pad (0 for A), taking
@@ -504,11 +530,36 @@ mod tests {
         }
         assert_eq!(kinds, [7, 5, 3]);
 
-        let out = dir.path().join("preview/now.wav");
-        collection.write_preview(&id, &out).unwrap();
-        let bytes = std::fs::read(&out).unwrap();
-        assert_eq!(&bytes[..4], b"RIFF");
-        assert_eq!(bytes.len(), 44 + 20 * 44_100 * 4);
+        let _ = dir;
+        let (mut rate, mut bytes, mut pieces) = (0, 0, 0);
+        collection
+            .decode_audio(&id, |audio| {
+                match audio {
+                    Audio::Start { rate: of, frames } => {
+                        assert_eq!((bytes, frames), (0, 20 * 44_100), "what it is comes first");
+                        rate = of;
+                    }
+                    Audio::Pcm(pcm) => {
+                        bytes += pcm.len();
+                        pieces += 1;
+                    }
+                }
+                true
+            })
+            .unwrap();
+        assert_eq!(rate, 44_100);
+        assert_eq!(bytes, 20 * 44_100 * 4);
+        assert!(pieces > 1, "a short first piece, so playing starts at once");
+
+        // Stopping after the first piece ends the decode.
+        let mut pieces = 0;
+        collection
+            .decode_audio(&id, |audio| {
+                pieces += usize::from(matches!(audio, Audio::Pcm(_)));
+                pieces == 0
+            })
+            .unwrap();
+        assert_eq!(pieces, 1);
     }
 
     #[test]
@@ -592,12 +643,21 @@ mod tests {
         assert_eq!(after.cues.len(), before.cues.len() + 1);
         println!("{}: {} beats at {:?} BPM, {} cues -> {}", track.title, after.beats.len(), after.bpm, before.cues.len(), after.cues.len());
 
-        let wav = dir.path().join("preview.wav");
         let started = std::time::Instant::now();
-        collection.write_preview(&track.id, &wav).unwrap();
+        let (mut bytes, mut first) = (0, None);
+        collection
+            .decode_audio(&track.id, |audio| {
+                if let Audio::Pcm(pcm) = audio {
+                    first.get_or_insert_with(|| started.elapsed());
+                    bytes += pcm.len();
+                }
+                true
+            })
+            .unwrap();
         println!(
-            "preview audio: {:.1} MB in {:.2}s ({})",
-            std::fs::metadata(&wav).unwrap().len() as f64 / 1e6,
+            "player audio: first piece after {:.0} ms, all {:.1} MB in {:.2}s ({})",
+            first.unwrap_or_default().as_secs_f64() * 1e3,
+            bytes as f64 / 1e6,
             started.elapsed().as_secs_f64(),
             track.format
         );

@@ -73,22 +73,28 @@ function commitField(field: TrackField, event: Event) {
   const input = event.target as HTMLInputElement;
   const value = input.value.trim();
   if (value === props.track[field as 'title' | 'artist' | 'album' | 'genre']) return;
+  browse.patchTrack(props.track.id, { [field]: value });
   store.edit({ kind: 'setField', trackId: props.track.id, field, value });
 }
 
 function commitComment(event: Event) {
   const comment = (event.target as HTMLTextAreaElement).value;
   if (comment === props.track.comment) return;
+  browse.patchTrack(props.track.id, { comment });
   store.edit({ kind: 'setComment', trackId: props.track.id, comment });
 }
 
 /** Clicking the current rating clears it, as in rekordbox. */
 function rate(stars: number) {
-  store.edit({
-    kind: 'setRating',
-    trackId: props.track.id,
-    stars: props.track.rating === stars ? 0 : stars,
-  });
+  const next = props.track.rating === stars ? 0 : stars;
+  // Shown at once: saving takes a moment, and a star should answer the click.
+  browse.patchTrack(props.track.id, { rating: next });
+  store.edit({ kind: 'setRating', trackId: props.track.id, stars: next });
+}
+
+function colour(color: number) {
+  browse.patchTrack(props.track.id, { color });
+  store.edit({ kind: 'setColor', trackId: props.track.id, color });
 }
 
 const inputClass =
@@ -152,7 +158,7 @@ const inputClass =
           :class="track.color === id ? 'border-text-primary' : 'border-border'"
           :style="{ backgroundColor: color.hex || 'transparent' }"
           :title="color.name"
-          @click="store.edit({ kind: 'setColor', trackId: track.id, color: id })"
+          @click="colour(id)"
         />
       </div>
     </div>
