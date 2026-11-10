@@ -3,7 +3,6 @@ import { computed, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { Job } from '@/types/job';
 import type {
-  ConsolidatePlan,
   LibraryItem,
   LibraryProgress,
   LibrarySnapshot,
@@ -42,10 +41,6 @@ export const useLibraryStore = defineStore('library', () => {
   /** Forgets what identifying found for these items. */
   const dismiss = (ids: string[]) => invoke('dismiss_library_items', { ids });
   const changeMusicDir = (dir: string) => invoke<RelocateReport>('change_music_dir', { dir });
-  /** What consolidating would move: collection tracks kept outside the music folder. */
-  const consolidatePlan = () => invoke<ConsolidatePlan>('consolidate_plan');
-  /** Moves those tracks' files into the music folder. */
-  const consolidate = () => invoke<RelocateReport>('consolidate_library');
   /** Downloads a collection track again; it moves to the new file once that succeeds. */
   const redownload = (trackId: string) => invoke<Job>('redownload_track', { trackId });
 
@@ -92,8 +87,6 @@ export const useLibraryStore = defineStore('library', () => {
     forTrack,
     fixes,
     changeMusicDir,
-    consolidatePlan,
-    consolidate,
     redownload,
     coverArt,
   };

@@ -12,7 +12,7 @@ use tauri_plugin_opener::OpenerExt;
 use tracing::warn;
 
 /// Menu ids forwarded to the frontend, which owns navigation.
-const FRONTEND_COMMANDS: &[&str] = &["settings", "find", "find-online", "consolidate"];
+const FRONTEND_COMMANDS: &[&str] = &["settings", "find", "find-online"];
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
@@ -49,8 +49,6 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let file_menu = SubmenuBuilder::new(app, "File")
         .item(&item("find", "Find…", "CmdOrCtrl+F")?)
         .item(&item("find-online", "Find Online", "CmdOrCtrl+Shift+F")?)
-        .separator()
-        .item(&MenuItemBuilder::with_id("consolidate", "Consolidate Library…").build(app)?)
         .separator()
         .close_window()
         .build()?;

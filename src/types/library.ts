@@ -83,21 +83,6 @@ export interface LibrarySnapshot {
   progress: LibraryProgress;
 }
 
-/** What consolidating would move; see `ConsolidatePlan` in the backend. */
-export interface ConsolidatePlan {
-  musicDir: string;
-  /** Tracks whose files would move. */
-  tracks: number;
-  bytes: number;
-  /** Where they are now, most tracks first. */
-  folders: { path: string; tracks: number }[];
-  /** Tracks whose file can't be found. Left alone. */
-  missing: number;
-  /** Tracks on an exported rekordbox drive. Left alone. */
-  exported: number;
-  rekordboxRunning: boolean;
-}
-
 export interface RelocateReport {
   moved: number;
   failed: string[];

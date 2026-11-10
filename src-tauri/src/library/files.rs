@@ -64,11 +64,7 @@ pub fn move_file(src: &Path, dest: PathBuf) -> AppResult<PathBuf> {
     let dest = unique_destination(dest);
     if std::fs::rename(src, &dest).is_err() {
         // Different volume: copy, then remove the original only once the copy succeeded.
-        if let Err(e) = std::fs::copy(src, &dest) {
-            // Not half a file left where the whole one should be.
-            let _ = std::fs::remove_file(&dest);
-            return Err(e.into());
-        }
+        std::fs::copy(src, &dest)?;
         std::fs::remove_file(src)?;
     }
     Ok(dest)
