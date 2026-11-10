@@ -1,0 +1,87 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "jim-box",
+  "version": "0.1.0",
+  "identifier": "com.jimbox.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "pnpm fetch-slskd && pnpm dev",
+    "beforeBuildCommand": "pnpm fetch-slskd && pnpm build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "jim-box",
+        "width": 1100,
+        "height": 720,
+        "minWidth": 760,
+        "minHeight": 480,
+        "resizable": true,
+        "fullscreen": false,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "theme": "Dark",
+        "transparent": true,
+        "windowEffects": {
+          "effects": [
+            "sidebar"
+          ],
+          "state": "followsWindowActiveState"
+        },
+        "allowLinkPreview": false,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$APPCACHE/preview/*"]
+      }
+    },
+    "macOSPrivateApi": true
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "app",
+      "dmg"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico",
+      "icons/AppIcon.icon"
+    ],
+    "category": "Music",
+    "copyright": "© 2026 Jamie",
+    "shortDescription": "Find lossless copies of tracks and tag them from MusicBrainz",
+    "longDescription": "Search for a track or paste a public Spotify playlist, and jim-box downloads the best lossless copy from Soulseek, tags it from MusicBrainz and files it in your library the way beets would.",
+    "macOS": {
+      "minimumSystemVersion": "12.0",
+      "signingIdentity": "-",
+      "dmg": {
+        "background": "dmg/background.tiff",
+        "windowSize": {
+          "width": 660,
+          "height": 400
+        },
+        "appPosition": {
+          "x": 180,
+          "y": 170
+        },
+        "applicationFolderPosition": {
+          "x": 480,
+          "y": 170
+        }
+      }
+    },
+    "resources": {
+      "resources/slskd/": "slskd/"
+    }
+  }
+}

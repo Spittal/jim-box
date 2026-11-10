@@ -1,0 +1,23 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# slskd release fetched by scripts/fetch-slskd.mjs (~140MB, not committed)
+src-tauri/resources/slskd/
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.sw?
+
+# Python bytecode from scripts/icon
+__pycache__/

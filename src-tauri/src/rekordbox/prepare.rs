@@ -1,0 +1,605 @@
+//! Preparing a track: what the player shows of it (waveform, beat grid,
+//! cues), and the changes made there — cues, loops and the beat grid.
+//!
+//! Cues live in `master.db` (`djmdCue`); the beat grid lives in the track's
+//! analysis files, with its tempo mirrored on the track's row.
+
+use std::path::{Path, PathBuf};
+
+use rbl_anlz::grid::{apply_with_duration, tempo_x100, validate, Edit as AnlzEdit};
+use rbl_db::write::Writer;
+use rbl_db::OpenMode;
+use serde::{Deserialize, Serialize};
+
+use super::analyse::replace_file;
+use super::{rekordbox_err, Collection};
+use crate::error::{AppError, AppResult};
+
+/// Hot cue slots in pad order, as `djmdCue.Kind`: A to C are 1 to 3, and 4
+/// is taken (a memory loop set as the Active Loop), so D onward are 5 up.
+const HOT_KINDS: [u8; 16] = [1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
+const MEMORY: u8 = 0;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Cue {
+    /// `djmdCue.ID`.
+    pub id: String,
+    /// The hot cue pad, 0 for A; None for a memory cue.
+    pub slot: Option<u8>,
+    pub position_ms: u32,
+    /// Where a loop ends; None for a plain cue.
+    pub end_ms: Option<u32>,
+    pub comment: String,
+}
+
+/// A track as the player needs it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Preparation {
+    pub track_id: String,
+    pub duration_ms: u32,
+    /// Beats as (milliseconds, place in the bar 1 to 4, tempo there in
+    /// hundredths of a BPM); empty before analysis.
+    pub beats: Vec<(u32, u8, u16)>,
+    /// The grid's tempo at its start.
+    pub bpm: Option<f64>,
+    /// Ordered by position.
+    pub cues: Vec<Cue>,
+    /// rekordbox's analysis lock: the grid can't be changed.
+    pub locked: bool,
+}
+
+/// A change to a track's beat grid.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum GridChange {
+    /// Slides the grid by milliseconds.
+    Nudge { ms: i32 },
+    /// Slides the grid so its nearest beat is at `time_ms`.
+    Align { time_ms: u32 },
+    /// Slides the grid so its nearest beat is at `time_ms`, and makes that
+    /// beat the first of a bar.
+    Downbeat { time_ms: u32 },
+    Double,
+    Halve,
+    /// Respaces the grid at a tempo, holding its first beat.
+    Tempo { bpm: f64 },
+    /// Widens or narrows the spacing of the beats, by moving the beat
+    /// nearest `time_ms` this many milliseconds while the first one stays.
+    Stretch { by_ms: i32, time_ms: u32 },
+    /// A tapped tempo: respaces the grid at it, with a bar starting at
+    /// `anchor_ms`, where the first tap was.
+    Tap { bpm: f64, anchor_ms: u32 },
+    /// Puts back a grid as it was read, for undo: (milliseconds, place in
+    /// the bar, tempo in hundredths of a BPM) for each beat.
+    Restore { beats: Vec<(u32, u8, u16)> },
+}
+
+fn slot_of(kind: i64) -> Option<u8> {
+    HOT_KINDS.iter().position(|&k| i64::from(k) == kind).map(|slot| slot as u8)
+}
+
+/// The three analysis files of a track, from its `AnalysisDataPath`.
+fn analysis_files(share_root: &Path, relative: &str) -> [PathBuf; 3] {
+    let dat = rbl_anlz::resolve(share_root, relative);
+    [dat.clone(), rbl_anlz::sibling(&dat, "EXT"), rbl_anlz::sibling(&dat, "2EX")]
+}
+
+pub(super) fn is_locked(db: &rbl_db::Library, track_id: &str) -> AppResult<bool> {
+    db.connection()
+        .query_row(
+            "SELECT (COALESCE(Analysed, 0) & 128) != 0 FROM djmdContent WHERE ID = ?1 AND rb_local_deleted = 0",
+            [track_id],
+            |r| r.get(0),
+        )
+        .map_err(rekordbox_err)
+}
+
+fn cues_of(db: &rbl_db::Library, track_id: &str) -> AppResult<Vec<Cue>> {
+    let mut statement = db
+        .connection()
+        .prepare(
+            "SELECT ID, COALESCE(Kind, 0), COALESCE(InMsec, 0), COALESCE(OutMsec, -1), COALESCE(Comment, '')
+             FROM djmdCue WHERE ContentID = ?1 AND rb_local_deleted = 0",
+        )
+        .map_err(rekordbox_err)?;
+    let rows = statement
+        .query_map([track_id], |r| {
+            let (id, kind, start, end): (String, i64, i64, i64) = (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?);
+            let comment: String = r.get(4)?;
+            Ok((id, kind, start, end, comment))
+        })
+        .map_err(rekordbox_err)?;
+    let mut cues = Vec::new();
+    for row in rows {
+        let (id, kind, start, end, comment) = row.map_err(rekordbox_err)?;
+        let position_ms = u32::try_from(start).unwrap_or(0);
+        cues.push(Cue {
+            id,
+            slot: slot_of(kind),
+            position_ms,
+            end_ms: u32::try_from(end).ok().filter(|&end| end > position_ms),
+            comment,
+        });
+    }
+    cues.sort_by_key(|cue| (cue.position_ms, cue.slot));
+    Ok(cues)
+}
+
+impl Collection {
+    /// A track's beat grid and cues, read from disk now. Blocking.
+    pub fn preparation(&self, track_id: &str) -> AppResult<Preparation> {
+        let loaded = self.loaded_or_read()?;
+        let index = &loaded.index;
+        let row = index
+            .row_of(track_id)
+            .ok_or_else(|| AppError::Rekordbox("That track is no longer in the collection".into()))?
+            as usize;
+        let db = rbl_db::Library::open(loaded.location.clone(), OpenMode::ReadOnly).map_err(rekordbox_err)?;
+
+        let relative = index.analysis_path.get(row);
+        let beats = if relative.is_empty() {
+            Vec::new()
+        } else {
+            let [dat, ..] = analysis_files(&loaded.location.share_root, relative);
+            rbl_anlz::Anlz::read(&dat).ok().and_then(|anlz| anlz.beat_grid()).unwrap_or_default()
+        };
+        Ok(Preparation {
+            track_id: track_id.to_owned(),
+            duration_ms: index.length_sec[row].saturating_mul(1000),
+            bpm: beats.first().map(|beat| f64::from(beat.tempo_x100) / 100.0),
+            beats: beats
+                .iter()
+                .map(|beat| (beat.time_ms, beat.beat_number.clamp(1, 4) as u8, beat.tempo_x100))
+                .collect(),
+            cues: cues_of(&db, track_id)?,
+            locked: is_locked(&db, track_id)?,
+        })
+    }
+
+    /// A track's detailed waveforms, for drawing: rekordbox's own columns,
+    /// 150 a second, in each form its analysis files hold. Each is a byte
+    /// for the kind, four for the length (little-endian), then the columns:
+    /// kind 7 is the three-band waveform (`PWV7`, a byte each for low, mid
+    /// and high), 5 the colour one (`PWV5`, two bytes a column) and 3 the
+    /// blue one (`PWV3`, one byte). Empty before analysis. Blocking.
+    pub fn waveform(&self, track_id: &str) -> AppResult<Vec<u8>> {
+        let loaded = self.loaded_or_read()?;
+        let Some(row) = loaded.index.row_of(track_id) else { return Ok(Vec::new()) };
+        let relative = loaded.index.analysis_path.get(row as usize);
+        if relative.is_empty() {
+            return Ok(Vec::new());
+        }
+        let [_, ext, two_ex] = analysis_files(&loaded.location.share_root, relative);
+        let mut bytes = Vec::new();
+        for (file, kind, tag) in [(&two_ex, 7u8, b"PWV7"), (&ext, 5, b"PWV5"), (&ext, 3, b"PWV3")] {
+            let Ok(anlz) = rbl_anlz::Anlz::read(file) else { continue };
+            if let Some((_, columns)) = anlz.waveform(tag).filter(|(_, columns)| !columns.is_empty()) {
+                bytes.push(kind);
+                bytes.extend_from_slice(&(columns.len() as u32).to_le_bytes());
+                bytes.extend_from_slice(columns);
+            }
+        }
+        Ok(bytes)
+    }
+
+    /// Decodes a track's audio to a WAV at `out`, on the timeline rekordbox
+    /// keeps for the file: the one its cues and beat grid are measured on,
+    /// which for some MP3s is not where other players start. Blocking.
+    pub fn write_preview(&self, track_id: &str, out: &Path) -> AppResult<()> {
+        let path = self
+            .path_of(track_id)
+            .ok_or_else(|| AppError::Rekordbox("That track is no longer in the collection".into()))?;
+        if !path.is_file() {
+            return Err(AppError::Rekordbox(format!("Its file is missing: {}", path.display())));
+        }
+        let mut stream = rbl_audio::MonoStream::open(&path)
+            .map_err(|e| AppError::Rekordbox(format!("The file couldn't be decoded: {e}")))?;
+        let mut pcm: Vec<u8> = Vec::new();
+        while let Some((_, frames)) = stream.next_frames() {
+            pcm.reserve(frames.len() * 4);
+            for [left, right] in frames {
+                pcm.extend_from_slice(&left.to_le_bytes());
+                pcm.extend_from_slice(&right.to_le_bytes());
+            }
+        }
+        // A WAV's sizes are 32-bit: longer than that (over six hours) is cut.
+        pcm.truncate((u32::MAX - 44) as usize / 4 * 4);
+        let rate = stream.sample_rate();
+        let mut wav = Vec::with_capacity(pcm.len() + 44);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + pcm.len() as u32).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&rate.to_le_bytes());
+        wav.extend_from_slice(&(rate * 4).to_le_bytes());
+        wav.extend_from_slice(&4u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&(pcm.len() as u32).to_le_bytes());
+        wav.extend_from_slice(&pcm);
+        replace_file(out, &wav)?;
+        Ok(())
+    }
+}
+
+/// Sets a cue or, with `end_ms`, a loop: on a hot cue pad (0 for A), taking
+/// the place of what was on it, or as a memory cue.
+pub(super) fn add_cue(
+    writer: &mut Writer,
+    track_id: &str,
+    slot: Option<u8>,
+    position_ms: u32,
+    end_ms: Option<u32>,
+) -> AppResult<String> {
+    let kind = match slot {
+        Some(slot) => *HOT_KINDS
+            .get(usize::from(slot))
+            .ok_or_else(|| AppError::Validation("rekordbox has hot cues A to P".into()))?,
+        None => MEMORY,
+    };
+    let existing = cues_of(writer.library(), track_id)?;
+    if let Some(slot) = slot {
+        for cue in existing.iter().filter(|cue| cue.slot == Some(slot)) {
+            writer.delete_cue(&cue.id).map_err(rekordbox_err)?;
+        }
+    } else if existing.iter().any(|cue| cue.slot.is_none() && cue.position_ms == position_ms && cue.end_ms == end_ms) {
+        return Err(AppError::Validation("There's a memory cue there already".into()));
+    }
+    match end_ms {
+        Some(end_ms) => writer.add_loop(track_id, kind, position_ms, end_ms, 0),
+        None => writer.add_cue(track_id, kind, position_ms),
+    }
+    .map_err(rekordbox_err)
+}
+
+/// Changes a track's beat grid in its analysis files, and its tempo on its
+/// row. The extended grid some `.EXT` files carry can't be re-derived, so
+/// it's emptied when it no longer describes the beats, as rbxport does.
+pub(super) fn change_grid(
+    writer: &mut Writer,
+    index: &rbl_index::Library,
+    track_id: &str,
+    change: GridChange,
+    from_ms: Option<u32>,
+) -> AppResult<()> {
+    let row = index
+        .row_of(track_id)
+        .ok_or_else(|| AppError::Rekordbox("That track is no longer in the collection".into()))?
+        as usize;
+    if is_locked(writer.library(), track_id)? {
+        return Err(AppError::Rekordbox("Its analysis is locked in rekordbox".into()));
+    }
+    let relative = index.analysis_path.get(row);
+    if relative.is_empty() {
+        return Err(AppError::Validation("Analyse the track first: it has no beat grid".into()));
+    }
+    let [dat, ext, _] = analysis_files(&writer.library().location().share_root, relative);
+    let parsed = rbl_anlz::Anlz::read(&dat).map_err(rekordbox_err)?;
+    let beats = parsed.beat_grid().filter(|beats| !beats.is_empty()).ok_or_else(|| {
+        AppError::Validation("Analyse the track first: it has no beat grid".into())
+    })?;
+
+    let next = match change {
+        GridChange::Restore { beats: restored } => {
+            if restored.is_empty() || restored.windows(2).any(|pair| pair[1].0 <= pair[0].0) {
+                return Err(AppError::Validation("That isn't a beat grid".into()));
+            }
+            restored
+                .into_iter()
+                .map(|(time_ms, bar, tempo_x100)| rbl_anlz::Beat { beat_number: u16::from(bar), tempo_x100, time_ms })
+                .collect()
+        }
+        change => {
+            let tempo = |bpm: f64| {
+                if (40.0..=499.0).contains(&bpm) {
+                    Ok(bpm)
+                } else {
+                    Err(AppError::Validation("A tempo is between 40 and 499 BPM".into()))
+                }
+            };
+            // Where the change starts: the whole grid, or the beat nearest `from_ms`.
+            let first = from_ms
+                .and_then(|ms| rbl_anlz::grid::nearest_index(&beats, ms))
+                .map_or(beats[0].time_ms, |at| beats[at].time_ms);
+            let edit = match change {
+                GridChange::Nudge { ms } => AnlzEdit::Nudge(ms),
+                GridChange::Align { time_ms } => AnlzEdit::Align { time_ms },
+                GridChange::Downbeat { time_ms } => AnlzEdit::Downbeat { time_ms },
+                GridChange::Double => AnlzEdit::Double,
+                GridChange::Halve => AnlzEdit::Halve,
+                GridChange::Tempo { bpm } => {
+                    AnlzEdit::Tempo { bpm_x100: (tempo(bpm)? * 100.0).round() as u16, anchor_ms: first }
+                }
+                GridChange::Stretch { by_ms, time_ms } => AnlzEdit::Stretch { by_ms, time_ms },
+                GridChange::Tap { bpm, anchor_ms } => AnlzEdit::Tap { bpm: tempo(bpm)?, anchor_ms },
+                GridChange::Restore { .. } => unreachable!("handled above"),
+            };
+            validate(&beats, from_ms, edit).map_err(|reason| AppError::Validation(reason.into()))?;
+            let duration_ms = match index.length_sec[row].saturating_mul(1000) {
+                0 => beats.last().map_or(0, |beat| beat.time_ms),
+                ms => ms,
+            };
+            apply_with_duration(&beats, from_ms, edit, duration_ms)
+        }
+    };
+    if next.is_empty() {
+        return Err(AppError::Validation("That would leave the track without a beat".into()));
+    }
+    if next == beats {
+        return Ok(());
+    }
+
+    let mut changed = vec![(dat, parsed.with_beat_grid(&next))];
+    if let Ok(extended) = rbl_anlz::Anlz::read(&ext) {
+        if let Some(bytes) = extended.with_extended_grid_edit(&beats, &next, parsed.grid_offset().unwrap_or(0)) {
+            changed.push((ext, bytes));
+        }
+    }
+    let previous: Vec<_> = changed.iter().map(|(path, _)| std::fs::read(path).ok()).collect();
+    let put_back = || {
+        for ((path, _), bytes) in changed.iter().zip(&previous) {
+            if let Some(bytes) = bytes {
+                let _ = replace_file(path, bytes);
+            }
+        }
+    };
+    for (path, bytes) in &changed {
+        if let Err(e) = replace_file(path, bytes) {
+            put_back();
+            return Err(e.into());
+        }
+    }
+    if let Err(e) = writer.save_grid_revision(track_id, u32::from(tempo_x100(&next))) {
+        put_back();
+        return Err(rekordbox_err(e));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::analyse::tests::click_track;
+    use super::super::tests::fixture;
+    use super::super::Edit;
+    use super::*;
+
+    /// A fixture with one analysed click track at 120 BPM.
+    fn prepared() -> (tempfile::TempDir, Collection, String) {
+        let (dir, collection) = fixture();
+        let wav = dir.path().join("Click.wav");
+        click_track(&wav, 120.0, 20);
+        let id = collection.import(&[wav], None).unwrap().track_ids.remove(0);
+        collection.analyse(&id, false).unwrap();
+        (dir, collection, id)
+    }
+
+    fn add(collection: &Collection, id: &str, slot: Option<u8>, position_ms: u32, end_ms: Option<u32>) {
+        collection
+            .edit(Edit::AddCue { track_id: id.to_owned(), slot, position_ms, end_ms })
+            .unwrap();
+    }
+
+    #[test]
+    fn cues_and_loops_are_set_named_and_deleted() {
+        let (_dir, collection, id) = prepared();
+        assert!(collection.preparation(&id).unwrap().cues.is_empty());
+
+        add(&collection, &id, Some(0), 2_000, None);
+        add(&collection, &id, Some(3), 8_000, Some(10_000));
+        add(&collection, &id, None, 500, None);
+        let cues = collection.preparation(&id).unwrap().cues;
+        let seen: Vec<_> = cues.iter().map(|c| (c.slot, c.position_ms, c.end_ms)).collect();
+        assert_eq!(seen, [(None, 500, None), (Some(0), 2_000, None), (Some(3), 8_000, Some(10_000))]);
+
+        // A pad holds one cue: setting it again moves it.
+        add(&collection, &id, Some(0), 4_000, None);
+        let cues = collection.preparation(&id).unwrap().cues;
+        let on_a: Vec<_> = cues.iter().filter(|c| c.slot == Some(0)).collect();
+        assert_eq!(on_a.len(), 1);
+        assert_eq!(on_a[0].position_ms, 4_000);
+
+        collection.edit(Edit::NameCue { cue_id: on_a[0].id.clone(), comment: "Drop".into() }).unwrap();
+        let memory = cues.iter().find(|c| c.slot.is_none()).unwrap();
+        collection.edit(Edit::DeleteCue { cue_id: memory.id.clone() }).unwrap();
+        let cues = collection.preparation(&id).unwrap().cues;
+        assert_eq!(cues.len(), 2);
+        assert_eq!(cues[0].comment, "Drop");
+
+        // The same memory cue twice is refused.
+        add(&collection, &id, None, 500, None);
+        let again = collection.edit(Edit::AddCue { track_id: id.clone(), slot: None, position_ms: 500, end_ms: None });
+        assert!(again.is_err());
+    }
+
+    #[test]
+    fn the_grid_is_nudged_respaced_and_given_a_downbeat() {
+        let (_dir, collection, id) = prepared();
+        let grid = |collection: &Collection| collection.preparation(&id).unwrap();
+        let change =
+            |change| collection.edit(Edit::Grid { track_id: id.clone(), change, from_ms: None }).unwrap();
+        let before = grid(&collection);
+        assert!((before.bpm.unwrap() - 120.0).abs() < 0.5);
+        assert!(!before.locked);
+
+        change(GridChange::Nudge { ms: 7 });
+        let nudged = grid(&collection);
+        assert_eq!(nudged.beats[4].0, before.beats[4].0 + 7);
+
+        // The beat nearest 3.1 s lands on it, and starts a bar.
+        change(GridChange::Downbeat { time_ms: 3_100 });
+        let aligned = grid(&collection);
+        let at = aligned.beats.iter().find(|beat| beat.0 == 3_100).expect("a beat at 3.1 s");
+        assert_eq!(at.1, 1);
+
+        change(GridChange::Double);
+        let doubled = grid(&collection);
+        assert!((doubled.bpm.unwrap() - before.bpm.unwrap() * 2.0).abs() < 0.5);
+        assert!(doubled.beats.len() > aligned.beats.len() * 2 - 3);
+        change(GridChange::Halve);
+
+        change(GridChange::Tempo { bpm: 125.0 });
+        let respaced = grid(&collection);
+        assert_eq!(respaced.bpm, Some(125.0));
+        assert_eq!(respaced.beats[1].0 - respaced.beats[0].0, 480);
+        // The row's BPM follows the grid.
+        let page = collection
+            .tracks(&super::super::tests::query(super::super::Source::Collection, super::super::Sort::Title), 0, 1000)
+            .unwrap();
+        assert_eq!(page.rows.iter().find(|r| r.id == id).unwrap().bpm, Some(125.0));
+
+        assert!(collection.edit(Edit::Grid { track_id: id.clone(), change: GridChange::Tempo { bpm: 5.0 }, from_ms: None }).is_err());
+
+        // Undo: a grid goes back exactly as it was read.
+        change(GridChange::Restore { beats: before.beats.clone() });
+        assert_eq!(grid(&collection).beats, before.beats);
+
+        // A tapped tempo starts a bar where the first tap was.
+        change(GridChange::Tap { bpm: 100.0, anchor_ms: 5_000 });
+        let tapped = grid(&collection);
+        assert_eq!(tapped.bpm, Some(100.0));
+        assert_eq!(tapped.beats.iter().find(|beat| beat.0 == 5_000).map(|beat| beat.1), Some(1));
+
+        // From a point on, the beats before it stay where they were.
+        change(GridChange::Restore { beats: before.beats.clone() });
+        let from = before.beats[16].0;
+        collection
+            .edit(Edit::Grid { track_id: id.clone(), change: GridChange::Tempo { bpm: 60.0 }, from_ms: Some(from) })
+            .unwrap();
+        let split = grid(&collection);
+        assert_eq!(split.beats[..16], before.beats[..16]);
+        assert_eq!(split.beats[18].0 - split.beats[17].0, 1_000);
+
+        // A locked grid is left alone until it's unlocked.
+        collection.edit(Edit::LockAnalysis { track_id: id.clone(), locked: true }).unwrap();
+        assert!(grid(&collection).locked);
+        assert!(collection
+            .edit(Edit::Grid { track_id: id.clone(), change: GridChange::Double, from_ms: None })
+            .is_err());
+        collection.edit(Edit::LockAnalysis { track_id: id.clone(), locked: false }).unwrap();
+        assert!(!grid(&collection).locked);
+    }
+
+    #[test]
+    fn the_waveform_and_preview_audio_cover_the_whole_track() {
+        let (dir, collection, id) = prepared();
+        // Three forms, each 150 columns a second for 20 seconds.
+        let waveform = collection.waveform(&id).unwrap();
+        let mut at = 0;
+        let mut kinds = Vec::new();
+        while at < waveform.len() {
+            let (kind, length) = (waveform[at], u32::from_le_bytes(waveform[at + 1..at + 5].try_into().unwrap()));
+            let bytes_per_column = match kind {
+                7 => 3,
+                5 => 2,
+                _ => 1,
+            };
+            let columns = length / bytes_per_column;
+            assert!((2_990..=3_010).contains(&columns), "{columns} columns of kind {kind}");
+            kinds.push(kind);
+            at += 5 + length as usize;
+        }
+        assert_eq!(kinds, [7, 5, 3]);
+
+        let out = dir.path().join("preview/now.wav");
+        collection.write_preview(&id, &out).unwrap();
+        let bytes = std::fs::read(&out).unwrap();
+        assert_eq!(&bytes[..4], b"RIFF");
+        assert_eq!(bytes.len(), 44 + 20 * 44_100 * 4);
+    }
+
+    #[test]
+    fn an_unanalysed_track_has_no_grid_to_change() {
+        let (dir, collection) = fixture();
+        let wav = dir.path().join("Raw.wav");
+        click_track(&wav, 120.0, 5);
+        let id = collection.import(&[wav], None).unwrap().track_ids.remove(0);
+        let prepared = collection.preparation(&id).unwrap();
+        assert!(prepared.beats.is_empty() && prepared.bpm.is_none());
+        assert!(collection.waveform(&id).unwrap().is_empty());
+        assert!(collection.edit(Edit::Grid { track_id: id, change: GridChange::Double, from_ms: None }).is_err());
+    }
+
+    /// Reads cues, grids and waveforms rekordbox wrote, and edits a grid and
+    /// sets a cue, on a copy of the installed library with copies of its
+    /// analysis files; the original is only read.
+    /// Run with `cargo test live_prepare -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn live_prepare() {
+        use super::super::tests::query;
+        use super::super::{Sort, Source};
+        let installed = rbl_db::detect().expect("rekordbox library");
+        let real_share = installed.share_root.clone();
+        let dir = tempfile::tempdir().unwrap();
+        let copy = dir.path().join("master.db");
+        std::fs::copy(&installed.master_db, &copy).unwrap();
+        let share = dir.path().join("share");
+        let collection = Collection::new(dir.path().join("backups"));
+        collection
+            .load_from(rbl_db::LibraryLocation {
+                master_db: copy,
+                share_root: share.clone(),
+                is_real_install: false,
+                ..installed
+            })
+            .unwrap();
+        let loaded = collection.loaded().unwrap();
+        let page = collection.tracks(&query(Source::Collection, Sort::DateAdded), 0, 10_000).unwrap();
+        let (mut with_cues, mut with_waves, mut colour) = (0, 0, 0);
+        for track in &page.rows {
+            let at = loaded.index.row_of(&track.id).unwrap() as usize;
+            let relative = loaded.index.analysis_path.get(at);
+            if relative.is_empty() {
+                continue;
+            }
+            for (from, to) in analysis_files(&real_share, relative).iter().zip(analysis_files(&share, relative)) {
+                std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+                let _ = std::fs::copy(from, to);
+            }
+            let prepared = collection.preparation(&track.id).unwrap();
+            let waveform = collection.waveform(&track.id).unwrap();
+            with_cues += usize::from(!prepared.cues.is_empty());
+            with_waves += usize::from(!waveform.is_empty());
+            colour += usize::from(waveform.first() == Some(&7));
+            if !prepared.beats.is_empty() {
+                // The grid reaches about as far as the track does.
+                let last = prepared.beats.last().unwrap().0;
+                assert!(last <= prepared.duration_ms + 2_000, "{}: grid past the end", track.title);
+            }
+        }
+        println!("{} tracks: {with_cues} with cues, {with_waves} with a waveform ({colour} with three bands)", page.rows.len());
+
+        // One of rekordbox's own grids, edited; and a cue set beside its own.
+        let track = page
+            .rows
+            .iter()
+            .find(|t| collection.preparation(&t.id).is_ok_and(|p| p.beats.len() > 64 && !p.locked && !p.cues.is_empty()))
+            .expect("an analysed track with cues");
+        let before = collection.preparation(&track.id).unwrap();
+        let started = std::time::Instant::now();
+        collection.edit(Edit::Grid { track_id: track.id.clone(), change: GridChange::Nudge { ms: 5 }, from_ms: None }).unwrap();
+        println!("a grid edit took {:.2}s", started.elapsed().as_secs_f64());
+        collection
+            .edit(Edit::AddCue { track_id: track.id.clone(), slot: None, position_ms: before.beats[32].0 + 5, end_ms: None })
+            .unwrap();
+        let after = collection.preparation(&track.id).unwrap();
+        assert_eq!(after.beats.len(), before.beats.len());
+        assert_eq!(after.beats[10].0, before.beats[10].0 + 5);
+        assert_eq!(after.cues.len(), before.cues.len() + 1);
+        println!("{}: {} beats at {:?} BPM, {} cues -> {}", track.title, after.beats.len(), after.bpm, before.cues.len(), after.cues.len());
+
+        let wav = dir.path().join("preview.wav");
+        let started = std::time::Instant::now();
+        collection.write_preview(&track.id, &wav).unwrap();
+        println!(
+            "preview audio: {:.1} MB in {:.2}s ({})",
+            std::fs::metadata(&wav).unwrap().len() as f64 / 1e6,
+            started.elapsed().as_secs_f64(),
+            track.format
+        );
+    }
+}

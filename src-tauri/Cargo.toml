@@ -1,0 +1,58 @@
+[package]
+name = "jim-box"
+version = "0.1.0"
+description = "Find and download lossless tracks via Soulseek, tagged with MusicBrainz metadata"
+edition = "2021"
+rust-version = "1.80"
+
+[lib]
+name = "jim_box_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "jim-box"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api", "protocol-asset"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-store = "2"
+tauri-plugin-window-state = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+keyring = "4"
+lofty = "0.25"
+deunicode = "1"
+urlencoding = "2"
+trash = "5"
+# rekordbox's library: the encrypted master.db and the in-memory index over
+# it, from rbxport (GPL-2.0-or-later). Pinned; upgrade deliberately.
+rbl-db = { git = "https://github.com/chrisle/rbxport", rev = "d0ff75b378ec85be891d9f3067ada1e82bad4cae" }
+rbl-index = { git = "https://github.com/chrisle/rbxport", rev = "d0ff75b378ec85be891d9f3067ada1e82bad4cae" }
+rbl-analysis = { git = "https://github.com/chrisle/rbxport", rev = "d0ff75b378ec85be891d9f3067ada1e82bad4cae" }
+rbl-anlz = { git = "https://github.com/chrisle/rbxport", rev = "d0ff75b378ec85be891d9f3067ada1e82bad4cae" }
+rbl-audio = { git = "https://github.com/chrisle/rbxport", rev = "d0ff75b378ec85be891d9f3067ada1e82bad4cae" }
+
+[dev-dependencies]
+tempfile = "3"
+
+# SQLCipher and its OpenSSL are too slow unoptimized, even in dev builds.
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+# Smaller, faster release builds; the bundle is dominated by slskd anyway.
+codegen-units = 1
+lto = true
+strip = true

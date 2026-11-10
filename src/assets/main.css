@@ -1,0 +1,83 @@
+@import "tailwindcss";
+
+/* Theme tokens shared with Agent Hub so the apps feel like siblings. */
+@theme {
+  /* Base palette - dark industrial */
+  --color-surface-0: #0a0a0b;
+  --color-surface-1: #111113;
+  --color-surface-2: #1a1a1e;
+  --color-surface-3: #242429;
+
+  /* Text */
+  --color-text-primary: #e4e4e7;
+  --color-text-secondary: #a1a1aa;
+  --color-text-muted: #63636e;
+
+  /* Borders */
+  --color-border: #27272a;
+  --color-border-active: #3f3f46;
+
+  /* Status colors */
+  --color-status-ok: #22c55e;
+  --color-status-busy: #f59e0b;
+  --color-status-error: #ef4444;
+  --color-status-idle: #52525b;
+
+  /* Accent */
+  --color-accent: #6366f1;
+  --color-accent-hover: #818cf8;
+
+  /* Typography */
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+}
+
+/* Always dark: native controls, scrollbars and the window chrome follow. */
+:root {
+  color-scheme: dark;
+}
+
+html, body, #app {
+  height: 100%;
+  margin: 0;
+  /* Transparent so the window's sidebar vibrancy shows through; the content
+     area paints its own background. */
+  background-color: transparent;
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  font-size: 17px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  user-select: none;
+}
+
+input, textarea {
+  user-select: text;
+}
+
+/* Native-feeling details: in-app links and controls use the arrow cursor, as
+   in AppKit, and nothing drags out of the window like a web page's content.
+   Scrollbars are left to macOS (overlay, following the user's setting). */
+@layer base {
+  a[href^="/"] {
+    cursor: default;
+  }
+  a, img {
+    -webkit-user-drag: none;
+  }
+  :focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-accent) 70%, transparent);
+    outline-offset: 1px;
+  }
+}
+
+/* Small uppercase heading above a section of a detail panel. */
+@utility section-label {
+  @apply font-mono text-xs font-medium tracking-wide text-text-secondary uppercase;
+}
+
+/* An inline error message. */
+@utility error-box {
+  @apply rounded bg-status-error/10 px-3 py-2 text-xs text-status-error;
+}
