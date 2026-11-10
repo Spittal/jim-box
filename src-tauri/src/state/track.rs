@@ -22,6 +22,9 @@ pub struct TrackRequest {
     pub cover_url: Option<String>,
     /// Large artwork, used as a tagging fallback when MusicBrainz has none.
     pub cover_xl_url: Option<String>,
+    /// Deezer's 30-second clip. The link stops working after about 15 minutes.
+    #[serde(default)]
+    pub preview_url: Option<String>,
 }
 
 /// Canonical metadata written into the file's tags and used for its library path.

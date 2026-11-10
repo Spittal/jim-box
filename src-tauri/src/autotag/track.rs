@@ -80,6 +80,7 @@ mod tests {
             release_date: None,
             cover_url: None,
             cover_xl_url: None,
+            preview_url: None,
         }
     }
 

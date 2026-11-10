@@ -95,6 +95,7 @@ pub fn run() {
             commands::daemon::get_daemon_status,
             commands::daemon::restart_daemon,
             commands::search::search_tracks,
+            commands::search::track_preview,
             commands::stores::find_buy_links,
             commands::jobs::list_jobs,
             commands::jobs::start_job,

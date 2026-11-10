@@ -12,6 +12,8 @@ export const useSearchStore = defineStore('search', () => {
   const owned = ref<(string | null)[]>([]);
   const loading = ref(false);
   const error = ref<string | null>(null);
+  /** The text last looked for, from the moment it's asked. */
+  const asked = ref('');
   /** The text the current results belong to. */
   const searchedFor = ref('');
   /** Identifies the latest search, so an earlier one's late answer is dropped. */
@@ -23,6 +25,7 @@ export const useSearchStore = defineStore('search', () => {
     const query = text.trim();
     if (!query) return;
     const mine = ++latest;
+    asked.value = query;
     open.value = true;
     loading.value = true;
     error.value = null;
@@ -67,7 +70,7 @@ export const useSearchStore = defineStore('search', () => {
     error.value = null;
   }
 
-  return { open, results, owned, loading, error, searchedFor, find, run, refreshOwned, fail, close };
+  return { open, results, owned, loading, error, asked, searchedFor, find, run, refreshOwned, fail, close };
 });
 
 // Swap in new actions on hot reload instead of keeping the old store.

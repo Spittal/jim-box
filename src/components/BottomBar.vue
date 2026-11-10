@@ -11,9 +11,9 @@ import { useSearchStore } from '@/stores/search';
 import { useUiStore } from '@/stores/ui';
 
 /**
- * The bar under the collection. Its box filters the list as you type and,
- * on Return, looks for the text online (or brings in a pasted Spotify
- * playlist). The rest says what is going on in the background.
+ * The bar under the collection. Its box filters the list as you type. On
+ * Return it looks for the text online instead, and the list is whole again
+ * (or it brings in a pasted Spotify playlist). The rest says what is going on in the background.
  */
 const browse = useBrowseStore();
 const { search, selectedNode, targetPlaylist, pendingOnly } = storeToRefs(browse);

@@ -12,6 +12,8 @@ export interface TrackRequest {
   releaseDate: string | null;
   coverUrl: string | null;
   coverXlUrl: string | null;
+  /** Deezer's 30-second clip. The link stops working after about 15 minutes. */
+  previewUrl?: string | null;
 }
 
 /** Canonical metadata written to tags. Mirrors `TrackMetadata` in Rust. */

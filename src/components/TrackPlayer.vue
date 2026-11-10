@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
+import { preview, stopPreview } from '@/audio/preview';
 import { TrackAudio } from '@/audio/trackAudio';
 import { useCollectionStore } from '@/stores/collection';
 import type { Beat, CollectionEdit, CollectionTrack, Cue, GridChange, Preparation } from '@/types/collection';
@@ -155,6 +156,8 @@ async function loadTrack() {
 }
 
 engine.onstate = () => {
+  // One thing plays at a time: the track takes over from a search preview.
+  if (engine.playing) stopPreview();
   ready.value = engine.ready;
   if (engine.ready) loading.value = false;
   audioMs.value = engine.durationMs;
@@ -162,6 +165,11 @@ engine.onstate = () => {
   // Paused, the audio says exactly where; playing, each frame asks.
   if (engine.ready && !engine.playing) position.value = engine.positionMs();
 };
+// ...and a search preview takes over from the track.
+watch(
+  () => preview.key,
+  (key) => key && engine.playing && engine.pause(),
+);
 engine.onerror = (e) => {
   error.value = `The audio couldn't be played: ${e}`;
   loading.value = false;

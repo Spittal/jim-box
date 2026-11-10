@@ -113,6 +113,7 @@ async fn request_for(app: &AppHandle, item: &LibraryItem) -> Option<TrackRequest
         release_date: meta.date,
         cover_url: None,
         cover_xl_url: None,
+        preview_url: None,
     })
 }
 

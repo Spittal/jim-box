@@ -22,7 +22,7 @@ const emit = defineEmits<{ open: [track: CollectionTrack] }>();
 const store = useCollectionStore();
 const { analysis } = storeToRefs(store);
 const browse = useBrowseStore();
-const { sort, descending, search, total, listError, selection, selectedIds, pendingRows, pendingSelection, pendingOnly, inPlaylist } =
+const { sort, descending, filter, total, listError, selection, selectedIds, pendingRows, pendingSelection, pendingOnly, inPlaylist } =
   storeToRefs(browse);
 const jobs = useJobsStore();
 const library = useLibraryStore();
@@ -157,7 +157,7 @@ const retry = (row: PendingRow) => act(row, () => jobs.retry(row.job!.id));
 
 /** Tracks can be dragged into a new order only in the playlist's own order. */
 const reorderable = computed(
-  () => inPlaylist.value && sort.value === 'trackNo' && !descending.value && !search.value.trim() && !pendingOnly.value,
+  () => inPlaylist.value && sort.value === 'trackNo' && !descending.value && !filter.value && !pendingOnly.value,
 );
 
 function dragTrack(event: DragEvent, track: CollectionTrack) {
@@ -345,8 +345,8 @@ const smallButtonClass =
         v-if="!listError && !pendingRows.length && (pendingOnly || !total)"
         class="p-8 text-center text-sm text-text-muted"
       >
-        <template v-if="search.trim()">
-          Nothing here matches. Press Return to look for “{{ search.trim() }}” online.
+        <template v-if="filter">
+          Nothing here matches. Press Return to look for “{{ filter }}” online.
         </template>
         <template v-else-if="pendingOnly">Nothing is being fetched.</template>
         <template v-else-if="inPlaylist">

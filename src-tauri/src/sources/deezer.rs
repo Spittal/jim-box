@@ -30,6 +30,7 @@ struct Track {
     title: String,
     isrc: Option<String>,
     duration: u32,
+    preview: Option<String>,
     artist: Artist,
     album: Album,
     // Only present on the single-track endpoint.
@@ -112,6 +113,7 @@ impl Track {
             release_date: self.release_date.filter(|d| d != "0000-00-00"),
             cover_url: self.album.cover_medium,
             cover_xl_url: self.album.cover_xl,
+            preview_url: self.preview.filter(|s| !s.is_empty()),
         }
     }
 }

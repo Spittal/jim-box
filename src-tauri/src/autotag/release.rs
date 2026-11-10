@@ -47,6 +47,7 @@ pub fn request_for(recording: &Recording) -> TrackRequest {
         release_date: release.and_then(|r| r.date.clone()),
         cover_url: release.map(|r| musicbrainz::cover_url(&r.id, 250)),
         cover_xl_url: release.map(|r| musicbrainz::cover_url(&r.id, 1200)),
+        preview_url: None,
     }
 }
 

@@ -3,6 +3,7 @@ import { computed, ref, shallowRef, watch } from 'vue';
 import { useCollectionStore } from './collection';
 import { useJobsStore } from './jobs';
 import { isPlaylistLink, usePlaylistStore } from './playlist';
+import { useSearchStore } from './search';
 import type { CollectionTrack, TrackQuery, TrackSort, TrackSource } from '@/types/collection';
 import type { Job } from '@/types/job';
 import type { MissingEntry } from '@/types/playlist';
@@ -31,6 +32,7 @@ export const useBrowseStore = defineStore('browse', () => {
   const collection = useCollectionStore();
   const jobs = useJobsStore();
   const playlist = usePlaylistStore();
+  const online = useSearchStore();
 
   // --- Which list -------------------------------------------------------------
 
@@ -38,6 +40,16 @@ export const useBrowseStore = defineStore('browse', () => {
   const selected = ref<string | null>(null);
   /** The text in the search bar, which filters the list. */
   const search = ref('');
+  /**
+   * What the list is filtered by. Nothing while the text's online results are
+   * showing (the list stays whole beside them), or for a pasted playlist link,
+   * which is something to bring in.
+   */
+  const filter = computed(() => {
+    const text = search.value.trim();
+    if (isPlaylistLink(text) || (online.open && text === online.asked)) return '';
+    return text;
+  });
   const sort = ref<TrackSort>('dateAdded');
   const descending = ref(true);
   /** Show only the tracks still being fetched. */
@@ -75,9 +87,7 @@ export const useBrowseStore = defineStore('browse', () => {
 
   const query = computed<TrackQuery>(() => {
     const source: TrackSource = selected.value ? { kind: 'playlist', id: selected.value } : { kind: 'collection' };
-    // A pasted playlist link is something to bring in, not text to filter by.
-    const text = isPlaylistLink(search.value) ? '' : search.value;
-    return { source, sort: sort.value, descending: descending.value, query: text };
+    return { source, sort: sort.value, descending: descending.value, query: filter.value };
   });
 
   // --- Its rows, a page at a time ---------------------------------------------
@@ -319,6 +329,7 @@ export const useBrowseStore = defineStore('browse', () => {
     PAGE,
     selected,
     search,
+    filter,
     sort,
     descending,
     pendingOnly,
