@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue';
+import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { storeToRefs } from 'pinia';
@@ -47,8 +47,10 @@ watch(
 
 // Menu bar commands (see src-tauri/src/menu.rs).
 
-function focusSearchBar() {
+async function focusSearchBar() {
   ui.settings = null;
+  // The bar is hidden while settings are open.
+  await nextTick();
   const input = document.querySelector<HTMLInputElement>('#search-bar');
   input?.focus();
   input?.select();
@@ -57,9 +59,10 @@ function focusSearchBar() {
 function runCommand(command: string) {
   if (needsCredentials.value) return;
   if (command === 'settings') ui.toggleSettings();
-  else if (command === 'find') focusSearchBar();
+  else if (command === 'consolidate') ui.showConsolidate();
+  else if (command === 'find') void focusSearchBar();
   else if (command === 'find-online') {
-    focusSearchBar();
+    void focusSearchBar();
     useSearchStore().run(useBrowseStore().search);
   }
 }

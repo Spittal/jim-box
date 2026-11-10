@@ -167,6 +167,9 @@ async function dropOnTree(node: PlaylistNode) {
 }
 
 const treeButtonClass = 'rounded px-1.5 py-0.5 text-[11px] text-text-muted hover:bg-surface-2 hover:text-text-primary';
+const iconButtonClass =
+  'shrink-0 rounded p-1 text-text-muted hover:bg-surface-2 hover:text-text-primary disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-text-muted';
+const TRASH_ICON = 'M2.5 4.5h11M6 4.5V3h4v1.5M4 4.5l.5 9h7l.5-9M6.5 7v4M9.5 7v4';
 const nameInputClass =
   'min-w-0 flex-1 rounded border border-border-active bg-surface-1 px-1 py-0 text-xs outline-none';
 </script>
@@ -240,27 +243,55 @@ const nameInputClass =
       </template>
       <li v-if="!playlists.length && !naming" class="px-4 py-2 text-text-muted">No playlists yet.</li>
     </ul>
-    <div class="flex shrink-0 flex-wrap items-center gap-1 border-t border-border p-1.5">
-      <button :class="treeButtonClass" title="New playlist" @click="startCreate(false)">+ Playlist</button>
-      <button :class="treeButtonClass" title="New folder" @click="startCreate(true)">+ Folder</button>
-      <template v-if="selectedNode">
-        <template v-if="confirmingDelete === selectedNode.id">
-          <span class="px-1 text-[11px] text-text-secondary">Delete “{{ selectedNode.name }}”?</span>
-          <button :class="treeButtonClass" class="text-status-error" @click="deletePlaylist(selectedNode.id)">Delete</button>
-          <button :class="treeButtonClass" @click="confirmingDelete = null">Cancel</button>
-        </template>
-        <template v-else>
-          <button :class="treeButtonClass" @click="startRename(selectedNode)">Rename</button>
-          <button
-            :class="treeButtonClass"
-            :title="selectedNode.kind === 'folder'
+    <!-- Icons that are always there, so picking a playlist or asking to delete one moves nothing. -->
+    <div class="flex shrink-0 items-center gap-1 border-t border-border p-1.5">
+      <button :class="treeButtonClass" class="whitespace-nowrap" title="New playlist" @click="startCreate(false)">+ Playlist</button>
+      <button :class="treeButtonClass" class="whitespace-nowrap" title="New folder" @click="startCreate(true)">+ Folder</button>
+      <span class="flex-1" />
+      <template v-if="selectedNode && confirmingDelete === selectedNode.id">
+        <button :class="iconButtonClass" title="Keep it" aria-label="Cancel deleting" @click="confirmingDelete = null">
+          <svg viewBox="0 0 16 16" class="size-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+            <path d="M4 4l8 8M12 4l-8 8" />
+          </svg>
+        </button>
+        <button
+          class="shrink-0 rounded bg-status-error/15 p-1 text-status-error hover:bg-status-error/30"
+          :title="`Click again to delete “${selectedNode.name}”`"
+          :aria-label="`Delete ${selectedNode.name}`"
+          @click="deletePlaylist(selectedNode.id)"
+        >
+          <svg viewBox="0 0 16 16" class="size-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path :d="TRASH_ICON" />
+          </svg>
+        </button>
+      </template>
+      <template v-else>
+        <button
+          :class="iconButtonClass"
+          :disabled="!selectedNode"
+          :title="selectedNode ? `Rename “${selectedNode.name}”` : 'Rename (pick a playlist first)'"
+          aria-label="Rename"
+          @click="selectedNode && startRename(selectedNode)"
+        >
+          <svg viewBox="0 0 16 16" class="size-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M11 2.5l2.5 2.5L5.5 13H3v-2.5l8-8zM9.5 4l2.5 2.5" />
+          </svg>
+        </button>
+        <button
+          :class="iconButtonClass"
+          :disabled="!selectedNode"
+          :title="!selectedNode
+            ? 'Delete (pick a playlist first)'
+            : selectedNode.kind === 'folder'
               ? 'Delete this folder and the playlists in it. Tracks stay in the collection.'
               : 'Delete this playlist. Its tracks stay in the collection.'"
-            @click="confirmingDelete = selectedNode.id"
-          >
-            Delete
-          </button>
-        </template>
+          aria-label="Delete"
+          @click="selectedNode && (confirmingDelete = selectedNode.id)"
+        >
+          <svg viewBox="0 0 16 16" class="size-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path :d="TRASH_ICON" />
+          </svg>
+        </button>
       </template>
     </div>
   </div>

@@ -15,7 +15,7 @@ use crate::library;
 use crate::rekordbox::Collection;
 use crate::sources::Sources;
 use crate::state::{
-    AlbumProposal, Confidence, ExistingTags, ItemStatus, LibraryItem, LibraryPhase, PathTemplates, Proposal,
+    AlbumProposal, Confidence, ExistingTags, ItemStatus, LibraryItem, LibraryPhase, Proposal, Settings,
     SettingsState, TrackMetadata, TrackRequest,
 };
 
@@ -47,7 +47,7 @@ async fn read_files(app: &AppHandle, files: Vec<(String, PathBuf)>) -> AppResult
     let mut items = library::blocking(move || {
         Ok(files
             .into_iter()
-            .map(|(track_id, path)| read_item(&settings.music_dir, track_id, path))
+            .map(|(track_id, path)| read_item(settings.library_root_for(&path), track_id, path))
             .collect::<Vec<_>>())
     })
     .await?;
@@ -69,10 +69,10 @@ async fn identify_items(app: &AppHandle, pending: Vec<LibraryItem>) {
 
     let total = albums.iter().map(Vec::len).sum::<usize>() + singles.len();
     let mut done = 0;
-    let layout = Layout { root: &settings.music_dir, paths: &settings.paths };
+    let layout = Layout { settings: &settings };
     for group in albums {
         store.set_progress(app, LibraryPhase::Matching, done, total);
-        match albums::identify(app, &group, layout.root).await {
+        match albums::identify(app, &group, layout.root_for(&group[0].path)).await {
             Ok(Some(candidate)) => {
                 let album = album_proposal(&candidate);
                 for (item, track) in group.into_iter().zip(candidate.found.assignment) {
@@ -166,7 +166,7 @@ async fn identify_one(app: &AppHandle, item: &LibraryItem, layout: Layout<'_>) -
         return Ok(Some(propose(app, item, layout, meta, Confidence::High, Some(job.request), None).await));
     }
 
-    let relative = item.path.strip_prefix(layout.root).unwrap_or(&item.path);
+    let relative = item.path.strip_prefix(layout.root_for(&item.path)).unwrap_or(&item.path);
     let Some(found) = autotag::identify_file(&sources, &item.tags, relative, item.duration_secs).await? else {
         return Ok(None);
     };
@@ -204,22 +204,26 @@ fn album_proposal(candidate: &AlbumCandidate) -> AlbumProposal {
     }
 }
 
-/// The music folder and its path templates.
+/// The library folders and their path templates.
 #[derive(Clone, Copy)]
 struct Layout<'a> {
-    root: &'a Path,
-    paths: &'a PathTemplates,
+    settings: &'a Settings,
 }
 
-impl Layout<'_> {
-    /// Where the template puts a file with `meta`, keeping its extension.
-    /// Files outside the music folder stay where they are: only their tags
-    /// are ours to fix.
+impl<'a> Layout<'a> {
+    /// The folder a file's path is read relative to.
+    fn root_for(&self, path: &Path) -> &'a Path {
+        self.settings.library_root_for(path)
+    }
+
+    /// Where the template puts a file with `meta`, keeping its extension
+    /// and the library folder it's in. Files outside every library folder
+    /// stay where they are: only their tags are ours to fix.
     fn target(&self, path: &Path, meta: &TrackMetadata) -> PathBuf {
-        if !path.starts_with(self.root) {
+        let Some(root) = self.settings.library_root_of(path) else {
             return path.to_path_buf();
-        }
-        library::library_path(self.root, &library::render(self.paths, meta), &library::extension(path))
+        };
+        library::library_path(root, &library::render(&self.settings.paths, meta), &library::extension(path))
     }
 }
 

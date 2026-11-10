@@ -83,6 +83,27 @@ export interface LibrarySnapshot {
   progress: LibraryProgress;
 }
 
+/** Somewhere collection tracks are kept. */
+export interface Place {
+  path: string;
+  /** Tracks whose files are here and could be moved. */
+  tracks: number;
+  bytes: number;
+  /** One of the library folders, rather than somewhere else rekordbox has tracks. */
+  library: boolean;
+}
+
+/** Where the collection's files are; see `ConsolidatePlan` in the backend. */
+export interface ConsolidatePlan {
+  /** The library folders, primary first, then the other places, most tracks first. */
+  places: Place[];
+  /** Tracks whose file can't be found. Left alone. */
+  missing: number;
+  /** Tracks on an exported rekordbox drive. Left alone. */
+  exported: number;
+  rekordboxRunning: boolean;
+}
+
 export interface RelocateReport {
   moved: number;
   failed: string[];

@@ -31,7 +31,9 @@ export type TrackSort =
   | 'key'
   | 'duration'
   | 'rating'
-  | 'dateAdded';
+  | 'dateAdded'
+  | 'path'
+  | 'playlists';
 
 export interface TrackQuery {
   source: TrackSource;
@@ -61,6 +63,8 @@ export interface CollectionTrack {
   bitrate: number;
   path: string;
   comment: string;
+  /** The playlists it's in, by name. Intelligent playlists aren't counted. */
+  playlists: string[];
   analysed: boolean;
 }
 

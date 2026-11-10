@@ -28,7 +28,7 @@ pub fn apply(app: &AppHandle, ids: Vec<Uuid>) -> AppResult<()> {
 
 async fn run_apply(app: &AppHandle, ids: Vec<Uuid>) {
     let store = app.state::<LibraryStore>();
-    let root = app.state::<SettingsState>().snapshot().music_dir;
+    let settings = app.state::<SettingsState>().snapshot();
     let mut covers: HashMap<String, Option<Vec<u8>>> = HashMap::new();
 
     let total = ids.len();
@@ -46,7 +46,8 @@ async fn run_apply(app: &AppHandle, ids: Vec<Uuid>) {
         }
         let cover = covers[&cover_key].clone();
 
-        let (src, root_dir, meta, target) = (item.path.clone(), root.clone(), proposal.metadata.clone(), proposal.target_path.clone());
+        let root_dir = settings.library_root_for(&item.path).to_path_buf();
+        let (src, meta, target) = (item.path.clone(), proposal.metadata.clone(), proposal.target_path.clone());
         let result = library::blocking(move || {
             library::write_tags(&src, &meta, cover.as_deref(), TagMode::Merge)?;
             if target == src {
@@ -69,7 +70,8 @@ async fn run_apply(app: &AppHandle, ids: Vec<Uuid>) {
         }
         store.update_item(app, id, |i| match result {
             Ok(dest) => {
-                i.relative_path = dest.strip_prefix(&root).unwrap_or(&dest).to_string_lossy().into_owned();
+                i.relative_path =
+                    dest.strip_prefix(settings.library_root_for(&dest)).unwrap_or(&dest).to_string_lossy().into_owned();
                 (i.size, i.modified) = super::identify::file_stamp(&dest);
                 i.path = dest;
                 i.tags = ExistingTags::from(&proposal.metadata);

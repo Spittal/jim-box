@@ -32,6 +32,15 @@ const opened = shallowRef<CollectionTrack | null>(null);
 /** The same track as the list now has it, when it's loaded: fresh after edits. */
 const playerTrack = computed(() => (opened.value ? (browse.loadedTrack(opened.value.id) ?? opened.value) : null));
 
+/** A track played to its end: the one under it in the list plays next. */
+async function playNext() {
+  const ended = opened.value;
+  if (!ended) return;
+  const next = await browse.trackAfter(ended.id).catch(() => null);
+  // Unless another track was opened, or the player closed, meanwhile.
+  if (next && opened.value === ended) opened.value = next;
+}
+
 /** What identifying found for the selected tracks, shown when no single track's details are. */
 const identified = computed(() => {
   const items: LibraryItem[] = [];
@@ -53,7 +62,7 @@ const buttonClass =
 
 <template>
   <div class="flex h-full flex-col">
-    <TrackPlayer :track="playerTrack" @close="opened = null" />
+    <TrackPlayer :track="playerTrack" @close="opened = null" @ended="playNext" />
     <CollectionToolbar />
 
     <p v-if="error" class="error-box mx-4 mt-3">{{ error }}</p>

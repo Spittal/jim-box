@@ -105,6 +105,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::settings::get_settings,
             commands::settings::update_settings,
+            commands::settings::add_library_dir,
+            commands::settings::remove_library_dir,
+            commands::settings::set_primary_library_dir,
             commands::settings::set_soulseek_credentials,
             commands::daemon::get_daemon_status,
             commands::daemon::restart_daemon,
@@ -129,6 +132,8 @@ pub fn run() {
             commands::library::cancel_library_task,
             commands::library::dismiss_library_items,
             commands::library::change_music_dir,
+            commands::library::consolidate_plan,
+            commands::library::consolidate_library,
             commands::collection::open_collection,
             commands::collection::collection_state,
             commands::collection::collection_tracks,

@@ -121,7 +121,9 @@ const chipClass =
 
 <template>
   <footer class="flex shrink-0 items-center gap-2 border-t border-border bg-surface-1 px-3 py-2">
-    <form class="flex min-w-0 flex-1 items-center gap-2" @submit.prevent="submit">
+    <!-- Settings cover the collection, so there is nothing for the box to filter or find into. -->
+    <div v-if="ui.settings" class="flex-1" />
+    <form v-show="!ui.settings" class="flex min-w-0 flex-1 items-center gap-2" @submit.prevent="submit">
       <input
         id="search-bar"
         ref="input"
@@ -151,7 +153,7 @@ const chipClass =
       <template v-else>Reading playlist…</template>
     </span>
     <span
-      v-else
+      v-else-if="!ui.settings"
       class="max-w-52 shrink-0 truncate px-2 text-xs text-text-muted"
       title="Where a track you fetch from the results goes. Open a playlist to fetch into it."
     >

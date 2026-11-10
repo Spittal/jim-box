@@ -93,6 +93,10 @@ pub enum Sort {
     Duration,
     Rating,
     DateAdded,
+    /// Where the file is.
+    Path,
+    /// The names of the playlists a track is in; tracks in none come last.
+    Playlists,
 }
 
 impl From<Sort> for SortColumn {
@@ -108,6 +112,9 @@ impl From<Sort> for SortColumn {
             Sort::Duration => Self::Duration,
             Sort::Rating => Self::Rating,
             Sort::DateAdded => Self::DateAdded,
+            Sort::Path => Self::Location,
+            // Sorted here, from the list's own order: see `open_view`.
+            Sort::Playlists => Self::TrackNo,
         }
     }
 }
@@ -146,6 +153,8 @@ pub struct TrackRow {
     pub bitrate: u32,
     pub path: String,
     pub comment: String,
+    /// The playlists the track is in, by name. Intelligent playlists aren't counted.
+    pub playlists: Vec<String>,
     /// Whether the track has a beat grid and waveforms.
     pub analysed: bool,
 }
@@ -176,6 +185,19 @@ struct Loaded {
     location: LibraryLocation,
     /// Track ids by the path of their file.
     by_path: HashMap<String, String>,
+    /// For each track's row, the playlists it's in, as indices into the index's playlists.
+    memberships: Vec<Vec<u32>>,
+}
+
+impl Loaded {
+    /// The names of the playlists the track at `row` is in, in the tree's stored order.
+    fn playlist_names(&self, row: usize) -> Vec<String> {
+        let playlists = self.index.playlists();
+        self.memberships
+            .get(row)
+            .map(|lists| lists.iter().map(|&i| playlists.name(i as usize).to_owned()).collect())
+            .unwrap_or_default()
+    }
 }
 
 /// The collection as last read from `master.db`, and the list being browsed.
@@ -218,9 +240,26 @@ impl Collection {
         let by_path = (0..index.len())
             .map(|row| (local_path(index.folder_path.get(row)), index.ids[row].to_string()))
             .collect();
+        let mut memberships = vec![Vec::new(); index.len()];
+        {
+            let playlists = index.playlists();
+            for (list, members) in playlists.members.iter().enumerate() {
+                if playlists.is_folder(list) || playlists.is_smart(list) {
+                    continue;
+                }
+                for &row in members {
+                    if let Some(lists) = memberships.get_mut(row as usize) {
+                        // A track twice in a playlist is named once.
+                        if lists.last() != Some(&(list as u32)) {
+                            lists.push(list as u32);
+                        }
+                    }
+                }
+            }
+        }
         *self.view.lock().expect("view lock poisoned") = None;
         *self.loaded.write().expect("collection lock poisoned") =
-            Some(Arc::new(Loaded { index, location, by_path }));
+            Some(Arc::new(Loaded { index, location, by_path, memberships }));
         self.status()
     }
 
@@ -254,6 +293,14 @@ impl Collection {
             .filter(|(path, _)| Path::new(path).starts_with(dir))
             .map(|(path, id)| (id.clone(), PathBuf::from(path)))
             .collect()
+    }
+
+    /// The file of every track that has one of its own (streamed tracks
+    /// don't). Reads the library if it hasn't been; empty when there is
+    /// none. Blocking.
+    pub fn track_files(&self) -> Vec<PathBuf> {
+        let Ok(loaded) = self.loaded_or_read() else { return Vec::new() };
+        loaded.by_path.keys().map(PathBuf::from).filter(|path| path.is_absolute()).collect()
     }
 
     fn loaded(&self) -> AppResult<Arc<Loaded>> {
@@ -341,13 +388,29 @@ impl Collection {
                 }
             }
         };
-        let view = Arc::new(loaded.index.open_view(&ViewSpec {
+        let by_playlists = query.sort == Sort::Playlists;
+        let mut view = loaded.index.open_view(&ViewSpec {
             source,
             sort: query.sort.into(),
-            descending: query.descending,
+            // The playlists sort below starts from the list's own order.
+            descending: query.descending && !by_playlists,
             query: query.query.trim().to_owned(),
             filter: Default::default(),
-        }));
+        });
+        if by_playlists {
+            let keys: HashMap<u32, String> = view
+                .rows
+                .iter()
+                .map(|&row| (row, loaded.playlist_names(row as usize).join(", ").to_lowercase()))
+                .collect();
+            // Stable, so tracks in the same playlists keep the list's order.
+            view.rows.sort_by(|a, b| {
+                let (a, b) = (&keys[a], &keys[b]);
+                let named = if query.descending { b.cmp(a) } else { a.cmp(b) };
+                a.is_empty().cmp(&b.is_empty()).then(named)
+            });
+        }
+        let view = Arc::new(view);
         *cached = Some((query.clone(), view.clone()));
         Ok(view)
     }
@@ -388,6 +451,7 @@ impl Collection {
                     bitrate: index.bitrate[r],
                     path: local_path(index.folder_path.get(r)),
                     comment: index.comment.get(r).to_owned(),
+                    playlists: loaded.playlist_names(r),
                     analysed: analyse::is_analysed(index.analysed[r]),
                 }
             })
@@ -453,6 +517,29 @@ pub(crate) mod tests {
         let found = collection.tracks(&q, 0, 100).unwrap();
         assert!(found.total >= 1 && found.total <= all.total);
         assert!(found.rows.iter().any(|r| r.title == title));
+    }
+
+    #[test]
+    fn tracks_name_their_playlists_and_sort_by_them() {
+        let (_dir, collection) = fixture();
+        let nodes = collection.playlists().unwrap();
+        let node = nodes.iter().find(|n| n.kind == PlaylistKind::Playlist && n.count.unwrap_or(0) > 0).expect("a playlist with tracks");
+        let q = query(Source::Playlist { id: node.id.clone() }, Sort::TrackNo);
+        for row in collection.tracks(&q, 0, 1000).unwrap().rows {
+            assert!(row.playlists.contains(&node.name), "{} names {}", row.title, node.name);
+        }
+
+        let all = collection.tracks(&query(Source::Collection, Sort::Playlists), 0, 1000).unwrap();
+        assert_eq!(all.total, 50);
+        let keys: Vec<String> = all.rows.iter().map(|r| r.playlists.join(", ").to_lowercase()).collect();
+        let named: Vec<&String> = keys.iter().take_while(|k| !k.is_empty()).collect();
+        assert!(!named.is_empty());
+        assert!(named.windows(2).all(|pair| pair[0] <= pair[1]));
+        // Tracks in no playlist come last.
+        assert!(keys[named.len()..].iter().all(String::is_empty));
+
+        let by_path = collection.tracks(&query(Source::Collection, Sort::Path), 0, 1000).unwrap();
+        assert_eq!(by_path.total, 50);
     }
 
     #[test]

@@ -21,6 +21,8 @@ let streams = Date.now();
 export class TrackAudio {
   /** Called when `ready`, `playing`, `durationMs` or a paused position changes. */
   onstate: () => void = () => {};
+  /** Called when the track has played to its end. */
+  onended: () => void = () => {};
   /** Called when the audio can't be set up or decoded. */
   onerror: (error: unknown) => void = () => {};
 
@@ -123,6 +125,7 @@ export class TrackAudio {
       this.frame = this.frames;
       this.rest();
       this.onstate();
+      this.onended();
       return;
     }
     this.frame = report.frame;
@@ -197,6 +200,7 @@ export class TrackAudio {
     this.unload();
     clearTimeout(this.idle);
     this.onstate = () => {};
+    this.onended = () => {};
     this.onerror = () => {};
     void this.context?.close();
     this.context = null;

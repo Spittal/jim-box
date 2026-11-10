@@ -4,7 +4,7 @@ use tauri::{AppHandle, State};
 use uuid::Uuid;
 
 use crate::error::AppResult;
-use crate::import::{self, LibrarySnapshot, LibraryStore, RelocateReport};
+use crate::import::{self, ConsolidatePlan, LibrarySnapshot, LibraryStore, RelocateReport};
 use crate::state::Job;
 
 /// The tracks being tidied and what identifying them found.
@@ -38,6 +38,19 @@ pub fn dismiss_library_items(app: AppHandle, store: State<'_, LibraryStore>, ids
 #[tauri::command]
 pub async fn change_music_dir(app: AppHandle, dir: PathBuf) -> AppResult<RelocateReport> {
     import::change_music_dir(&app, dir).await
+}
+
+/// Where the collection's files are: in each library folder, and elsewhere.
+#[tauri::command]
+pub async fn consolidate_plan(app: AppHandle) -> AppResult<ConsolidatePlan> {
+    import::consolidate_plan(&app).await
+}
+
+/// Moves the collection's files in the `sources` places into the library
+/// folder `target`; the tracks follow them.
+#[tauri::command]
+pub async fn consolidate_library(app: AppHandle, sources: Vec<PathBuf>, target: PathBuf) -> AppResult<RelocateReport> {
+    import::consolidate(&app, sources, target).await
 }
 
 /// A file's artwork as raw image bytes; empty when it has none.

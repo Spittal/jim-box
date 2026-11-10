@@ -18,12 +18,24 @@ export const useSettingsStore = defineStore('settings', () => {
     });
   }
 
+  // The library folders have their own commands; none of them moves a file.
+  async function addLibraryDir(dir: string) {
+    settings.value = await invoke<Settings>('add_library_dir', { dir });
+  }
+  async function removeLibraryDir(dir: string) {
+    settings.value = await invoke<Settings>('remove_library_dir', { dir });
+  }
+  /** Makes another library folder the primary one, where new tracks go. */
+  async function setPrimaryLibraryDir(dir: string) {
+    settings.value = await invoke<Settings>('set_primary_library_dir', { dir });
+  }
+
   async function setCredentials(username: string, password: string) {
     await invoke('set_soulseek_credentials', { username, password });
     await load();
   }
 
-  return { settings, load, update, setCredentials };
+  return { settings, load, update, addLibraryDir, removeLibraryDir, setPrimaryLibraryDir, setCredentials };
 });
 
 // Swap in new actions on hot reload instead of keeping the old store.

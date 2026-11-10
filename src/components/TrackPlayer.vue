@@ -13,7 +13,7 @@ import type { Beat, CollectionEdit, CollectionTrack, Cue, GridChange, Preparatio
  */
 /** The loaded track; null shows the player empty, waiting for one. */
 const props = defineProps<{ track: CollectionTrack | null }>();
-defineEmits<{ close: [] }>();
+const emit = defineEmits<{ close: []; ended: [] }>();
 
 const store = useCollectionStore();
 
@@ -170,6 +170,7 @@ watch(
   () => preview.key,
   (key) => key && engine.playing && engine.pause(),
 );
+engine.onended = () => emit('ended');
 engine.onerror = (e) => {
   error.value = `The audio couldn't be played: ${e}`;
   loading.value = false;

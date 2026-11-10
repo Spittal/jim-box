@@ -195,6 +195,27 @@ export const useBrowseStore = defineStore('browse', () => {
     return null;
   }
 
+  /** The track under this one in the list being shown, or null if it's the last or not in it. */
+  async function trackAfter(id: string): Promise<CollectionTrack | null> {
+    const asked = query.value;
+    let index = -1;
+    if (!stale) {
+      for (const [page, rows] of pages.value) {
+        const at = rows.findIndex((r) => r.id === id);
+        if (at !== -1) index = page * PAGE + at;
+        if (at !== -1) break;
+      }
+    }
+    // Scrolled out of the rows held, or the list has changed since.
+    if (index === -1) index = (await collection.trackIds(asked)).indexOf(id);
+    if (index === -1) return null;
+    if (asked === query.value && !stale) {
+      const held = trackAt(index + 1);
+      if (held) return held;
+    }
+    return (await collection.tracks(asked, index + 1, 1)).rows[0] ?? null;
+  }
+
   // --- What's picked ----------------------------------------------------------
 
   const selection = ref(new Set<string>());
@@ -344,6 +365,7 @@ export const useBrowseStore = defineStore('browse', () => {
     ensure,
     trackAt,
     loadedTrack,
+    trackAfter,
     patchTrack,
     selection,
     selectedIds,

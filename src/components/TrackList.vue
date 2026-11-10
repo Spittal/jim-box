@@ -23,7 +23,7 @@ const emit = defineEmits<{ open: [track: CollectionTrack] }>();
 const store = useCollectionStore();
 const { analysis } = storeToRefs(store);
 const browse = useBrowseStore();
-const { sort, descending, filter, total, listError, selection, selectedIds, pendingRows, pendingSelection, pendingOnly, inPlaylist } =
+const { sort, descending, filter, total, listError, selection, selectedIds, pendingRows, pendingSelection, pendingOnly, inPlaylist, selected } =
   storeToRefs(browse);
 const jobs = useJobsStore();
 const library = useLibraryStore();
@@ -184,18 +184,111 @@ async function dropOnRow(index: number) {
 
 // --- Display ----------------------------------------------------------------
 
-const columns: { id: TrackSort; label: string; class: string }[] = [
-  { id: 'trackNo', label: '#', class: 'w-10 text-right' },
+interface Column {
+  id: TrackSort;
+  label: string;
+  /** Its name in the columns menu, where the header's is too short to say. */
+  name?: string;
+  /** Its width, for the header and every row. */
+  class: string;
+  /** Shown only for the whole collection. */
+  collectionOnly?: boolean;
+}
+
+const COLUMNS: Column[] = [
+  { id: 'trackNo', label: '#', name: 'Number', class: 'w-10 shrink-0 text-right' },
   { id: 'title', label: 'Title', class: 'min-w-0 flex-[3]' },
   { id: 'artist', label: 'Artist', class: 'min-w-0 flex-[2]' },
   { id: 'album', label: 'Album', class: 'min-w-0 flex-[2]' },
   { id: 'genre', label: 'Genre', class: 'min-w-0 flex-1' },
-  { id: 'bpm', label: 'BPM', class: 'w-14 text-right' },
-  { id: 'key', label: 'Key', class: 'w-10' },
-  { id: 'duration', label: 'Time', class: 'w-12 text-right' },
-  { id: 'rating', label: 'Rating', class: 'w-16' },
-  { id: 'dateAdded', label: 'Added', class: 'w-24' },
+  { id: 'playlists', label: 'Playlists', class: 'min-w-0 flex-[2]', collectionOnly: true },
+  { id: 'bpm', label: 'BPM', class: 'w-14 shrink-0 text-right' },
+  { id: 'key', label: 'Key', class: 'w-10 shrink-0' },
+  { id: 'duration', label: 'Time', class: 'w-12 shrink-0 text-right' },
+  { id: 'rating', label: 'Rating', class: 'w-16 shrink-0' },
+  { id: 'dateAdded', label: 'Added', class: 'w-24 shrink-0' },
+  { id: 'path', label: 'File path', class: 'min-w-0 flex-[3]' },
 ];
+
+/** The columns' order and which are hidden, kept between runs. */
+const COLUMNS_KEY = 'tracks.columns';
+function savedColumns(): { order: TrackSort[]; hidden: TrackSort[] } {
+  try {
+    const saved = JSON.parse(localStorage.getItem(COLUMNS_KEY) ?? '{}');
+    const known = (ids: unknown) =>
+      Array.isArray(ids) ? ids.filter((id): id is TrackSort => COLUMNS.some((c) => c.id === id)) : [];
+    const order = known(saved.order);
+    // A column added since the order was saved goes where it is in the list above.
+    COLUMNS.forEach((column, at) => {
+      if (!order.includes(column.id)) order.splice(Math.min(at, order.length), 0, column.id);
+    });
+    return { order, hidden: known(saved.hidden) };
+  } catch {
+    return { order: COLUMNS.map((c) => c.id), hidden: [] };
+  }
+}
+const columnOrder = ref(savedColumns().order);
+const hiddenColumns = ref(new Set(savedColumns().hidden));
+watch([columnOrder, hiddenColumns], () =>
+  localStorage.setItem(COLUMNS_KEY, JSON.stringify({ order: columnOrder.value, hidden: [...hiddenColumns.value] })),
+);
+
+/** Every column this list can show, in the order chosen. */
+const available = computed(() =>
+  columnOrder.value
+    .map((id) => COLUMNS.find((c) => c.id === id)!)
+    .filter((column) => !column.collectionOnly || selected.value === null),
+);
+const columns = computed(() => available.value.filter((column) => !hiddenColumns.value.has(column.id)));
+
+const columnsMenu = ref(false);
+
+function toggleColumn(id: TrackSort) {
+  const hidden = new Set(hiddenColumns.value);
+  if (!hidden.delete(id)) hidden.add(id);
+  hiddenColumns.value = hidden;
+}
+
+function resetColumns() {
+  columnOrder.value = COLUMNS.map((c) => c.id);
+  hiddenColumns.value = new Set();
+}
+
+/** The column header being dragged to a new place, and the one it is over. */
+const movingColumn = ref<TrackSort | null>(null);
+const columnTarget = ref<TrackSort | null>(null);
+
+function dragColumn(event: DragEvent, id: TrackSort) {
+  movingColumn.value = id;
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', id);
+  }
+}
+
+function overColumn(event: DragEvent, id: TrackSort) {
+  if (!movingColumn.value) return;
+  event.preventDefault();
+  columnTarget.value = id;
+}
+
+/** Puts the dragged column where `id` is, which moves along. */
+function dropColumn(id: TrackSort) {
+  const moving = movingColumn.value;
+  endColumnDrag();
+  if (!moving || moving === id) return;
+  const order = columnOrder.value.filter((c) => c !== moving);
+  const from = columnOrder.value.indexOf(moving);
+  const to = columnOrder.value.indexOf(id);
+  // Dragged rightwards it lands after the column it's dropped on; leftwards, before.
+  order.splice(order.indexOf(id) + (from < to ? 1 : 0), 0, moving);
+  columnOrder.value = order;
+}
+
+function endColumnDrag() {
+  movingColumn.value = null;
+  columnTarget.value = null;
+}
 
 const smallButtonClass =
   'shrink-0 rounded bg-surface-2 px-2 py-0.5 text-[11px] text-text-primary transition-colors hover:bg-surface-3';
@@ -203,17 +296,64 @@ const smallButtonClass =
 
 <template>
   <div class="flex min-h-0 min-w-0 flex-1 flex-col">
-    <div class="flex shrink-0 items-center gap-3 border-b border-border px-4 py-1.5 text-[11px] text-text-muted">
+    <div
+      class="relative flex shrink-0 items-center gap-3 border-b border-border px-4 py-1.5 text-[11px] text-text-muted"
+      @contextmenu.prevent="columnsMenu = true"
+    >
       <span class="w-1.5 shrink-0" />
       <button
         v-for="column in columns"
         :key="column.id"
-        class="shrink-0 truncate text-left hover:text-text-secondary"
-        :class="[column.class, { 'text-text-primary': sort === column.id }]"
+        class="truncate text-left hover:text-text-secondary"
+        :class="[
+          column.class,
+          { 'text-text-primary': sort === column.id, 'opacity-40': movingColumn === column.id },
+          columnTarget === column.id && movingColumn !== column.id ? 'text-accent' : '',
+        ]"
+        title="Click to sort by this. Drag to move the column."
+        draggable="true"
         @click="browse.sortBy(column.id)"
+        @dragstart="dragColumn($event, column.id)"
+        @dragover="overColumn($event, column.id)"
+        @drop.prevent="dropColumn(column.id)"
+        @dragend="endColumnDrag"
       >
         {{ column.label }}<span v-if="sort === column.id">{{ descending ? ' ↓' : ' ↑' }}</span>
       </button>
+      <button
+        class="absolute top-1/2 right-0.5 -translate-y-1/2 rounded px-1 leading-none hover:bg-surface-2 hover:text-text-primary"
+        title="Choose columns"
+        @click="columnsMenu = !columnsMenu"
+      >
+        ⋮
+      </button>
+      <template v-if="columnsMenu">
+        <div class="fixed inset-0 z-10" @click="columnsMenu = false" @contextmenu.prevent.stop="columnsMenu = false" />
+        <div
+          class="absolute top-full right-1 z-20 mt-1 flex w-40 flex-col rounded border border-border bg-surface-1 py-1 text-xs text-text-primary shadow-lg"
+          @contextmenu.prevent.stop
+        >
+          <label
+            v-for="column in available"
+            :key="column.id"
+            class="flex cursor-default items-center gap-2 px-3 py-1 hover:bg-surface-2"
+          >
+            <input
+              type="checkbox"
+              :checked="!hiddenColumns.has(column.id)"
+              :disabled="columns.length === 1 && !hiddenColumns.has(column.id)"
+              @change="toggleColumn(column.id)"
+            />
+            {{ column.name ?? column.label }}
+          </label>
+          <button
+            class="mt-1 border-t border-border px-3 pt-1.5 pb-0.5 text-left text-text-muted hover:text-text-primary"
+            @click="resetColumns"
+          >
+            Reset columns
+          </button>
+        </div>
+      </template>
     </div>
     <p v-if="listError" class="error-box m-4">{{ listError }}</p>
     <div
@@ -224,7 +364,7 @@ const smallButtonClass =
       @dragover="overRow($event, total)"
       @drop.prevent="dropOnRow(total)"
     >
-      <!-- Tracks on their way. The last cells line up under BPM to Added. -->
+      <!-- Tracks on their way: what is known of them under its column, then where their fetch has got to. -->
       <div
         v-for="row in pendingRows"
         :key="row.key"
@@ -234,10 +374,17 @@ const smallButtonClass =
         @click="clickPending(row, $event)"
       >
         <span class="w-1.5 shrink-0" />
-        <span class="w-10 shrink-0 text-right font-mono text-text-muted" title="Not in the collection yet">↓</span>
-        <span class="min-w-0 flex-[3] truncate">{{ row.title }}</span>
-        <span class="min-w-0 flex-[2] truncate text-text-muted">{{ row.artist }}</span>
-        <span class="min-w-0 flex-[2] truncate text-text-muted">{{ row.album }}</span>
+        <template v-for="column in columns" :key="column.id">
+          <span
+            v-if="column.id === 'trackNo'"
+            class="font-mono text-text-muted"
+            :class="column.class"
+            title="Not in the collection yet"
+          >↓</span>
+          <span v-else-if="column.id === 'title'" class="truncate" :class="column.class">{{ row.title }}</span>
+          <span v-else-if="column.id === 'artist'" class="truncate text-text-muted" :class="column.class">{{ row.artist }}</span>
+          <span v-else-if="column.id === 'album'" class="truncate text-text-muted" :class="column.class">{{ row.album }}</span>
+        </template>
         <span class="min-w-0 flex-1">
           <ProgressBar v-if="row.job && progressPercent(row.job) !== null" :percent="progressPercent(row.job)!" />
         </span>
@@ -312,8 +459,9 @@ const smallButtonClass =
               class="size-1.5 shrink-0 rounded-full"
               :style="{ backgroundColor: TRACK_COLORS[row.track.color]?.hex || 'transparent' }"
             />
-            <span class="w-10 shrink-0 text-right font-mono text-text-muted">{{ row.track.position }}</span>
-            <span class="flex min-w-0 flex-[3] items-center gap-1.5">
+            <template v-for="column in columns" :key="column.id">
+            <span v-if="column.id === 'trackNo'" class="font-mono text-text-muted" :class="column.class">{{ row.track.position }}</span>
+            <span v-else-if="column.id === 'title'" class="flex items-center gap-1.5" :class="column.class">
               <span class="truncate" :title="row.track.path">{{ row.track.title }}</span>
               <span
                 v-if="library.forTrack(row.track.id)?.status === 'matched'"
@@ -326,19 +474,32 @@ const smallButtonClass =
                 title="A new copy of this track is being fetched"
               >↓</span>
             </span>
-            <span class="min-w-0 flex-[2] truncate text-text-secondary">{{ row.track.artist }}</span>
-            <span class="min-w-0 flex-[2] truncate text-text-secondary">{{ row.track.album }}</span>
-            <span class="min-w-0 flex-1 truncate text-text-muted">{{ row.track.genre }}</span>
-            <span class="w-14 shrink-0 text-right font-mono">
+            <span v-else-if="column.id === 'artist'" class="truncate text-text-secondary" :class="column.class">{{ row.track.artist }}</span>
+            <span v-else-if="column.id === 'album'" class="truncate text-text-secondary" :class="column.class">{{ row.track.album }}</span>
+            <span v-else-if="column.id === 'genre'" class="truncate text-text-muted" :class="column.class">{{ row.track.genre }}</span>
+            <span
+              v-else-if="column.id === 'playlists'"
+              class="truncate text-text-muted"
+              :class="column.class"
+              :title="row.track.playlists.join('\n')"
+            >{{ row.track.playlists.join(', ') }}</span>
+            <span v-else-if="column.id === 'bpm'" class="font-mono" :class="column.class">
               <span v-if="analysis?.running.includes(row.track.id)" class="text-text-muted" title="Being analysed">…</span>
               <template v-else>{{ row.track.bpm?.toFixed(1) ?? '' }}</template>
             </span>
-            <span class="w-10 shrink-0 font-mono text-text-secondary">{{ row.track.key }}</span>
-            <span class="w-12 shrink-0 text-right font-mono text-text-muted">
+            <span v-else-if="column.id === 'key'" class="font-mono text-text-secondary" :class="column.class">{{ row.track.key }}</span>
+            <span v-else-if="column.id === 'duration'" class="font-mono text-text-muted" :class="column.class">
               {{ row.track.durationSecs ? formatDuration(row.track.durationSecs) : '' }}
             </span>
-            <span class="w-16 shrink-0 text-[10px] tracking-tight text-text-secondary">{{ '★'.repeat(row.track.rating) }}</span>
-            <span class="w-24 shrink-0 font-mono text-text-muted">{{ row.track.dateAdded.slice(0, 10) }}</span>
+            <span v-else-if="column.id === 'rating'" class="text-[10px] tracking-tight text-text-secondary" :class="column.class">{{ '★'.repeat(row.track.rating) }}</span>
+            <span v-else-if="column.id === 'dateAdded'" class="font-mono text-text-muted" :class="column.class">{{ row.track.dateAdded.slice(0, 10) }}</span>
+            <span
+              v-else-if="column.id === 'path'"
+              class="truncate text-text-muted"
+              :class="column.class"
+              :title="row.track.path"
+            >{{ row.track.path }}</span>
+            </template>
           </template>
         </div>
       </div>

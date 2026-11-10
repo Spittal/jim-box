@@ -31,7 +31,13 @@ pub async fn change_music_dir(app: &AppHandle, new_dir: PathBuf) -> AppResult<Re
     if !new_dir.is_absolute() {
         return Err(AppError::Validation("Choose a music folder".into()));
     }
-    let old_dir = app.state::<SettingsState>().snapshot().music_dir;
+    let settings = app.state::<SettingsState>().snapshot();
+    let old_dir = settings.music_dir.clone();
+    if settings.library_dirs.iter().any(|dir| new_dir.starts_with(dir) || dir.starts_with(&new_dir)) {
+        return Err(AppError::Validation(
+            "The new folder can't be one of the other library folders, inside one, or contain one".into(),
+        ));
+    }
     if new_dir == old_dir {
         return Ok(RelocateReport { moved: 0, failed: Vec::new() });
     }

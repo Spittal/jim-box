@@ -18,7 +18,10 @@ export interface PathTemplates {
 }
 
 export interface Settings {
+  /** The primary library folder, where new tracks go. */
   musicDir: string;
+  /** The other folders the library is kept in. */
+  libraryDirs: string[];
   paths: PathTemplates;
   soulseekUsername: string | null;
   shareMusicDir: boolean;

@@ -18,11 +18,12 @@ const FOLDER_ART: [&str; 6] = ["cover.jpg", "cover.png", "folder.jpg", "folder.p
 
 /// A track's artwork: embedded in its file, else a cover image in its
 /// folder (or the album folder above a disc folder). Empty when there's
-/// none. Only for files in the collection or the music folder.
+/// none. Only for files in the collection or a library folder.
 pub async fn cover_art(app: &AppHandle, path: PathBuf) -> AppResult<Vec<u8>> {
-    let root = app.state::<SettingsState>().snapshot().music_dir;
+    let settings = app.state::<SettingsState>().snapshot();
     let known = app.state::<Collection>().track_at(&path).is_some()
-        || (path.starts_with(&root) && !path.components().any(|c| c == std::path::Component::ParentDir));
+        || (settings.library_root_of(&path).is_some()
+            && !path.components().any(|c| c == std::path::Component::ParentDir));
     if !known {
         return Err(AppError::Validation("Not a file in the collection".into()));
     }
@@ -67,9 +68,9 @@ pub async fn redownload(app: &AppHandle, track_id: String) -> AppResult<Job> {
     let item = match app.state::<LibraryStore>().for_track(&track_id).filter(|i| i.path == path) {
         Some(item) => item,
         None => {
-            let root = app.state::<SettingsState>().snapshot().music_dir;
+            let settings = app.state::<SettingsState>().snapshot();
             let (id, file) = (track_id.clone(), path.clone());
-            library::blocking(move || Ok(super::identify::read_item(&root, id, file))).await?
+            library::blocking(move || Ok(super::identify::read_item(settings.library_root_for(&file), id, file))).await?
         }
     };
     let Some(request) = request_for(app, &item).await else {

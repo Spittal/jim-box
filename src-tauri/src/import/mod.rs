@@ -1,15 +1,18 @@
 //! Tidying collection tracks, after beets' importer: identify their files
 //! (album by album where possible), and apply MusicBrainz tags and the path
 //! template once the user has reviewed them. The tracks keep their place in
-//! rekordbox's collection throughout. Also moves the whole music folder.
+//! rekordbox's collection throughout. Also moves the whole music folder, and
+//! brings tracks kept elsewhere into it.
 
 mod albums;
 mod apply;
+mod consolidate;
 mod explore;
 mod identify;
 mod relocate;
 
 pub use apply::apply;
+pub use consolidate::{consolidate, consolidate_plan, ConsolidatePlan};
 pub use explore::{cover_art, redownload};
 pub use identify::identify;
 pub use relocate::{change_music_dir, RelocateReport};

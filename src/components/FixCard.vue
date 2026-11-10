@@ -35,12 +35,13 @@ const changes = computed(() => {
   return rows.filter(([, now, proposed]) => proposed && now !== proposed);
 });
 
-/** Where the file would move, relative to the music folder; null when it stays. */
+/** Where the file would move, relative to its library folder; null when it stays. */
 const newPath = computed(() => {
   const target = proposal.value?.targetPath;
   if (!target || target === props.item.path) return null;
-  const root = settings.value?.musicDir ?? '';
-  return root && target.startsWith(root) ? target.slice(root.length + 1) : target;
+  const roots = settings.value ? [settings.value.musicDir, ...settings.value.libraryDirs] : [];
+  const root = roots.find((dir) => target.startsWith(dir) && '/\\'.includes(target[dir.length] ?? ''));
+  return root ? target.slice(root.length + 1) : target;
 });
 
 async function run(action: () => Promise<unknown>) {
