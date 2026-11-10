@@ -95,8 +95,7 @@ const identifying = computed(() => {
 
 /** Selects the tracks with a fix waiting, which shows the fixes beside the list. */
 function reviewFixes() {
-  browse.focus = null;
-  browse.selection = new Set(library.fixes.map((i) => i.trackId));
+  browse.selectTracks(library.fixes.map((i) => i.trackId));
 }
 
 const soulseek = computed(() => {

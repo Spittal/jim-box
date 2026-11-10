@@ -66,8 +66,7 @@ async function fetch(track: TrackRequest) {
 
 /** Shows an owned result in the list's detail panel. */
 function showOwned(trackId: string) {
-  browse.focus = null;
-  browse.selection = new Set([trackId]);
+  browse.selectTracks([trackId]);
 }
 
 const buttonClass =

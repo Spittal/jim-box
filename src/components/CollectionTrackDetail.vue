@@ -193,7 +193,7 @@ const inputClass =
 
     <div class="flex flex-col gap-1">
       <span class="text-[11px] text-text-muted">File</span>
-      <p class="font-mono text-[10px] break-all text-text-secondary select-text">{{ track.path }}</p>
+      <p class="font-mono text-[10px] break-all text-text-secondary">{{ track.path }}</p>
       <div class="flex flex-wrap gap-1.5">
         <button :class="actionClass" @click="run(() => revealItemInDir(track.path))">Show in Finder</button>
         <button

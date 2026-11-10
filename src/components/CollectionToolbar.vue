@@ -5,7 +5,7 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { formatAgo } from '@/composables/useFormat';
 import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
-import { useJobsStore } from '@/stores/jobs';
+import { isActive, useJobsStore } from '@/stores/jobs';
 import { useLibraryStore } from '@/stores/library';
 import { usePlaylistStore } from '@/stores/playlist';
 
@@ -13,7 +13,7 @@ import { usePlaylistStore } from '@/stores/playlist';
 const store = useCollectionStore();
 const { status, playlists, waiting, analysis, loading, error } = storeToRefs(store);
 const browse = useBrowseStore();
-const { selected, selectedNode, inPlaylist, selection, selectedIds, total, notice, link, pendingRows } =
+const { selected, selectedNode, inPlaylist, selection, selectedIds, total, notice, link, pendingRows, pendingSelection, selectedPending } =
   storeToRefs(browse);
 const libraryStore = useLibraryStore();
 const playlistStore = usePlaylistStore();
@@ -64,6 +64,43 @@ async function deleteSelected() {
 
 /** Looks the selected tracks up on MusicBrainz; what it finds shows beside the list. */
 const identifySelected = () => run(() => libraryStore.identify(selectedIds.value));
+
+// --- The selected pending rows -----------------------------------------------
+
+/** Of the pending rows picked: those with a fetch, those whose fetch stopped short, and those not fetched yet. */
+const pickedFetches = computed(() => selectedPending.value.filter((r) => r.job));
+const pickedStopped = computed(() =>
+  selectedPending.value.filter((r) => r.job && !isActive(r.job) && r.job.status !== 'completed'),
+);
+const pickedUnfetched = computed(() => selectedPending.value.filter((r) => !r.job && r.entry?.request));
+
+const working = ref(false);
+
+/** Does something to each of some rows, carrying on past the ones that fail. */
+function each<T>(rows: T[], action: (row: T) => Promise<unknown>) {
+  working.value = true;
+  error.value = null;
+  (async () => {
+    let failed: string | null = null;
+    for (const row of rows) {
+      try {
+        await action(row);
+      } catch (e) {
+        failed = String(e);
+      }
+    }
+    error.value = failed;
+  })().finally(() => (working.value = false));
+}
+
+/** Gives up on the picked fetches: stops the ones running, and takes them off the list. */
+function removeFetches() {
+  const rows = pickedFetches.value;
+  browse.clearSelection();
+  each(rows, (row) => jobs.discard(row.job!.id));
+}
+const retryPicked = () => each(pickedStopped.value, (row) => jobs.retry(row.job!.id));
+const fetchPicked = () => each(pickedUnfetched.value, (row) => jobs.fetch(row.entry!.request!, selected.value));
 
 // Analysis: BPM, beat grid, key and waveforms.
 
@@ -121,6 +158,7 @@ function fetchAll() {
   }).finally(() => (fetchingAll.value = false));
 }
 
+const linkClass = 'text-[11px] text-text-muted transition-colors hover:text-text-primary';
 const buttonClass =
   'rounded bg-surface-2 px-3 py-1.5 text-xs transition-colors hover:bg-surface-3 disabled:opacity-50';
 </script>
@@ -149,6 +187,15 @@ const buttonClass =
         >{{ waiting.count }} {{ waiting.count === 1 ? 'file waits' : 'files wait' }} to be added</button>
         <template v-if="selection.size">
           <span class="text-[11px] text-text-muted">{{ selection.size }} selected</span>
+          <button
+            v-if="selection.size < total"
+            :class="linkClass"
+            title="Select every track in this list"
+            @click="browse.selectAll()"
+          >
+            Select all {{ total }}
+          </button>
+          <button :class="linkClass" title="Select nothing" @click="browse.clearSelection()">Clear</button>
           <button
             :class="buttonClass"
             :disabled="libraryStore.busy"
@@ -204,6 +251,45 @@ const buttonClass =
             @click="confirmingRemoval = selection.size"
           >
             Remove…
+          </button>
+        </template>
+        <template v-else-if="pendingSelection.size">
+          <span class="text-[11px] text-text-muted">{{ selectedPending.length }} selected</span>
+          <button
+            v-if="selectedPending.length < pendingRows.length"
+            :class="linkClass"
+            title="Select every track that isn't in the collection yet"
+            @click="browse.selectAll()"
+          >
+            Select all {{ pendingRows.length }}
+          </button>
+          <button :class="linkClass" title="Select nothing" @click="browse.clearSelection()">Clear</button>
+          <button
+            v-if="pickedUnfetched.length"
+            :class="buttonClass"
+            :disabled="working"
+            title="Find the best lossless copy of each and add it to the collection and this playlist"
+            @click="fetchPicked"
+          >
+            Get lossless for {{ pickedUnfetched.length }}
+          </button>
+          <button
+            v-if="pickedStopped.length"
+            :class="buttonClass"
+            :disabled="working"
+            title="Search again for the selected tracks that found no source or failed"
+            @click="retryPicked"
+          >
+            Search again for {{ pickedStopped.length }}
+          </button>
+          <button
+            v-if="pickedFetches.length"
+            :class="buttonClass"
+            :disabled="working"
+            title="Give up on the selected fetches: the ones running are stopped, and they leave this list. Nothing in the collection changes."
+            @click="removeFetches"
+          >
+            Remove {{ pickedFetches.length }}
           </button>
         </template>
         <template v-else>

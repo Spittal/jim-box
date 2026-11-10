@@ -173,7 +173,7 @@ const nameInputClass =
 
 <template>
   <div class="flex w-56 shrink-0 flex-col border-r border-border">
-    <ul class="min-h-0 flex-1 overflow-y-auto py-1 text-xs">
+    <ul class="min-h-0 flex-1 overflow-y-auto py-1 text-xs select-none">
       <li
         class="flex cursor-default items-center gap-1 py-1 pr-2 pl-4"
         :class="selected === null ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:bg-surface-1'"

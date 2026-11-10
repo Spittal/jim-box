@@ -128,6 +128,7 @@ export const useBrowseStore = defineStore('browse', () => {
     pages.value = new Map();
     total.value = 0;
     selection.value = new Set();
+    pendingSelection.value = new Set();
     resets.value++;
     ensure(0, 0);
   }
@@ -156,6 +157,9 @@ export const useBrowseStore = defineStore('browse', () => {
 
   const selection = ref(new Set<string>());
   const selectedIds = computed(() => [...selection.value]);
+  /** The pending rows picked, by key. Tracks and pending rows aren't picked together. */
+  const pendingSelection = ref(new Set<string>());
+  const selectedPending = computed(() => pendingRows.value.filter((row) => pendingSelection.value.has(row.key)));
   const focus = ref<Focus | null>(null);
   /** Something to tell the user about the last thing they did. */
   const notice = ref<string | null>(null);
@@ -165,7 +169,46 @@ export const useBrowseStore = defineStore('browse', () => {
 
   function showPending(next: Focus) {
     selection.value = new Set();
+    pendingSelection.value = new Set([next.kind === 'entry' ? `entry:${next.index}` : `job:${next.id}`]);
     focus.value = next;
+  }
+
+  /** Picks tracks, which lets go of any pending rows. */
+  function selectTracks(ids: Iterable<string>) {
+    pendingSelection.value = new Set();
+    focus.value = null;
+    selection.value = new Set(ids);
+  }
+
+  /** Picks pending rows, which lets go of any tracks. One row alone shows its details. */
+  function selectPending(keys: Set<string>) {
+    selection.value = new Set();
+    pendingSelection.value = keys;
+    const only = keys.size === 1 ? pendingRows.value.find((row) => keys.has(row.key)) : undefined;
+    focus.value = !only
+      ? null
+      : only.entry
+        ? { kind: 'entry', index: only.entry.index }
+        : { kind: 'job', id: only.job!.id };
+  }
+
+  /** Picks everything of the kind already picked: every pending row, or every track of the list. */
+  async function selectAll() {
+    if (pendingSelection.value.size || pendingOnly.value) {
+      selectPending(new Set(pendingRows.value.map((row) => row.key)));
+      return;
+    }
+    try {
+      selectTracks(await collection.trackIds(query.value));
+    } catch (e) {
+      listError.value = String(e);
+    }
+  }
+
+  function clearSelection() {
+    selection.value = new Set();
+    pendingSelection.value = new Set();
+    focus.value = null;
   }
 
   // --- Tracks on their way ----------------------------------------------------
@@ -260,6 +303,12 @@ export const useBrowseStore = defineStore('browse', () => {
     loadedTrack,
     selection,
     selectedIds,
+    pendingSelection,
+    selectedPending,
+    selectTracks,
+    selectPending,
+    selectAll,
+    clearSelection,
     focus,
     focused,
     notice,

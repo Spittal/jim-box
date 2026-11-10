@@ -157,7 +157,7 @@ async function remove() {
       <h3 class="section-label">
         {{ job.alreadyInLibrary ? 'Already in your library' : 'Saved to' }}
       </h3>
-      <p class="font-mono text-xs break-all text-text-muted select-text">{{ job.outputPath }}</p>
+      <p class="font-mono text-xs break-all text-text-muted">{{ job.outputPath }}</p>
     </div>
 
     <!-- YouTube Music -->

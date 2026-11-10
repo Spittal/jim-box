@@ -116,6 +116,7 @@ pub fn run() {
             commands::collection::open_collection,
             commands::collection::collection_state,
             commands::collection::collection_tracks,
+            commands::collection::collection_track_ids,
             commands::collection::find_in_collection,
             commands::collection::edit_collection,
             commands::collection::import_to_collection,

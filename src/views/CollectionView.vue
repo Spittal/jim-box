@@ -96,8 +96,8 @@ const buttonClass =
       <PlaylistTree />
       <TrackList @open="opened = $event" />
       <FetchPanel v-if="focused" />
-      <CollectionTrackDetail v-else-if="detailTrack" :track="detailTrack" @close="selection = new Set()" />
-      <FixPanel v-else-if="identified.length" :items="identified" @close="selection = new Set()" />
+      <CollectionTrackDetail v-else-if="detailTrack" :track="detailTrack" @close="browse.clearSelection()" />
+      <FixPanel v-else-if="identified.length" :items="identified" @close="browse.clearSelection()" />
     </div>
   </div>
 </template>

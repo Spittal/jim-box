@@ -340,6 +340,13 @@ impl Collection {
         Ok(view)
     }
 
+    /// The id of every track in a list, in its order: for selecting them all.
+    pub fn track_ids(&self, query: &TrackQuery) -> AppResult<Vec<String>> {
+        let loaded = self.loaded()?;
+        let view = self.open_view(&loaded, query)?;
+        Ok(view.window(0, view.len()).iter().map(|&row| loaded.index.ids[row as usize].to_string()).collect())
+    }
+
     /// `limit` rows of a list from `offset`.
     pub fn tracks(&self, query: &TrackQuery, offset: usize, limit: usize) -> AppResult<TrackPage> {
         let loaded = self.loaded()?;
@@ -393,6 +400,16 @@ pub(crate) mod tests {
         let collection = Collection::new(dir.path().join("backups"));
         collection.load_from(location).unwrap();
         (dir, collection)
+    }
+
+    #[test]
+    fn lists_every_id_of_a_list_in_its_order() {
+        let (_dir, collection) = fixture();
+        let q = query(Source::Collection, Sort::Title);
+        let ids = collection.track_ids(&q).unwrap();
+        let rows: Vec<String> = collection.tracks(&q, 0, 1000).unwrap().rows.into_iter().map(|r| r.id).collect();
+        assert_eq!(ids.len(), collection.status().unwrap().tracks);
+        assert_eq!(ids, rows);
     }
 
     #[test]

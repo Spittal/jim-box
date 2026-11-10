@@ -57,6 +57,12 @@ pub fn collection_tracks(
     collection.tracks(&query, offset, limit.min(1000))
 }
 
+/// The id of every track in a list, for selecting them all.
+#[tauri::command]
+pub fn collection_track_ids(collection: tauri::State<'_, Collection>, query: TrackQuery) -> AppResult<Vec<String>> {
+    collection.track_ids(&query)
+}
+
 /// A track to look for in the collection by name.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct TrackName {

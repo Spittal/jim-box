@@ -95,6 +95,12 @@ export const useJobsStore = defineStore('jobs', () => {
   const redownload = (id: string) => invoke('redownload_job', { id });
   const cancel = (id: string) => invoke('cancel_job', { id });
   const remove = (id: string) => invoke('remove_job', { id });
+  /** Gives up on a fetch: stops it if it's running, and forgets it. */
+  async function discard(id: string) {
+    const job = byId(id);
+    if (job && isActive(job)) await cancel(id);
+    await remove(id);
+  }
   const downloadCandidate = (id: string, index: number) =>
     invoke('download_candidate', { id, index });
   /** Downloads the track from YouTube Music instead, as lossy AAC. */
@@ -119,6 +125,7 @@ export const useJobsStore = defineStore('jobs', () => {
     redownload,
     cancel,
     remove,
+    discard,
     downloadCandidate,
     downloadFromYoutube,
   };

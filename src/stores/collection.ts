@@ -66,6 +66,9 @@ export const useCollectionStore = defineStore('collection', () => {
   const tracks = (query: TrackQuery, offset: number, limit: number) =>
     invoke<TrackPage>('collection_tracks', { query, offset, limit });
 
+  /** The id of every track in a list, in its order. */
+  const trackIds = (query: TrackQuery) => invoke<string[]>('collection_track_ids', { query });
+
   /**
    * Makes one change to rekordbox's library. Returns the id of what it
    * created, if anything; on failure sets `error` and returns undefined.
@@ -153,6 +156,7 @@ export const useCollectionStore = defineStore('collection', () => {
     open,
     changed,
     tracks,
+    trackIds,
     edit,
     importPaths,
     analyse,

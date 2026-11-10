@@ -9,7 +9,7 @@ import { useBrowseStore } from '@/stores/browse';
  * sources found for it, or, for a Spotify track with none, picking its match.
  */
 const browse = useBrowseStore();
-const { focused, focus } = storeToRefs(browse);
+const { focused } = storeToRefs(browse);
 </script>
 
 <template>
@@ -18,12 +18,12 @@ const { focused, focus } = storeToRefs(browse);
       <button
         class="rounded px-2 py-0.5 text-sm text-text-muted transition-colors hover:bg-surface-2 hover:text-text-primary"
         title="Close"
-        @click="focus = null"
+        @click="browse.clearSelection()"
       >
         ✕
       </button>
     </div>
-    <JobDetail v-if="focused.job" :key="focused.job.id" :job="focused.job" @removed="focus = null" />
+    <JobDetail v-if="focused.job" :key="focused.job.id" :job="focused.job" @removed="browse.clearSelection()" />
     <PlaylistEntryPicker v-else-if="focused.entry" :key="focused.entry.index" :entry="focused.entry" />
   </aside>
 </template>

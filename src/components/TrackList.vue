@@ -22,7 +22,7 @@ const emit = defineEmits<{ open: [track: CollectionTrack] }>();
 const store = useCollectionStore();
 const { analysis } = storeToRefs(store);
 const browse = useBrowseStore();
-const { sort, descending, search, total, listError, selection, selectedIds, pendingRows, pendingOnly, focus, inPlaylist } =
+const { sort, descending, search, total, listError, selection, selectedIds, pendingRows, pendingSelection, pendingOnly, inPlaylist } =
   storeToRefs(browse);
 const jobs = useJobsStore();
 const library = useLibraryStore();
@@ -77,6 +77,16 @@ onUnmounted(() => resizeObserver.disconnect());
 
 // --- Selection --------------------------------------------------------------
 
+/**
+ * Shift- and ⌘-clicks pick rows; they don't select text. Without this, WebKit
+ * stretches a text selection from wherever the caret last was to the click.
+ */
+function keepTextUnselected(event: MouseEvent) {
+  if (!event.shiftKey && !event.metaKey) return;
+  event.preventDefault();
+  window.getSelection()?.removeAllRanges();
+}
+
 /** Where a shift-click's range starts. */
 let anchor: number | null = null;
 
@@ -95,20 +105,30 @@ function clickRow(index: number, track: CollectionTrack, event: MouseEvent) {
     next.add(track.id);
     anchor = index;
   }
-  selection.value = next;
-  focus.value = null;
+  browse.selectTracks(next);
 }
 
 // --- Tracks on their way ----------------------------------------------------
 
-function openPending(row: PendingRow) {
-  browse.showPending(row.entry ? { kind: 'entry', index: row.entry.index } : { kind: 'job', id: row.job!.id });
-}
+/** Where a shift-click's range of pending rows starts. */
+let pendingAnchor: string | null = null;
 
-function isFocused(row: PendingRow): boolean {
-  const at = focus.value;
-  if (!at) return false;
-  return at.kind === 'entry' ? row.entry?.index === at.index : row.job?.id === at.id;
+/** Picks pending rows as tracks are picked: ⌘ adds or drops one, shift takes a range. */
+function clickPending(row: PendingRow, event?: MouseEvent) {
+  const rows = pendingRows.value;
+  const next = new Set(event?.metaKey || event?.shiftKey ? pendingSelection.value : []);
+  const from = rows.findIndex((r) => r.key === pendingAnchor);
+  if (event?.shiftKey && from !== -1) {
+    const to = rows.indexOf(row);
+    for (let i = Math.min(from, to); i <= Math.max(from, to); i++) next.add(rows[i].key);
+  } else if (event?.metaKey && next.has(row.key)) {
+    next.delete(row.key);
+    pendingAnchor = row.key;
+  } else {
+    next.add(row.key);
+    pendingAnchor = row.key;
+  }
+  browse.selectPending(next);
 }
 
 const rowError = ref<{ key: string; message: string } | null>(null);
@@ -135,7 +155,7 @@ const reorderable = computed(
 
 function dragTrack(event: DragEvent, track: CollectionTrack) {
   // Dragging an unselected row drags just that row.
-  if (!selection.value.has(track.id)) selection.value = new Set([track.id]);
+  if (!selection.value.has(track.id)) browse.selectTracks([track.id]);
   startDrag(event, { kind: 'tracks', ids: selectedIds.value });
 }
 
@@ -190,8 +210,9 @@ const smallButtonClass =
     <p v-if="listError" class="error-box m-4">{{ listError }}</p>
     <div
       ref="scroller"
-      class="min-h-0 flex-1 overflow-y-auto"
+      class="min-h-0 flex-1 overflow-y-auto select-none"
       @scroll.passive="onScroll"
+      @mousedown="keepTextUnselected"
       @dragover="overRow($event, total)"
       @drop.prevent="dropOnRow(total)"
     >
@@ -200,9 +221,9 @@ const smallButtonClass =
         v-for="row in pendingRows"
         :key="row.key"
         class="flex cursor-default items-center gap-3 px-4 text-xs text-text-secondary"
-        :class="isFocused(row) ? 'bg-surface-2' : 'hover:bg-surface-1'"
+        :class="pendingSelection.has(row.key) ? 'bg-surface-2' : 'hover:bg-surface-1'"
         :style="{ height: `${ROW_HEIGHT}px` }"
-        @click="openPending(row)"
+        @click="clickPending(row, $event)"
       >
         <span class="w-1.5 shrink-0" />
         <span class="w-10 shrink-0 text-right font-mono text-text-muted" title="Not in the collection yet">↓</span>
@@ -253,7 +274,7 @@ const smallButtonClass =
           </template>
           <template v-else>
             <span class="min-w-0 flex-1 truncate text-text-muted">On Spotify · no confident match</span>
-            <button :class="smallButtonClass" title="Pick the right version yourself" @click.stop="openPending(row)">
+            <button :class="smallButtonClass" title="Pick the right version yourself" @click.stop="clickPending(row)">
               Find match
             </button>
           </template>
