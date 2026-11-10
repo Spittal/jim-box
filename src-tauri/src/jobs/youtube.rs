@@ -144,12 +144,12 @@ async fn run(app: &AppHandle, id: Uuid) -> AppResult<()> {
     let _ = std::fs::remove_dir_all(&staging);
     let dest = dest?;
     info!("Job {id} completed from YouTube Music: {}", dest.display());
-    let playlist = store.update(app, id, |j| {
+    let playlist_id = store.update(app, id, |j| {
         j.status = JobStatus::Completed;
         j.output_path = Some(dest.clone());
-        j.playlist.clone()
+        j.playlist_id.clone()
     })?;
-    let arrival = crate::rekordbox::Arrival { path: dest, replaces: None, playlist };
+    let arrival = crate::rekordbox::Arrival { path: dest, playlist_id, ..Default::default() };
     crate::ingest::arrived(app, vec![arrival]).await;
     Ok(())
 }

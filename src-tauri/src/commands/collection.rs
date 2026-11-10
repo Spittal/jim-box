@@ -57,6 +57,24 @@ pub fn collection_tracks(
     collection.tracks(&query, offset, limit.min(1000))
 }
 
+/// A track to look for in the collection by name.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct TrackName {
+    pub title: String,
+    pub artist: String,
+}
+
+/// For each track, the id of the collection track with that title and
+/// artist (compared loosely), if there is one.
+#[tauri::command]
+pub async fn find_in_collection(app: AppHandle, tracks: Vec<TrackName>) -> AppResult<Vec<Option<String>>> {
+    library::blocking(move || {
+        let wanted: Vec<(&str, &str)> = tracks.iter().map(|t| (t.title.as_str(), t.artist.as_str())).collect();
+        Ok(app.state::<Collection>().find_tracks(&wanted))
+    })
+    .await
+}
+
 /// Makes one change to rekordbox's library. Refused while rekordbox is open.
 #[tauri::command]
 pub async fn edit_collection(app: AppHandle, edit: Edit) -> AppResult<EditOutcome> {

@@ -83,7 +83,7 @@ pub async fn change_music_dir(app: &AppHandle, new_dir: PathBuf) -> AppResult<Re
         .into_iter()
         .filter_map(|(_, old)| {
             let new = new_dir.join(old.strip_prefix(&old_dir).ok()?);
-            new.is_file().then_some(Arrival { path: new, replaces: Some(old), playlist: None })
+            new.is_file().then_some(Arrival { path: new, replaces: Some(old), ..Default::default() })
         })
         .collect();
     ingest::arrived(app, followed).await;

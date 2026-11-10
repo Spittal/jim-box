@@ -128,9 +128,9 @@ pub struct Job {
     /// Completed without downloading because `output_path` already had this track.
     #[serde(default)]
     pub already_in_library: bool,
-    /// A rekordbox playlist to add the track to once it's in the collection.
+    /// The rekordbox playlist (its id) the track joins once it's in the collection.
     #[serde(default)]
-    pub playlist: Option<String>,
+    pub playlist_id: Option<String>,
     pub error: Option<String>,
     #[serde(default)]
     pub source: JobSource,
@@ -158,7 +158,7 @@ impl Job {
             output_path: None,
             replaces,
             already_in_library: false,
-            playlist: None,
+            playlist_id: None,
             error: None,
             source: JobSource::Soulseek,
             youtube: None,

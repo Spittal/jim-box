@@ -64,7 +64,7 @@ async fn run_apply(app: &AppHandle, ids: Vec<Uuid>) {
             app.state::<JobStore>().file_moved(app, &item.path, dest, &proposal.metadata);
             // The track follows its file and picks up the new tags. Should
             // rekordbox have been opened meanwhile, this waits its turn.
-            let arrival = Arrival { path: dest.clone(), replaces: Some(item.path.clone()), playlist: None };
+            let arrival = Arrival { path: dest.clone(), replaces: Some(item.path.clone()), ..Default::default() };
             ingest::arrived(app, vec![arrival]).await;
         }
         store.update_item(app, id, |i| match result {

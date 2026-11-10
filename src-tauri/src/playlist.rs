@@ -1,10 +1,12 @@
-//! Bulk finding from a public Spotify playlist: match each entry to a search
-//! result (see [`autotag::find_track`]), which the user can then queue as
-//! download jobs. Medium-confidence matches are left for the user to check.
+//! Spotify playlists brought into rekordbox: a public playlist becomes a
+//! rekordbox playlist holding the tracks the collection already has. Each
+//! other entry is matched to a search result (see [`autotag::find_track`])
+//! so it can be fetched; medium-confidence matches are left for the user to
+//! check.
 //!
-//! Matches are cached per playlist, including ones the user picked by hand.
-//! Reloading a playlist re-reads its track list and only matches new or
-//! unmatched tracks.
+//! The link between the two playlists, and the matches (including ones the
+//! user picked by hand), are saved. Importing a playlist again re-reads its
+//! track list and only matches new or unmatched tracks.
 
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
@@ -15,12 +17,12 @@ use crate::autotag::{self, TrackHint};
 use crate::error::{AppError, AppResult};
 use crate::jobs::JobStore;
 use crate::persistence;
-use crate::rekordbox::Collection;
+use crate::rekordbox::{Collection, Edit, PlaylistKind};
 use crate::sources::{Sources, SpotifyTrack};
-use crate::state::{now_ms, Confidence, TrackRequest};
+use crate::state::{now_ms, Confidence, Job, TrackRequest};
 
-/// Playlists kept in the cache, most recently loaded first.
-const MAX_CACHED: usize = 20;
+/// Playlists remembered, most recently imported first.
+const MAX_SAVED: usize = 200;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -42,34 +44,12 @@ pub struct PlaylistMatch {
     /// When the track list was last read from Spotify.
     #[serde(default)]
     pub loaded_at: u64,
+    /// The rekordbox playlist this one was brought into.
+    #[serde(default)]
+    pub rekordbox_id: Option<String>,
 }
 
-/// A cached playlist, for the recent playlists list.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PlaylistSummary {
-    pub id: String,
-    pub name: String,
-    pub cover_url: Option<String>,
-    pub tracks: usize,
-    pub matched: usize,
-    pub loaded_at: u64,
-}
-
-impl From<&PlaylistMatch> for PlaylistSummary {
-    fn from(p: &PlaylistMatch) -> Self {
-        Self {
-            id: p.id.clone(),
-            name: p.name.clone(),
-            cover_url: p.cover_url.clone(),
-            tracks: p.entries.len(),
-            matched: p.entries.iter().filter(|e| e.request.is_some()).count(),
-            loaded_at: p.loaded_at,
-        }
-    }
-}
-
-/// Cached playlist matches, persisted on every change.
+/// Saved Spotify playlists, persisted on every change.
 pub struct PlaylistStore(Mutex<Vec<PlaylistMatch>>);
 
 impl PlaylistStore {
@@ -77,18 +57,18 @@ impl PlaylistStore {
         Self(Mutex::new(persistence::load_playlists(app)))
     }
 
-    pub fn list(&self) -> Vec<PlaylistSummary> {
-        self.0.lock().expect("playlists lock poisoned").iter().map(PlaylistSummary::from).collect()
+    fn get(&self, id: &str) -> Option<PlaylistMatch> {
+        self.0.lock().expect("playlists lock poisoned").iter().find(|p| p.id == id).cloned()
     }
 
-    pub fn get(&self, id: &str) -> AppResult<PlaylistMatch> {
+    /// The Spotify playlist brought into this rekordbox playlist, if any.
+    fn linked_to(&self, rekordbox_id: &str) -> Option<PlaylistMatch> {
         self.0
             .lock()
             .expect("playlists lock poisoned")
             .iter()
-            .find(|p| p.id == id)
+            .find(|p| p.rekordbox_id.as_deref() == Some(rekordbox_id))
             .cloned()
-            .ok_or_else(|| AppError::Validation("That playlist is no longer saved".into()))
     }
 
     /// Saves a playlist as the most recent.
@@ -96,7 +76,7 @@ impl PlaylistStore {
         let mut playlists = self.0.lock().expect("playlists lock poisoned");
         playlists.retain(|p| p.id != playlist.id);
         playlists.insert(0, playlist);
-        playlists.truncate(MAX_CACHED);
+        playlists.truncate(MAX_SAVED);
         persistence::save_playlists(app, &playlists);
     }
 
@@ -113,12 +93,6 @@ impl PlaylistStore {
         persistence::save_playlists(app, &playlists);
         Ok(())
     }
-
-    pub fn remove(&self, app: &AppHandle, id: &str) {
-        let mut playlists = self.0.lock().expect("playlists lock poisoned");
-        playlists.retain(|p| p.id != id);
-        persistence::save_playlists(app, &playlists);
-    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -128,13 +102,14 @@ struct PlaylistProgress {
     total: usize,
 }
 
-/// Reads a public playlist and matches its tracks, reusing cached matches for
+/// Reads a public playlist and matches its tracks, reusing saved matches for
 /// tracks seen before. Emits `playlist-progress`.
-pub async fn load(app: &AppHandle, input: &str) -> AppResult<PlaylistMatch> {
+async fn read(app: &AppHandle, input: &str) -> AppResult<PlaylistMatch> {
     let sources = app.state::<Sources>();
     let store = app.state::<PlaylistStore>();
     let playlist = sources.spotify.playlist(input).await?;
-    let cached = store.get(&playlist.id).map(|p| p.entries).unwrap_or_default();
+    let saved = store.get(&playlist.id);
+    let known = saved.as_ref().map(|p| p.entries.as_slice()).unwrap_or_default();
     let total = playlist.tracks.len();
 
     let mut entries = Vec::with_capacity(total);
@@ -142,7 +117,7 @@ pub async fn load(app: &AppHandle, input: &str) -> AppResult<PlaylistMatch> {
     for (done, track) in playlist.tracks.into_iter().enumerate() {
         let _ = app.emit("playlist-progress", PlaylistProgress { done, total });
         // Unmatched tracks are tried again: sources and matching improve.
-        if let Some(known) = cached.iter().find(|e| e.track == track && e.request.is_some()) {
+        if let Some(known) = known.iter().find(|e| e.track == track && e.request.is_some()) {
             entries.push(known.clone());
             reused += 1;
             continue;
@@ -160,7 +135,7 @@ pub async fn load(app: &AppHandle, input: &str) -> AppResult<PlaylistMatch> {
     let _ = app.emit("playlist-progress", PlaylistProgress { done: total, total });
 
     let matched = entries.iter().filter(|e| e.request.is_some()).count();
-    info!("Playlist '{}': matched {matched} of {total} tracks ({reused} from cache)", playlist.name);
+    info!("Playlist '{}': matched {matched} of {total} tracks ({reused} from before)", playlist.name);
     let result = PlaylistMatch {
         id: playlist.id,
         name: playlist.name,
@@ -168,61 +143,133 @@ pub async fn load(app: &AppHandle, input: &str) -> AppResult<PlaylistMatch> {
         truncated: playlist.truncated,
         entries,
         loaded_at: now_ms(),
+        rekordbox_id: saved.and_then(|p| p.rekordbox_id),
     };
     store.put(app, result.clone());
     Ok(result)
 }
 
-/// What copying a playlist into rekordbox came to.
+/// A Spotify track that isn't in the collection yet.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PlaylistSync {
+pub struct MissingEntry {
+    /// Its place in the Spotify playlist.
+    pub index: usize,
+    #[serde(flatten)]
+    pub entry: PlaylistEntry,
+}
+
+/// A rekordbox playlist that came from Spotify, and what it still lacks.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedPlaylist {
+    pub spotify_id: String,
     /// The rekordbox playlist, as text.
     pub playlist_id: String,
     pub name: String,
-    /// Tracks of the playlist that are in the collection, and so in it.
-    pub present: usize,
-    /// Tracks that aren't in the collection yet.
-    pub missing: usize,
+    /// Spotify only lists a playlist's first tracks without signing in.
+    pub truncated: bool,
+    pub loaded_at: u64,
+    /// Tracks on the Spotify playlist.
+    pub total: usize,
+    /// Those that aren't in the collection yet, in the playlist's order.
+    pub missing: Vec<MissingEntry>,
 }
 
-/// Puts the playlist's tracks that are in the collection into a rekordbox
-/// playlist of the same name, made if there isn't one, in the playlist's
-/// order. Tracks already in it stay put; nothing is removed.
-pub async fn sync_to_rekordbox(app: &AppHandle, id: &str) -> AppResult<PlaylistSync> {
-    let playlist = app.state::<PlaylistStore>().get(id)?;
+/// Brings a public Spotify playlist into rekordbox: a playlist of the same
+/// name, made if this one hasn't been brought in before, given the tracks
+/// that are in the collection, in the playlist's order. Tracks already in it
+/// stay put; nothing is removed. Refused while rekordbox is open.
+pub async fn import(app: &AppHandle, input: &str) -> AppResult<LinkedPlaylist> {
+    if rbl_db::is_rekordbox_running() {
+        return Err(AppError::Rekordbox(
+            "rekordbox is running. Quit it before bringing in a playlist, so the playlist can be made.".into(),
+        ));
+    }
+    let mut playlist = read(app, input).await?;
     let jobs = app.state::<JobStore>().list();
-    let name = playlist.name.clone();
-    let work_app = app.clone();
-    crate::library::blocking(move || {
+    let (work_app, work) = (app.clone(), playlist.clone());
+    let (rekordbox_id, present) = crate::library::blocking(move || {
         let collection = work_app.state::<Collection>();
         // Read first: a track is found by where its download landed, else by name.
         collection.reload()?;
+        let track_ids: Vec<String> = locate(&collection, &jobs, &work.entries).into_iter().flatten().collect();
+        let still_there = work.rekordbox_id.filter(|id| {
+            collection.playlists().is_ok_and(|nodes| nodes.iter().any(|n| n.id == *id && n.kind == PlaylistKind::Playlist))
+        });
+        let id = match still_there {
+            Some(id) => {
+                collection.edit(Edit::AddTracks { playlist_id: id.clone(), track_ids: track_ids.clone() })?;
+                id
+            }
+            None => collection.add_to_named_playlist(&work.name, &track_ids)?,
+        };
+        Ok((id, track_ids.len()))
+    })
+    .await?;
+
+    info!("Playlist '{}' → rekordbox: {present} of {} tracks are in the collection", playlist.name, playlist.entries.len());
+    playlist.rekordbox_id = Some(rekordbox_id.clone());
+    app.state::<PlaylistStore>().put(app, playlist);
+    let _ = app.emit("collection-changed", app.state::<crate::ingest::ArrivalQueue>().waiting());
+    linked(app, rekordbox_id)
+        .await?
+        .ok_or_else(|| AppError::Validation("The playlist couldn't be saved".into()))
+}
+
+/// The Spotify playlist behind a rekordbox playlist, if it came from one,
+/// with the tracks the collection still lacks.
+pub async fn linked(app: &AppHandle, rekordbox_id: String) -> AppResult<Option<LinkedPlaylist>> {
+    let Some(playlist) = app.state::<PlaylistStore>().linked_to(&rekordbox_id) else {
+        return Ok(None);
+    };
+    let jobs = app.state::<JobStore>().list();
+    let work_app = app.clone();
+    crate::library::blocking(move || {
+        let found = locate(&work_app.state::<Collection>(), &jobs, &playlist.entries);
         let total = playlist.entries.len();
-        let track_ids: Vec<String> = playlist
+        let missing = playlist
             .entries
-            .iter()
-            .filter_map(|entry| {
-                let downloaded = entry.request.as_ref().and_then(|request| {
-                    jobs.iter()
-                        .filter(|job| same_track(&job.request, request))
-                        .filter_map(|job| job.output_path.as_deref())
-                        .find_map(|path| collection.track_at(path))
-                });
-                downloaded.or_else(|| {
-                    let artist = entry.track.artists.first().map(String::as_str).unwrap_or_default();
-                    collection.find_track(&entry.track.title, artist)
-                })
-            })
+            .into_iter()
+            .zip(found)
+            .enumerate()
+            .filter(|(_, (_, found))| found.is_none())
+            .map(|(index, (entry, _))| MissingEntry { index, entry })
             .collect();
-        let playlist_id = collection.add_to_named_playlist(&playlist.name, &track_ids)?;
-        Ok(PlaylistSync { playlist_id, name: playlist.name, present: track_ids.len(), missing: total - track_ids.len() })
+        Ok(Some(LinkedPlaylist {
+            spotify_id: playlist.id,
+            playlist_id: rekordbox_id,
+            name: playlist.name,
+            truncated: playlist.truncated,
+            loaded_at: playlist.loaded_at,
+            total,
+            missing,
+        }))
     })
     .await
-    .inspect(|sync| {
-        info!("Playlist '{name}' → rekordbox: {} tracks, {} not in the collection", sync.present, sync.missing);
-        let _ = app.emit("collection-changed", app.state::<crate::ingest::ArrivalQueue>().waiting());
-    })
+}
+
+/// The collection track each entry is, where it's there: found by where its
+/// download landed, else by title and artist.
+fn locate(collection: &Collection, jobs: &[Job], entries: &[PlaylistEntry]) -> Vec<Option<String>> {
+    let names: Vec<(&str, &str)> = entries
+        .iter()
+        .map(|e| (e.track.title.as_str(), e.track.artists.first().map(String::as_str).unwrap_or_default()))
+        .collect();
+    let by_name = collection.find_tracks(&names);
+    entries
+        .iter()
+        .zip(by_name)
+        .map(|(entry, by_name)| {
+            let downloaded = entry.request.as_ref().and_then(|request| {
+                jobs.iter()
+                    .filter(|job| same_track(&job.request, request))
+                    .filter_map(|job| job.output_path.as_deref())
+                    .find_map(|path| collection.track_at(path))
+            });
+            downloaded.or(by_name)
+        })
+        .collect()
 }
 
 /// Whether two search results are the same track (as the frontend's `trackKey`).

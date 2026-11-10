@@ -23,6 +23,9 @@ use crate::state::{now_ms, Job, JobStatus, TrackMetadata};
 /// again don't hold a slot.
 const MAX_CONCURRENT_JOBS: usize = 3;
 
+/// Completed jobs kept across launches, newest first.
+const MAX_COMPLETED_JOBS: usize = 2000;
+
 /// All download jobs, newest first. Every change is emitted to the frontend as
 /// `job-updated`; status changes are also persisted.
 pub struct JobStore {
@@ -36,6 +39,18 @@ impl JobStore {
     /// marked failed so it can be retried.
     pub fn load(app: &AppHandle) -> Self {
         let mut jobs = persistence::load_jobs(app);
+        // Nothing lists finished downloads to clear by hand: cancelled ones
+        // go, and only the newest completed ones stay, as the record of
+        // where a track's file came from.
+        let mut completed = 0;
+        jobs.retain(|j| match j.status {
+            JobStatus::Cancelled => false,
+            JobStatus::Completed => {
+                completed += 1;
+                completed <= MAX_COMPLETED_JOBS
+            }
+            _ => true,
+        });
         for job in jobs.iter_mut().filter(|j| !j.status.is_finished()) {
             job.status = JobStatus::Failed;
             job.error = Some("Interrupted when the app closed".into());
@@ -96,24 +111,6 @@ impl JobStore {
         let _ = app.emit("job-removed", id);
         self.persist(app);
         Ok(())
-    }
-
-    /// Removes every finished job except failures that can still be retried.
-    pub fn clear_finished(&self, app: &AppHandle) {
-        let removed: Vec<Uuid> = {
-            let mut jobs = self.jobs.lock().expect("jobs lock poisoned");
-            let removed = jobs
-                .iter()
-                .filter(|j| matches!(j.status, JobStatus::Completed | JobStatus::Cancelled))
-                .map(|j| j.id)
-                .collect();
-            jobs.retain(|j| !matches!(j.status, JobStatus::Completed | JobStatus::Cancelled));
-            removed
-        };
-        for id in removed {
-            let _ = app.emit("job-removed", id);
-        }
-        self.persist(app);
     }
 
     pub fn has_running(&self) -> bool {

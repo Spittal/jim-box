@@ -313,13 +313,13 @@ fn add_new(into: &mut Vec<Candidate>, candidates: Vec<Candidate>) {
 /// Finishes a job with the copy already on disk, which joins the collection
 /// (and the job's playlist) if it isn't there yet.
 async fn complete_with_existing(app: &AppHandle, id: Uuid, existing: PathBuf) -> AppResult<()> {
-    let playlist = app.state::<JobStore>().update(app, id, |j| {
+    let playlist_id = app.state::<JobStore>().update(app, id, |j| {
         j.status = JobStatus::Completed;
         j.output_path = Some(existing.clone());
         j.already_in_library = true;
-        j.playlist.clone()
+        j.playlist_id.clone()
     })?;
-    crate::ingest::arrived(app, vec![Arrival { path: existing, replaces: None, playlist }]).await;
+    crate::ingest::arrived(app, vec![Arrival { path: existing, playlist_id, ..Default::default() }]).await;
     Ok(())
 }
 
@@ -406,7 +406,7 @@ async fn try_candidate(app: &AppHandle, id: Uuid, client: &SlskdClient, index: u
         j.status = JobStatus::Completed;
         j.output_path = Some(dest.clone());
     })?;
-    let arrival = Arrival { path: dest, replaces: job.replaces, playlist: job.playlist };
+    let arrival = Arrival { path: dest, replaces: job.replaces, playlist: None, playlist_id: job.playlist_id };
     crate::ingest::arrived(app, vec![arrival]).await;
     Ok(())
 }

@@ -93,13 +93,12 @@ impl LibraryStore {
         let _ = app.emit("library-reset", self.snapshot());
     }
 
-    /// Forgets results the user is done with: everything that isn't a fix
-    /// still to review or being applied.
-    pub fn dismiss_settled(&self, app: &AppHandle) {
+    /// Forgets what identifying found for these items, unless it's being applied.
+    pub fn dismiss(&self, app: &AppHandle, ids: &[Uuid]) {
         self.items
             .lock()
             .expect("library lock poisoned")
-            .retain(|i| matches!(i.status, ItemStatus::Pending | ItemStatus::Matched | ItemStatus::Applying));
+            .retain(|i| i.status == ItemStatus::Applying || !ids.contains(&i.id));
         let _ = app.emit("library-reset", self.snapshot());
     }
 

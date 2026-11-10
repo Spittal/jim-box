@@ -29,10 +29,10 @@ pub fn cancel_library_task(app: AppHandle, store: State<'_, LibraryStore>) {
     store.cancel(&app);
 }
 
-/// Clears results that need nothing more: applied, already fine, no match.
+/// Forgets what identifying found for these items.
 #[tauri::command]
-pub fn dismiss_library_results(app: AppHandle, store: State<'_, LibraryStore>) {
-    store.dismiss_settled(&app);
+pub fn dismiss_library_items(app: AppHandle, store: State<'_, LibraryStore>, ids: Vec<Uuid>) {
+    store.dismiss(&app, &ids);
 }
 
 #[tauri::command]

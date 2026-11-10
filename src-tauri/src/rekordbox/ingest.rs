@@ -20,7 +20,7 @@ const WALK_DEPTH: usize = 12;
 const WALK_ENTRIES: usize = 200_000;
 
 /// A file that has landed somewhere and belongs in the collection.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Arrival {
     pub path: PathBuf,
@@ -29,9 +29,12 @@ pub struct Arrival {
     /// new one.
     #[serde(default)]
     pub replaces: Option<PathBuf>,
-    /// A top-level playlist to add the track to, made if there isn't one.
+    /// A top-level playlist to add the track to, by name, made if there isn't one.
     #[serde(default)]
     pub playlist: Option<String>,
+    /// A playlist to add the track to, by id. Skipped if it has since been deleted.
+    #[serde(default)]
+    pub playlist_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -113,23 +116,33 @@ impl Collection {
         })
     }
 
-    /// The track with this title and artist, compared loosely (case,
-    /// accents and punctuation aside).
-    pub fn find_track(&self, title: &str, artist: &str) -> Option<String> {
-        let loaded = self.loaded().ok()?;
+    /// For each (title, artist), the track with that title and artist,
+    /// compared loosely (case, accents and punctuation aside). One pass over
+    /// the collection.
+    pub fn find_tracks(&self, wanted: &[(&str, &str)]) -> Vec<Option<String>> {
+        let mut found = vec![None; wanted.len()];
+        let Ok(loaded) = self.loaded() else { return found };
         let index = &loaded.index;
-        let (title, artist) = (normalize(title), normalize(artist));
-        if title.is_empty() {
-            return None;
-        }
-        (0..index.len())
-            .find(|&row| {
-                normalize(index.title.get(row)) == title && {
-                    let theirs = normalize(index.artist_name(row as u32));
-                    artist.is_empty() || theirs == artist || theirs.contains(&artist) || artist.contains(&theirs)
+        let wanted: Vec<(String, String)> = wanted.iter().map(|(t, a)| (normalize(t), normalize(a))).collect();
+        let mut left = wanted.iter().filter(|(title, _)| !title.is_empty()).count();
+        for row in 0..index.len() {
+            if left == 0 {
+                break;
+            }
+            let title = normalize(index.title.get(row));
+            let mut theirs: Option<String> = None;
+            for (at, (wanted_title, artist)) in wanted.iter().enumerate() {
+                if found[at].is_some() || wanted_title.is_empty() || *wanted_title != title {
+                    continue;
                 }
-            })
-            .map(|row| index.ids[row].to_string())
+                let theirs = theirs.get_or_insert_with(|| normalize(index.artist_name(row as u32)));
+                if artist.is_empty() || theirs == artist || theirs.contains(artist.as_str()) || artist.contains(theirs.as_str()) {
+                    found[at] = Some(index.ids[row].to_string());
+                    left -= 1;
+                }
+            }
+        }
+        found
     }
 }
 
@@ -162,7 +175,20 @@ fn take_in_one(writer: &mut Writer, arrival: &Arrival, playlists: &mut HashMap<S
         let playlist = named_playlist(writer, name, playlists)?;
         writer.add_tracks(&playlist, std::slice::from_ref(&id)).map_err(rekordbox_err)?;
     }
+    if let Some(playlist) = arrival.playlist_id.as_deref().filter(|p| is_plain_playlist(writer, p)) {
+        writer.add_tracks(playlist, std::slice::from_ref(&id)).map_err(rekordbox_err)?;
+    }
     Ok(id)
+}
+
+/// Whether `id` is a playlist that can be given tracks: not a folder, an
+/// intelligent playlist, or gone.
+fn is_plain_playlist(writer: &Writer, id: &str) -> bool {
+    writer
+        .library()
+        .connection()
+        .query_row("SELECT COUNT(*) FROM djmdPlaylist WHERE ID = ?1 AND Attribute = 0", [id], |r| r.get::<_, i64>(0))
+        .is_ok_and(|n| n > 0)
 }
 
 /// The top-level playlist called `name`, made if there isn't one. `known`
@@ -260,7 +286,7 @@ mod tests {
         let (one, two) = (music.join("one.wav"), music.join("two.wav"));
         wav(&one);
         wav(&two);
-        let arrival = |path: &Path| Arrival { path: path.to_path_buf(), replaces: None, playlist: Some("From Spotify".into()) };
+        let arrival = |path: &Path| Arrival { path: path.to_path_buf(), replaces: None, playlist: Some("From Spotify".into()), playlist_id: None };
 
         let taken = collection.take_in(&[arrival(&one), arrival(&music.join("missing.wav"))]).unwrap();
         assert!(taken[0].is_ok() && taken[1].is_err());
@@ -272,6 +298,24 @@ mod tests {
         assert_eq!((made[0].kind, made[0].count), (PlaylistKind::Playlist, Some(2)));
         let ids = [collection.track_at(&one).unwrap(), collection.track_at(&two).unwrap()];
         assert_eq!(members(&collection, &made[0].id), ids);
+    }
+
+    #[test]
+    fn arrivals_join_a_playlist_by_id_while_it_exists() {
+        let (dir, collection) = fixture();
+        let music = dir.path().join("music");
+        let (one, two) = (music.join("one.wav"), music.join("two.wav"));
+        wav(&one);
+        wav(&two);
+        let list = collection.add_to_named_playlist("Target", &[]).unwrap();
+
+        let arrival = Arrival { path: one, playlist_id: Some(list.clone()), ..Default::default() };
+        let id = collection.take_in(&[arrival]).unwrap().remove(0).expect("imported");
+        assert_eq!(members(&collection, &list), vec![id]);
+
+        // A playlist that has gone doesn't hold the file up.
+        let arrival = Arrival { path: two, playlist_id: Some("987654321".into()), ..Default::default() };
+        assert!(collection.take_in(&[arrival]).unwrap()[0].is_ok());
     }
 
     #[test]
@@ -287,7 +331,7 @@ mod tests {
         std::fs::remove_file(&old).unwrap();
         wav(&new);
         let taken = collection
-            .take_in(&[Arrival { path: new.clone(), replaces: Some(old.clone()), playlist: None }])
+            .take_in(&[Arrival { path: new.clone(), replaces: Some(old.clone()), ..Default::default() }])
             .unwrap();
         assert_eq!(taken, vec![Ok(id.clone())]);
         assert_eq!(collection.status().unwrap().tracks, tracks, "no second track");
@@ -312,13 +356,13 @@ mod tests {
 
         let (old, new) = (dir.path().join("music/old.wav"), dir.path().join("music/new.wav"));
         wav(&old);
-        let arrival = Arrival { path: old.clone(), replaces: None, playlist: Some("jim-box test".into()) };
+        let arrival = Arrival { path: old.clone(), replaces: None, playlist: Some("jim-box test".into()), playlist_id: None };
         let id = collection.take_in(&[arrival]).unwrap().remove(0).expect("imported");
         let after = collection.status().unwrap();
         assert_eq!((after.tracks, after.playlists), (before.tracks + 1, before.playlists + 1));
 
         std::fs::rename(&old, &new).unwrap();
-        let moved = Arrival { path: new.clone(), replaces: Some(old), playlist: None };
+        let moved = Arrival { path: new.clone(), replaces: Some(old), ..Default::default() };
         assert_eq!(collection.take_in(&[moved]).unwrap(), vec![Ok(id.clone())]);
         assert_eq!(collection.path_of(&id), Some(new));
         assert_eq!(collection.status().unwrap().tracks, before.tracks + 1);
@@ -345,8 +389,13 @@ mod tests {
     fn tracks_are_found_by_title_and_artist() {
         let (_dir, collection) = fixture();
         let row = collection.tracks(&query(Source::Collection, Sort::Title), 0, 1).unwrap().rows.remove(0);
-        assert_eq!(collection.find_track(&row.title.to_uppercase(), &row.artist), Some(row.id.clone()));
-        assert_eq!(collection.find_track(&row.title, ""), Some(row.id));
-        assert_eq!(collection.find_track("no such track anywhere", "nobody"), None);
+        let upper = row.title.to_uppercase();
+        let found = collection.find_tracks(&[
+            (upper.as_str(), row.artist.as_str()),
+            ("no such track anywhere", "nobody"),
+            (row.title.as_str(), ""),
+            ("", ""),
+        ]);
+        assert_eq!(found, vec![Some(row.id.clone()), None, Some(row.id), None]);
     }
 }

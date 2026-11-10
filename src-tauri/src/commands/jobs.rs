@@ -12,17 +12,17 @@ pub fn list_jobs(store: State<'_, JobStore>) -> Vec<Job> {
     store.list()
 }
 
-/// `playlist` names a rekordbox playlist the track joins once it's downloaded.
+/// `playlist_id` is a rekordbox playlist the track joins once it's downloaded.
 #[tauri::command]
 pub fn start_job(
     app: AppHandle,
     store: State<'_, JobStore>,
     track: TrackRequest,
     replaces: Option<PathBuf>,
-    playlist: Option<String>,
+    playlist_id: Option<String>,
 ) -> AppResult<Job> {
     let mut job = Job::new(track, replaces);
-    job.playlist = playlist.map(|name| name.trim().to_owned()).filter(|name| !name.is_empty());
+    job.playlist_id = playlist_id;
     store.insert(&app, job.clone());
     jobs::start(&app, job.id)?;
     Ok(job)
@@ -92,11 +92,6 @@ pub async fn youtube_tool() -> AppResult<YtDlpInfo> {
 #[tauri::command]
 pub fn remove_job(app: AppHandle, store: State<'_, JobStore>, id: Uuid) -> AppResult<()> {
     store.remove(&app, id)
-}
-
-#[tauri::command]
-pub fn clear_finished_jobs(app: AppHandle, store: State<'_, JobStore>) {
-    store.clear_finished(&app);
 }
 
 fn ensure_idle(store: &JobStore, id: Uuid) -> AppResult<()> {

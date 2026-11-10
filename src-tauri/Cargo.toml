@@ -1,7 +1,7 @@
 [package]
 name = "jim-box"
 version = "0.1.0"
-description = "Find and download lossless tracks via Soulseek, tagged with MusicBrainz metadata"
+description = "rekordbox library management, with search that finds lossless copies of tracks for it"
 edition = "2021"
 rust-version = "1.80"
 

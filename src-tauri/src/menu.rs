@@ -10,7 +10,7 @@ use tauri_plugin_opener::OpenerExt;
 use tracing::warn;
 
 /// Menu ids forwarded to the frontend, which owns navigation.
-const FRONTEND_COMMANDS: &[&str] = &["settings", "find", "go-search", "go-library", "go-downloads"];
+const FRONTEND_COMMANDS: &[&str] = &["settings", "find", "find-online"];
 
 pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let pkg = app.package_info();
@@ -19,7 +19,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .version(Some(pkg.version.to_string()))
         .copyright(app.config().bundle.copyright.clone())
         .comments(Some(
-            "Finds lossless copies of tracks on Soulseek and tags them from MusicBrainz.\n\
+            "Manages your rekordbox library, and finds lossless copies of tracks for it.\n\
              Soulseek access by slskd."
                 .to_string(),
         ))
@@ -45,6 +45,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
 
     let file_menu = SubmenuBuilder::new(app, "File")
         .item(&item("find", "Find…", "CmdOrCtrl+F")?)
+        .item(&item("find-online", "Find Online", "CmdOrCtrl+Shift+F")?)
         .separator()
         .close_window()
         .build()?;
@@ -59,13 +60,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .select_all()
         .build()?;
 
-    let view_menu = SubmenuBuilder::new(app, "View")
-        .item(&item("go-search", "Search", "CmdOrCtrl+1")?)
-        .item(&item("go-library", "Collection", "CmdOrCtrl+2")?)
-        .item(&item("go-downloads", "Downloads", "CmdOrCtrl+3")?)
-        .separator()
-        .fullscreen()
-        .build()?;
+    let view_menu = SubmenuBuilder::new(app, "View").fullscreen().build()?;
 
     let window_menu = SubmenuBuilder::new(app, "Window")
         .minimize()
