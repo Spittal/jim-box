@@ -1,4 +1,5 @@
-//! Soulseek password storage in the OS keychain. The password never touches
+//! Soulseek password storage in the OS keychain (the Keychain on macOS,
+//! Credential Manager on Windows). The password never touches
 //! disk in plain text; it's handed to slskd through its environment at launch.
 //!
 //! Dev builds are the exception: they're re-signed on every rebuild, so macOS
@@ -61,7 +62,6 @@ pub fn delete_password(username: &str) -> AppResult<()> {
 #[cfg(debug_assertions)]
 mod dev_file {
     use std::collections::HashMap;
-    use std::path::Path;
 
     use crate::error::AppResult;
 
@@ -78,9 +78,13 @@ mod dev_file {
     fn save(entries: &HashMap<String, String>) -> AppResult<()> {
         let json = serde_json::to_string_pretty(entries).expect("string map serializes");
         std::fs::write(PATH, json)?;
-        // Readable by this user only.
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(Path::new(PATH), std::fs::Permissions::from_mode(0o600))?;
+        // Readable by this user only. (Windows keeps `target/` under the
+        // user's profile, which other accounts can't read anyway.)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(std::path::Path::new(PATH), std::fs::Permissions::from_mode(0o600))?;
+        }
         Ok(())
     }
 

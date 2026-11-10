@@ -9,6 +9,7 @@ import { isActive, useJobsStore } from '@/stores/jobs';
 import { BUY_KIND_LABELS, useBuyLinks } from '@/composables/useBuyLinks';
 import { basename, formatBytes, formatSpeed } from '@/composables/useFormat';
 import { progressPercent } from '@/composables/useJobStatus';
+import { revealLabel } from '@/platform';
 import type { Job } from '@/types/job';
 
 const props = defineProps<{ job: Job }>();
@@ -122,7 +123,7 @@ async function remove() {
               class="rounded bg-surface-2 px-3 py-1 text-xs transition-colors hover:bg-surface-3"
               @click="run(() => revealItemInDir(job.outputPath!))"
             >
-              Show in Finder
+              {{ revealLabel }}
             </button>
             <button
               class="rounded px-3 py-1 text-xs text-text-muted transition-colors hover:text-status-error"

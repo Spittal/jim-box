@@ -5,6 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 import SettingsSection from '@/components/SettingsSection.vue';
 import { useSettingsStore } from '@/stores/settings';
 import { useSettingsSave } from '@/composables/useSettingsSave';
+import { isMac } from '@/platform';
 import type { CookieBrowser, YtDlpInfo } from '@/types/settings';
 
 const { settings } = storeToRefs(useSettingsStore());
@@ -13,7 +14,7 @@ const { error, save } = useSettingsSave();
 const tool = ref<YtDlpInfo | null>(null);
 const toolError = ref<string | null>(null);
 
-const browsers: { id: CookieBrowser; label: string }[] = [
+const allBrowsers: { id: CookieBrowser; label: string }[] = [
   { id: 'safari', label: 'Safari' },
   { id: 'chrome', label: 'Chrome' },
   { id: 'edge', label: 'Edge' },
@@ -21,6 +22,8 @@ const browsers: { id: CookieBrowser; label: string }[] = [
   { id: 'brave', label: 'Brave' },
   { id: 'vivaldi', label: 'Vivaldi' },
 ];
+// Safari is only on macOS (see COOKIE_BROWSERS in sources/youtube.rs).
+const browsers = allBrowsers.filter((b) => isMac || b.id !== 'safari');
 
 onMounted(async () => {
   try {
@@ -47,7 +50,8 @@ function setBrowser(value: string) {
       <p v-if="tool" class="font-mono text-xs text-text-muted select-text">{{ tool.version }} · {{ tool.path }}</p>
       <p v-else-if="toolError" class="error-box">{{ toolError }}</p>
       <p v-else class="text-xs text-text-muted">Looking for yt-dlp…</p>
-      <p class="text-xs text-text-muted">Homebrew keeps it up to date with <span class="font-mono">brew upgrade yt-dlp</span>.</p>
+      <p v-if="isMac" class="text-xs text-text-muted">Homebrew keeps it up to date with <span class="font-mono">brew upgrade yt-dlp</span>.</p>
+      <p v-else class="text-xs text-text-muted">winget keeps it up to date with <span class="font-mono">winget upgrade yt-dlp</span>.</p>
     </div>
 
     <label class="flex flex-col gap-1">
@@ -62,8 +66,14 @@ function setBrowser(value: string) {
       </select>
       <span class="text-xs text-text-muted">
         With YouTube Premium, pick the browser you're signed in to YouTube with to get 256 kbps instead of 128 kbps.
-        Chrome, Edge, Brave and Vivaldi make macOS ask to allow access to their keychain item; choose Always Allow.
-        Safari needs Full Disk Access for jim-box in System Settings.
+        <template v-if="isMac">
+          Chrome, Edge, Brave and Vivaldi make macOS ask to allow access to their keychain item; choose Always Allow.
+          Safari needs Full Disk Access for jim-box in System Settings.
+        </template>
+        <template v-else>
+          Firefox is the reliable choice on Windows: Chrome, Edge, Brave and Vivaldi lock their cookies to
+          themselves, so yt-dlp often can't read them.
+        </template>
       </span>
     </label>
   </SettingsSection>

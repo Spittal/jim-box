@@ -72,6 +72,12 @@ input, textarea {
   }
 }
 
+/* Windows draws wide, always-visible scrollbars; keep them slim and dark. */
+html[data-platform="windows"] {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-active) transparent;
+}
+
 /* Small uppercase heading above a section of a detail panel. */
 @utility section-label {
   @apply font-mono text-xs font-medium tracking-wide text-text-secondary uppercase;

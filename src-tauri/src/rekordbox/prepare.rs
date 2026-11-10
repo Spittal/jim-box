@@ -197,7 +197,7 @@ impl Collection {
             .row_of(track_id)
             .ok_or_else(|| AppError::Rekordbox("That track is no longer in the collection".into()))?
             as usize;
-        let path = PathBuf::from(loaded.index.folder_path.get(row));
+        let path = PathBuf::from(super::local_path(loaded.index.folder_path.get(row)));
         let length_secs = u64::from(loaded.index.length_sec[row]);
         drop(loaded);
         if !path.is_file() {

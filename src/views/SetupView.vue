@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import SoulseekCredentialsForm from '@/components/SoulseekCredentialsForm.vue';
+import { passwordStore } from '@/platform';
 </script>
 
 <template>
@@ -12,7 +13,7 @@ import SoulseekCredentialsForm from '@/components/SoulseekCredentialsForm.vue';
         to create one.
       </p>
       <p class="mt-2 text-xs text-text-muted">
-        Your password is stored in the macOS Keychain. Your music folder is shared back to the
+        Your password is stored in {{ passwordStore }}. Your music folder is shared back to the
         network by default, which you can change in Settings.
       </p>
       <div class="mt-6 rounded-lg border border-border bg-surface-1 p-5">

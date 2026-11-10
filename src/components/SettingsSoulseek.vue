@@ -5,6 +5,7 @@ import SettingsSection from '@/components/SettingsSection.vue';
 import SoulseekCredentialsForm from '@/components/SoulseekCredentialsForm.vue';
 import { useDaemonStore } from '@/stores/daemon';
 import { useSettingsStore } from '@/stores/settings';
+import { passwordStore } from '@/platform';
 
 const daemonStore = useDaemonStore();
 const { status } = storeToRefs(daemonStore);
@@ -52,7 +53,7 @@ async function reconnect() {
 
     <SettingsSection
       title="Account"
-      description="Entering a new username and password creates a Soulseek account automatically. The password is kept in the macOS Keychain."
+      :description="`Entering a new username and password creates a Soulseek account automatically. The password is kept in ${passwordStore}.`"
     >
       <SoulseekCredentialsForm
         submit-label="Save and reconnect"

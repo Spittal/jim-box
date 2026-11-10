@@ -1,7 +1,8 @@
 //! YouTube Music, through the yt-dlp command-line tool. jim-box uses the
-//! copy installed with Homebrew (`brew install yt-dlp`), which keeps yt-dlp
-//! and the JavaScript runtime YouTube needs up to date; YouTube changes often
-//! enough that a copy bundled with the app would soon stop working.
+//! copy installed with a package manager (Homebrew on macOS, winget or Scoop
+//! on Windows), which keeps yt-dlp and the JavaScript runtime YouTube needs
+//! up to date; YouTube changes often enough that a copy bundled with the app
+//! would soon stop working.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -12,9 +13,12 @@ use tokio::process::Command;
 
 use crate::error::{AppError, AppResult};
 
-/// Where package managers install command-line tools. Apps opened from the
-/// Finder don't get the shell's PATH, so these are searched explicitly.
-const TOOL_DIRS: [&str; 3] = ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"];
+const BINARY_NAME: &str = if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" };
+const INSTALL_HINT: &str = if cfg!(windows) {
+    "yt-dlp isn't installed. Install it with winget (winget install yt-dlp), then reopen jim-box"
+} else {
+    "yt-dlp isn't installed. Install it with Homebrew: brew install yt-dlp"
+};
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(90);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// AAC only, since rekordbox and most DJ software can't play Opus: 141 is
@@ -25,7 +29,10 @@ const FORMAT: &str = "141/140/bestaudio[ext=m4a]";
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Browsers yt-dlp can read YouTube cookies from, for Premium's 256 kbps stream.
-pub const COOKIE_BROWSERS: [&str; 6] = ["safari", "chrome", "edge", "firefox", "brave", "vivaldi"];
+#[cfg(target_os = "macos")]
+pub const COOKIE_BROWSERS: &[&str] = &["safari", "chrome", "edge", "firefox", "brave", "vivaldi"];
+#[cfg(not(target_os = "macos"))]
+pub const COOKIE_BROWSERS: &[&str] = &["chrome", "edge", "firefox", "brave", "vivaldi"];
 
 /// An upload, as yt-dlp describes it. Songs on YouTube Music have `track`,
 /// `artists` and `album`; ordinary videos only a title and channel.
@@ -90,9 +97,7 @@ pub struct YtDlp {
 impl YtDlp {
     /// Finds yt-dlp, or explains how to install it.
     pub fn locate(cookies_browser: Option<String>) -> AppResult<Self> {
-        let binary = find_binary().ok_or_else(|| {
-            AppError::Youtube("yt-dlp isn't installed. Install it with Homebrew: brew install yt-dlp".into())
-        })?;
+        let binary = find_binary().ok_or_else(|| AppError::Youtube(INSTALL_HINT.into()))?;
         Ok(Self { binary, cookies_browser })
     }
 
@@ -188,10 +193,16 @@ impl YtDlp {
 
     fn command(&self) -> Command {
         let mut cmd = Command::new(&self.binary);
+        crate::process::hide_console(&mut cmd);
+        // Windows would otherwise print file names in the system code page,
+        // which isn't the UTF-8 the output is read as.
+        if cfg!(windows) {
+            cmd.args(["--encoding", "utf-8"]);
+        }
         // yt-dlp needs Deno (or Node) for YouTube and uses ffmpeg to tidy up
         // downloaded files; both live next to it.
         let mut dirs: Vec<PathBuf> = self.binary.parent().map(Path::to_path_buf).into_iter().collect();
-        dirs.extend(TOOL_DIRS.iter().map(PathBuf::from));
+        dirs.extend(tool_dirs());
         if let Some(path) = std::env::var_os("PATH") {
             dirs.extend(std::env::split_paths(&path));
         }
@@ -222,12 +233,34 @@ fn find_binary() -> Option<PathBuf> {
     let path_dirs = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
         .unwrap_or_default();
-    TOOL_DIRS
-        .iter()
-        .map(PathBuf::from)
+    tool_dirs()
+        .into_iter()
         .chain(path_dirs)
-        .map(|dir| dir.join("yt-dlp"))
+        .map(|dir| dir.join(BINARY_NAME))
         .find(|path| path.is_file())
+}
+
+/// Where package managers install command-line tools. Apps opened from the
+/// Finder don't get the shell's PATH, so these are searched explicitly.
+#[cfg(not(windows))]
+fn tool_dirs() -> Vec<PathBuf> {
+    ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"].iter().map(PathBuf::from).collect()
+}
+
+/// Where winget, Scoop and Chocolatey put command-line tools. They're on the
+/// PATH too, but only for apps started after the install, so these are
+/// searched explicitly: yt-dlp is then found without logging out and back in.
+#[cfg(windows)]
+fn tool_dirs() -> Vec<PathBuf> {
+    let var = |name: &str| std::env::var_os(name).map(PathBuf::from);
+    [
+        var("LOCALAPPDATA").map(|dir| dir.join("Microsoft").join("WinGet").join("Links")),
+        var("USERPROFILE").map(|dir| dir.join("scoop").join("shims")),
+        var("ProgramData").map(|dir| dir.join("chocolatey").join("bin")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 fn parse_progress(line: &str) -> Option<DownloadProgress> {

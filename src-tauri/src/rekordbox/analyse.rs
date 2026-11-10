@@ -144,7 +144,7 @@ impl Collection {
         if loaded.location.is_real_install && rbl_db::is_rekordbox_running() {
             return Err(AppError::Rekordbox("rekordbox is running. Quit it before analysing.".into()));
         }
-        let path = PathBuf::from(loaded.index.folder_path.get(row));
+        let path = PathBuf::from(super::local_path(loaded.index.folder_path.get(row)));
         if !path.is_file() {
             return Err(AppError::Rekordbox(format!("Its file is missing: {}", path.display())));
         }

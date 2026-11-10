@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
+use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
@@ -22,6 +23,7 @@ use crate::state::SettingsState;
 
 const STATUS_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+const BINARY_NAME: &str = if cfg!(windows) { "slskd.exe" } else { "slskd" };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "state", rename_all = "camelCase")]
@@ -189,6 +191,7 @@ impl Daemon {
         let api_key = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
 
         let mut command = Command::new(&binary);
+        crate::process::hide_console(&mut command);
         command
             .arg("--app-dir")
             .arg(&paths.app_dir)
@@ -316,9 +319,9 @@ async fn forward_logs(stream: impl AsyncRead + Unpin, last_error: Arc<Mutex<Opti
 /// that was overwritten in place after it ran, as it caches the old signature.
 fn binary_path(app: &AppHandle) -> AppResult<PathBuf> {
     if cfg!(debug_assertions) {
-        return Ok(Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/slskd/slskd"));
+        return Ok(Path::new(env!("CARGO_MANIFEST_DIR")).join("resources").join("slskd").join(BINARY_NAME));
     }
-    Ok(app.path().resource_dir()?.join("slskd").join("slskd"))
+    Ok(app.path().resource_dir()?.join("slskd").join(BINARY_NAME))
 }
 
 fn free_port() -> AppResult<u16> {
@@ -334,14 +337,15 @@ fn kill_stale_process(pid_file: &Path) {
     else {
         return;
     };
-    let is_slskd = std::process::Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "comm="])
-        .output()
-        .map(|out| String::from_utf8_lossy(&out.stdout).trim().ends_with("slskd"))
-        .unwrap_or(false);
-    if is_slskd {
+    // The pid may have been reused by something else since; only kill slskd.
+    let system = System::new_with_specifics(RefreshKind::new().with_processes(ProcessRefreshKind::new()));
+    let stale = system.process(Pid::from_u32(pid)).filter(|process| {
+        let name = process.name().to_string_lossy().to_ascii_lowercase();
+        name == "slskd" || name == "slskd.exe"
+    });
+    if let Some(process) = stale {
         warn!("Killing stale slskd process {pid}");
-        let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+        process.kill();
         std::thread::sleep(Duration::from_millis(500));
     }
     let _ = std::fs::remove_file(pid_file);

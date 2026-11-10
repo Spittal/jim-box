@@ -17,6 +17,7 @@ import { useLibraryStore } from '@/stores/library';
 import { useSearchStore } from '@/stores/search';
 import { useUiStore } from '@/stores/ui';
 import { useEvents } from '@/composables/useEvents';
+import { commandKey, isMac } from '@/platform';
 
 const daemonStore = useDaemonStore();
 const jobsStore = useJobsStore();
@@ -53,22 +54,40 @@ function focusSearchBar() {
   input?.select();
 }
 
-const unlistenMenu = listen<string>('menu', (e) => {
+function runCommand(command: string) {
   if (needsCredentials.value) return;
-  if (e.payload === 'settings') ui.toggleSettings();
-  else if (e.payload === 'find') focusSearchBar();
-  else if (e.payload === 'find-online') {
+  if (command === 'settings') ui.toggleSettings();
+  else if (command === 'find') focusSearchBar();
+  else if (command === 'find-online') {
     focusSearchBar();
     useSearchStore().run(useBrowseStore().search);
   }
-});
+}
+
+const unlistenMenu = listen<string>('menu', (e) => runCommand(e.payload));
 onUnmounted(() => unlistenMenu.then((unlisten) => unlisten()));
+
+// Windows has no menu bar to carry the shortcuts, so the window takes them.
+// (On macOS the menu does, and handling them here too would run them twice.)
+function onShortcut(event: KeyboardEvent) {
+  if (!commandKey(event) || event.altKey) return;
+  const key = event.key.toLowerCase();
+  const command = key === ',' ? 'settings' : key === 'f' ? (event.shiftKey ? 'find-online' : 'find') : null;
+  if (!command) return;
+  // Also keeps the web view's own find bar from opening.
+  event.preventDefault();
+  runCommand(command);
+}
+if (!isMac) {
+  onMounted(() => window.addEventListener('keydown', onShortcut));
+  onUnmounted(() => window.removeEventListener('keydown', onShortcut));
+}
 </script>
 
 <template>
   <div class="flex h-full flex-col bg-surface-0">
-    <!-- Titlebar drag region, under the traffic lights -->
-    <div data-tauri-drag-region class="h-8 shrink-0" />
+    <!-- Titlebar drag region, under the traffic lights. Windows has a title bar of its own. -->
+    <div v-if="isMac" data-tauri-drag-region class="h-8 shrink-0" />
     <template v-if="loaded && !needsCredentials">
       <main class="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <div class="min-h-0 flex-1">

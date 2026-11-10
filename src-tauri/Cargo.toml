@@ -17,7 +17,7 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["macos-private-api"] }
+tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
@@ -36,6 +36,8 @@ lofty = "0.25"
 deunicode = "1"
 urlencoding = "2"
 trash = "5"
+# Same version rbl-db uses, to find an slskd left running by a crash.
+sysinfo = { version = "0.32", default-features = false, features = ["system"] }
 # rekordbox's library: the encrypted master.db and the in-memory index over
 # it, from rbxport (GPL-2.0-or-later). Pinned; upgrade deliberately.
 rbl-db = { git = "https://github.com/chrisle/rbxport", rev = "d0ff75b378ec85be891d9f3067ada1e82bad4cae" }

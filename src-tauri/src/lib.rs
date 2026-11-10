@@ -9,6 +9,7 @@ mod library;
 mod menu;
 mod persistence;
 mod playlist;
+mod process;
 mod rekordbox;
 mod rename;
 mod secrets;
@@ -16,6 +17,8 @@ mod slskd;
 mod sources;
 mod state;
 mod text;
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+mod tray;
 
 use std::fs::{File, OpenOptions};
 use std::path::Path;
@@ -36,7 +39,11 @@ pub fn run() {
     let context = tauri::generate_context!();
     rename::move_data_dirs(&context.config().identifier);
 
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "macos")]
+    let builder = builder.menu(menu::build);
+
+    let app = builder
         // A second copy would start its own slskd and fight over the Soulseek
         // login, so focus the existing window instead.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| menu::show_main(app)))
@@ -50,14 +57,15 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
-        .menu(menu::build)
         .on_menu_event(menu::handle_event)
         // Closing the window hides it, as macOS apps that work in the background
         // do: downloads and Soulseek sharing carry on, and clicking the Dock
-        // icon brings it back. Quitting (⌘Q) stops everything.
+        // icon (the tray icon on Windows) brings it back. Quitting (⌘Q, or
+        // Quit in the tray icon's menu) stops everything.
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "main" && cfg!(target_os = "macos") {
+                let can_reopen = cfg!(target_os = "macos") || tray::exists(window.app_handle());
+                if window.label() == "main" && can_reopen {
                     api.prevent_close();
                     hide_window(window);
                 }
@@ -77,6 +85,12 @@ pub fn run() {
             app.manage(rekordbox::Collection::new(backups));
             app.manage(Sources::new());
             app.manage(Daemon::new());
+
+            // Without it, closing the window quits the app instead of hiding it.
+            #[cfg(not(target_os = "macos"))]
+            if let Err(e) = tray::build(app.handle()) {
+                tracing::warn!("Couldn't add the tray icon: {e}");
+            }
 
             tauri::async_runtime::spawn(ingest::retry_when_rekordbox_closes(app.handle().clone()));
 
@@ -166,7 +180,8 @@ fn hide_window(window: &tauri::Window) {
 const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
 
 /// Logs to the console and to `app.log` in the app's log folder
-/// (~/Library/Logs/<identifier> on macOS), which includes slskd's output.
+/// (~/Library/Logs/<identifier> on macOS,
+/// %LOCALAPPDATA%\<identifier>\logs on Windows), which includes slskd's output.
 fn init_logging(app: &AppHandle) {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,slskd=info"));
     let log_dir = app.path().app_log_dir().ok();

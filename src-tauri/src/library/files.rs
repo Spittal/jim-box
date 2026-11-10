@@ -7,8 +7,8 @@ use crate::error::AppResult;
 /// Extensions the library scanner picks up (anything lofty can tag).
 pub const AUDIO_EXTENSIONS: [&str; 9] = ["flac", "mp3", "m4a", "aif", "aiff", "wav", "ogg", "opus", "aac"];
 
-/// Files macOS litters folders with; safe to delete when tidying up.
-const JUNK_FILES: [&str; 2] = [".DS_Store", "._.DS_Store"];
+/// Files macOS and Windows litter folders with; safe to delete when tidying up.
+const JUNK_FILES: [&str; 4] = [".DS_Store", "._.DS_Store", "Thumbs.db", "desktop.ini"];
 
 /// A file's extension, lowercased; empty when it has none.
 pub fn extension(path: &Path) -> String {

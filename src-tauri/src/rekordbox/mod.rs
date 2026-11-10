@@ -159,6 +159,18 @@ pub struct TrackPage {
     pub rows: Vec<TrackRow>,
 }
 
+/// A file's path as this system writes it, from rekordbox's record of it.
+/// rekordbox on Windows stores `C:/Music/a.flac`, where everything else here
+/// (settings, jobs, the file dialogs) has `C:\Music\a.flac`; paths are
+/// compared as text in places, so they have to agree.
+pub(crate) fn local_path(stored: &str) -> String {
+    if cfg!(windows) {
+        stored.replace('/', "\\")
+    } else {
+        stored.to_owned()
+    }
+}
+
 struct Loaded {
     index: rbl_index::Library,
     location: LibraryLocation,
@@ -204,7 +216,7 @@ impl Collection {
         let (index, _) = rbl_index::load(&db).map_err(rekordbox_err)?;
         drop(db);
         let by_path = (0..index.len())
-            .map(|row| (index.folder_path.get(row).to_owned(), index.ids[row].to_string()))
+            .map(|row| (local_path(index.folder_path.get(row)), index.ids[row].to_string()))
             .collect();
         *self.view.lock().expect("view lock poisoned") = None;
         *self.loaded.write().expect("collection lock poisoned") =
@@ -229,7 +241,7 @@ impl Collection {
     pub fn path_of(&self, track_id: &str) -> Option<PathBuf> {
         let loaded = self.loaded().ok()?;
         let row = loaded.index.row_of(track_id)?;
-        Some(PathBuf::from(loaded.index.folder_path.get(row as usize)))
+        Some(PathBuf::from(local_path(loaded.index.folder_path.get(row as usize))))
     }
 
     /// Every track whose file is under `dir`, with its path. Reads the
@@ -374,7 +386,7 @@ impl Collection {
                     date_added: index.date_added.get(r).to_owned(),
                     format: file_type_name(index.file_type[r]),
                     bitrate: index.bitrate[r],
-                    path: index.folder_path.get(r).to_owned(),
+                    path: local_path(index.folder_path.get(r)),
                     comment: index.comment.get(r).to_owned(),
                     analysed: analyse::is_analysed(index.analysed[r]),
                 }

@@ -180,8 +180,24 @@ fn clean_component(component: &str) -> String {
             end -= 1;
         }
         trimmed.truncate(end);
+        // Windows drops a trailing dot or space from a name, so the folder
+        // wouldn't be where this says it is.
+        trimmed.truncate(trimmed.trim_end_matches([' ', '.']).len());
+    }
+    if cfg!(windows) && is_reserved_on_windows(&trimmed) {
+        trimmed.push('_');
     }
     trimmed
+}
+
+/// Names Windows keeps for devices and won't make a file or folder with,
+/// whatever follows the first dot: "CON", "aux.flac", "COM1"…
+fn is_reserved_on_windows(component: &str) -> bool {
+    let stem = component.split('.').next().unwrap_or_default().trim_end().to_ascii_uppercase();
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.ends_with(|c: char| c.is_ascii_digit() && c != '0'))
 }
 
 /// Absolute library path for a rendered template path plus extension. The

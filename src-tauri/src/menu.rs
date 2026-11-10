@@ -1,4 +1,6 @@
-//! The macOS menu bar, and the window behaviour that goes with it.
+//! The macOS menu bar, and the window behaviour that goes with it. Windows
+//! has no menu bar: the tray icon (see `tray.rs`) and the window's own
+//! shortcuts (see `App.vue`) do its job there.
 //!
 //! Items that change what the window shows are forwarded to the frontend as a
 //! `menu` event carrying the item id (see `MenuCommand`); the rest are handled
@@ -12,6 +14,7 @@ use tracing::warn;
 /// Menu ids forwarded to the frontend, which owns navigation.
 const FRONTEND_COMMANDS: &[&str] = &["settings", "find", "find-online"];
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let pkg = app.package_info();
     let about = AboutMetadataBuilder::new()
@@ -90,6 +93,8 @@ pub fn handle_event<R: Runtime>(app: &AppHandle<R>, event: MenuEvent) {
     let id = event.id().as_ref();
     match id {
         "show-main" => show_main(app),
+        // Stops slskd on the way out (see `RunEvent::Exit`).
+        "quit" => app.exit(0),
         "show-logs" => match app.path().app_log_dir() {
             Ok(dir) => {
                 if let Err(e) = app.opener().reveal_item_in_dir(dir.join("app.log")) {

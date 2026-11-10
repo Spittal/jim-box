@@ -11,6 +11,7 @@ import { useBrowseStore, type PendingRow } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
 import { isActive, useJobsStore } from '@/stores/jobs';
 import { useLibraryStore } from '@/stores/library';
+import { commandKey } from '@/platform';
 import type { CollectionTrack, TrackSort } from '@/types/collection';
 
 /**
@@ -85,11 +86,11 @@ onUnmounted(() => resizeObserver.disconnect());
 // --- Selection --------------------------------------------------------------
 
 /**
- * Shift- and ⌘-clicks pick rows; they don't select text. Without this, WebKit
+ * Shift- and ⌘-clicks (Ctrl-clicks on Windows) pick rows; they don't select text. Without this, WebKit
  * stretches a text selection from wherever the caret last was to the click.
  */
 function keepTextUnselected(event: MouseEvent) {
-  if (!event.shiftKey && !event.metaKey) return;
+  if (!event.shiftKey && !commandKey(event)) return;
   event.preventDefault();
   window.getSelection()?.removeAllRanges();
 }
@@ -98,14 +99,14 @@ function keepTextUnselected(event: MouseEvent) {
 let anchor: number | null = null;
 
 function clickRow(index: number, track: CollectionTrack, event: MouseEvent) {
-  const next = new Set(event.metaKey || event.shiftKey ? selection.value : []);
+  const next = new Set(commandKey(event) || event.shiftKey ? selection.value : []);
   if (event.shiftKey && anchor !== null) {
     const [from, to] = anchor < index ? [anchor, index] : [index, anchor];
     for (let i = from; i <= to; i++) {
       const id = browse.trackAt(i)?.id;
       if (id) next.add(id);
     }
-  } else if (event.metaKey && next.has(track.id)) {
+  } else if (commandKey(event) && next.has(track.id)) {
     next.delete(track.id);
     anchor = index;
   } else {
@@ -123,12 +124,12 @@ let pendingAnchor: string | null = null;
 /** Picks pending rows as tracks are picked: ⌘ adds or drops one, shift takes a range. */
 function clickPending(row: PendingRow, event?: MouseEvent) {
   const rows = pendingRows.value;
-  const next = new Set(event?.metaKey || event?.shiftKey ? pendingSelection.value : []);
+  const next = new Set((event && commandKey(event)) || event?.shiftKey ? pendingSelection.value : []);
   const from = rows.findIndex((r) => r.key === pendingAnchor);
   if (event?.shiftKey && from !== -1) {
     const to = rows.indexOf(row);
     for (let i = Math.min(from, to); i <= Math.max(from, to); i++) next.add(rows[i].key);
-  } else if (event?.metaKey && next.has(row.key)) {
+  } else if ((event && commandKey(event)) && next.has(row.key)) {
     next.delete(row.key);
     pendingAnchor = row.key;
   } else {

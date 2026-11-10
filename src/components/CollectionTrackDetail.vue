@@ -10,6 +10,7 @@ import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
 import { isActive, useJobsStore } from '@/stores/jobs';
 import { useLibraryStore } from '@/stores/library';
+import { revealLabel } from '@/platform';
 import type { CollectionTrack, TrackField } from '@/types/collection';
 
 const props = defineProps<{ track: CollectionTrack }>();
@@ -201,7 +202,7 @@ const inputClass =
       <span class="text-[11px] text-text-muted">File</span>
       <p class="font-mono text-[10px] break-all text-text-secondary">{{ track.path }}</p>
       <div class="flex flex-wrap gap-1.5">
-        <button :class="actionClass" @click="run(() => revealItemInDir(track.path))">Show in Finder</button>
+        <button :class="actionClass" @click="run(() => revealItemInDir(track.path))">{{ revealLabel }}</button>
         <button
           :class="actionClass"
           :disabled="libraryStore.busy"
