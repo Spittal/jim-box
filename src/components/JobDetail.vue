@@ -72,12 +72,12 @@ async function remove() {
 </script>
 
 <template>
-  <div class="flex flex-col gap-6 p-6">
+  <div class="flex flex-col gap-5 px-5 pb-5">
     <!-- Header -->
     <div class="flex gap-4">
-      <CoverArt :src="job.request.coverXlUrl ?? job.request.coverUrl" class="size-28" />
+      <CoverArt :src="job.request.coverXlUrl ?? job.request.coverUrl" class="size-20" />
       <div class="min-w-0 flex-1">
-        <h2 class="truncate text-lg font-semibold">{{ meta?.title ?? job.request.title }}</h2>
+        <h2 class="truncate text-base font-semibold">{{ meta?.title ?? job.request.title }}</h2>
         <div class="truncate text-sm text-text-secondary">{{ meta?.artist ?? job.request.artist }}</div>
         <div class="truncate text-xs text-text-muted">{{ albumLine }}</div>
         <div class="mt-3 flex flex-wrap items-center gap-2">

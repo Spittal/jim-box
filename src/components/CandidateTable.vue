@@ -24,50 +24,40 @@ const rows = computed(() =>
 </script>
 
 <template>
-  <table class="w-full table-fixed text-left text-xs">
-    <thead class="text-text-muted">
-      <tr class="border-b border-border">
-        <th class="w-28 py-1.5 font-normal">Quality</th>
-        <th class="w-20 py-1.5 font-normal">Size</th>
-        <th class="py-1.5 font-normal">File</th>
-        <th class="w-36 py-1.5 font-normal">Peer</th>
-        <th class="w-24 py-1.5" />
-      </tr>
-    </thead>
-    <tbody>
-      <tr
-        v-for="{ c, index } in rows"
-        :key="`${c.username}:${c.filename}`"
-        class="border-b border-border/50"
-        :class="{ 'text-text-muted': c.failed, 'bg-surface-1': index === activeIndex }"
+  <!-- Two lines a file, to fit the side panel. -->
+  <ul class="text-xs">
+    <li
+      v-for="{ c, index } in rows"
+      :key="`${c.username}:${c.filename}`"
+      class="flex items-center gap-2 border-b border-border/50 py-1.5"
+      :class="{ 'text-text-muted': c.failed, 'bg-surface-1': index === activeIndex }"
+    >
+      <div class="min-w-0 flex-1">
+        <div class="flex items-center gap-2">
+          <span class="shrink-0 font-mono">{{ formatQuality(c.format, c.bitDepth, c.sampleRate, c.bitRate) }}</span>
+          <span class="shrink-0 font-mono text-text-muted">{{ formatBytes(c.size) }}</span>
+          <span class="min-w-0 truncate text-text-secondary" :title="`${c.username} · ${formatSpeed(c.uploadSpeed)}`">
+            <span
+              class="mr-1 inline-block size-1.5 rounded-full"
+              :class="c.hasFreeUploadSlot ? 'bg-status-ok' : 'bg-status-busy'"
+              :title="c.hasFreeUploadSlot ? 'Free upload slot' : `${c.queueLength} queued`"
+            />
+            {{ c.username }}
+          </span>
+        </div>
+        <div class="truncate text-[11px] text-text-muted" :title="c.filename">{{ basename(c.filename) }}</div>
+        <div v-if="c.rejected" class="truncate text-[11px] text-status-busy" :title="c.rejected">{{ c.rejected }}</div>
+      </div>
+      <span v-if="index === activeIndex && completed" class="shrink-0 text-status-ok">Used</span>
+      <span v-else-if="c.failed" class="shrink-0 text-status-error">Failed</span>
+      <button
+        v-else
+        :disabled="disabled"
+        class="shrink-0 rounded bg-surface-2 px-2 py-0.5 transition-colors hover:bg-surface-3 disabled:opacity-40"
+        @click="emit('download', index)"
       >
-        <td class="py-1.5 font-mono">{{ formatQuality(c.format, c.bitDepth, c.sampleRate, c.bitRate) }}</td>
-        <td class="py-1.5 font-mono">{{ formatBytes(c.size) }}</td>
-        <td class="py-1.5 pr-2" :title="c.filename">
-          <div class="truncate">{{ basename(c.filename) }}</div>
-          <div v-if="c.rejected" class="truncate text-[11px] text-status-busy">{{ c.rejected }}</div>
-        </td>
-        <td class="truncate py-1.5 pr-2" :title="`${c.username} · ${formatSpeed(c.uploadSpeed)}`">
-          <span
-            class="mr-1 inline-block size-1.5 rounded-full"
-            :class="c.hasFreeUploadSlot ? 'bg-status-ok' : 'bg-status-busy'"
-            :title="c.hasFreeUploadSlot ? 'Free upload slot' : `${c.queueLength} queued`"
-          />
-          {{ c.username }}
-        </td>
-        <td class="py-1.5 text-right">
-          <span v-if="index === activeIndex && completed" class="text-status-ok">Used</span>
-          <span v-else-if="c.failed" class="text-status-error">Failed</span>
-          <button
-            v-else
-            :disabled="disabled"
-            class="rounded bg-surface-2 px-2 py-0.5 transition-colors hover:bg-surface-3 disabled:opacity-40"
-            @click="emit('download', index)"
-          >
-            Download
-          </button>
-        </td>
-      </tr>
-    </tbody>
-  </table>
+        Download
+      </button>
+    </li>
+  </ul>
 </template>

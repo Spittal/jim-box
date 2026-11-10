@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { useRouter } from 'vue-router';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
+import FixCard from '@/components/FixCard.vue';
 import JobStatusBadge from '@/components/JobStatusBadge.vue';
 import LibraryCover from '@/components/LibraryCover.vue';
 import { TRACK_COLORS } from '@/composables/useTrackColors';
 import { formatDuration } from '@/composables/useFormat';
+import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
 import { isActive, useJobsStore } from '@/stores/jobs';
 import { useLibraryStore } from '@/stores/library';
@@ -17,7 +18,7 @@ defineEmits<{ close: [] }>();
 const store = useCollectionStore();
 const libraryStore = useLibraryStore();
 const jobsStore = useJobsStore();
-const router = useRouter();
+const browse = useBrowseStore();
 
 const actionError = ref<string | null>(null);
 const starting = ref(false);
@@ -28,11 +29,8 @@ const job = computed(() =>
   jobsStore.jobs.find((j) => j.replaces === props.track.path || j.outputPath === props.track.path),
 );
 const downloading = computed(() => !!job.value && isActive(job.value));
-/** A fix found for this track that hasn't been applied yet. */
-const fix = computed(() => {
-  const item = libraryStore.forTrack(props.track.id);
-  return item?.status === 'matched' ? item : null;
-});
+/** What identifying found for this track, if it has been looked up. */
+const identified = computed(() => libraryStore.forTrack(props.track.id) ?? null);
 
 async function run(action: () => Promise<unknown>) {
   actionError.value = null;
@@ -105,6 +103,8 @@ const inputClass =
     </div>
 
     <LibraryCover :key="track.path" :path="track.path" class="aspect-square w-24 self-center" />
+
+    <FixCard v-if="identified" :item="identified" />
 
     <!-- Keyed by track so the boxes reset when another track is picked. -->
     <label v-for="field in fields" :key="`${track.id}-${field.id}`" class="flex flex-col gap-1">
@@ -199,7 +199,7 @@ const inputClass =
         <button
           :class="actionClass"
           :disabled="libraryStore.busy"
-          title="Look this track up on MusicBrainz and propose the tags and file name it should have"
+          title="Look this track up on MusicBrainz and propose the tags and file name it should have, to review here"
           @click="run(() => libraryStore.identify([track.id]))"
         >
           Identify
@@ -215,16 +215,14 @@ const inputClass =
           {{ lossless ? 'Redownload' : 'Get lossless' }}
         </button>
       </div>
-      <button v-if="fix" class="self-start text-[11px] text-accent-hover hover:underline" @click="router.push('/review')">
-        A fix is ready to review: {{ fix.proposal?.metadata.artist }} – {{ fix.proposal?.metadata.title }}
-      </button>
-      <router-link
+      <button
         v-if="job"
-        :to="`/downloads/${job.id}`"
-        class="inline-flex text-[11px] text-text-secondary hover:text-text-primary"
+        class="inline-flex self-start text-[11px] text-text-secondary hover:text-text-primary"
+        title="Show where this file came from, and the other sources found for it"
+        @click="browse.focus = { kind: 'job', id: job.id }"
       >
         <JobStatusBadge :job="job" />
-      </router-link>
+      </button>
       <p v-if="actionError" class="error-box">{{ actionError }}</p>
     </div>
   </aside>

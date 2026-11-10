@@ -2,7 +2,7 @@
   "name": "jim-box",
   "private": true,
   "version": "0.1.0",
-  "description": "Find and download lossless tracks via Soulseek, tagged with MusicBrainz metadata",
+  "description": "rekordbox library management, with search that finds lossless copies of tracks for it",
   "type": "module",
   "packageManager": "pnpm@10.24.0",
   "scripts": {
@@ -19,8 +19,7 @@
     "@tauri-apps/plugin-dialog": "^2.7.3",
     "@tauri-apps/plugin-opener": "^2.5.5",
     "pinia": "^4.0.3",
-    "vue": "^3.5.42",
-    "vue-router": "^5.3.1"
+    "vue": "^3.5.42"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",

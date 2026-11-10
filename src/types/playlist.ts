@@ -8,44 +8,33 @@ export interface SpotifyTrack {
   durationSecs: number;
 }
 
-export interface PlaylistEntry {
+/** A track of a Spotify playlist that isn't in the collection yet. */
+export interface MissingEntry {
+  /** Its place in the Spotify playlist. */
+  index: number;
   track: SpotifyTrack;
+  /** The search result it was matched to; null when no confident match was found. */
   request: TrackRequest | null;
   confidence: Confidence | null;
 }
 
-export interface PlaylistMatch {
-  id: string;
+/** A rekordbox playlist that came from Spotify, and what it still lacks. */
+export interface LinkedPlaylist {
+  spotifyId: string;
+  /** The rekordbox playlist. */
+  playlistId: string;
   name: string;
-  coverUrl: string | null;
-  /** Spotify's embed only lists the first 100 tracks. */
+  /** Spotify only lists a playlist's first 100 tracks without signing in. */
   truncated: boolean;
-  entries: PlaylistEntry[];
   /** When the track list was last read from Spotify (ms). */
   loadedAt: number;
-}
-
-/** A cached playlist, for the recent playlists list. */
-export interface PlaylistSummary {
-  id: string;
-  name: string;
-  coverUrl: string | null;
-  tracks: number;
-  matched: number;
-  loadedAt: number;
+  /** Tracks on the Spotify playlist. */
+  total: number;
+  /** Those that aren't in the collection yet, in the playlist's order. */
+  missing: MissingEntry[];
 }
 
 export interface PlaylistProgress {
   done: number;
   total: number;
-}
-
-/** What copying a playlist into rekordbox came to. */
-export interface PlaylistSync {
-  playlistId: string;
-  name: string;
-  /** Tracks that are in the collection, and so in the rekordbox playlist. */
-  present: number;
-  /** Tracks that aren't in the collection yet. */
-  missing: number;
 }

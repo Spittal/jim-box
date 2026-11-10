@@ -38,16 +38,17 @@ export const useLibraryStore = defineStore('library', () => {
   const identify = (trackIds: string[]) => invoke('identify_tracks', { trackIds });
   const apply = (ids: string[]) => invoke('apply_library_matches', { ids });
   const cancel = () => invoke('cancel_library_task');
-  /** Clears results that need nothing more: applied, already fine, no match. */
-  const dismiss = () => invoke('dismiss_library_results');
+  /** Forgets what identifying found for these items. */
+  const dismiss = (ids: string[]) => invoke('dismiss_library_items', { ids });
   const changeMusicDir = (dir: string) => invoke<RelocateReport>('change_music_dir', { dir });
   /** Downloads a collection track again; it moves to the new file once that succeeds. */
   const redownload = (trackId: string) => invoke<Job>('redownload_track', { trackId });
 
+  const byTrack = computed(() => new Map(items.value.map((i) => [i.trackId, i])));
   /** What identifying found for a collection track, if it has been looked up. */
-  const forTrack = (trackId: string) => items.value.find((i) => i.trackId === trackId);
+  const forTrack = (trackId: string) => byTrack.value.get(trackId);
   /** Fixes waiting to be reviewed. */
-  const toReview = computed(() => items.value.filter((i) => i.status === 'matched').length);
+  const fixes = computed(() => items.value.filter((i) => i.status === 'matched'));
 
   // Object URLs for artwork, by file path, oldest first.
   const covers = new Map<string, Promise<string | null>>();
@@ -84,7 +85,7 @@ export const useLibraryStore = defineStore('library', () => {
     cancel,
     dismiss,
     forTrack,
-    toReview,
+    fixes,
     changeMusicDir,
     redownload,
     coverArt,

@@ -7,8 +7,9 @@ import SoulseekCredentialsForm from '@/components/SoulseekCredentialsForm.vue';
     <div class="w-full max-w-md">
       <h1 class="text-xl font-semibold">Welcome to jim-box</h1>
       <p class="mt-2 text-sm text-text-secondary">
-        jim-box downloads lossless files from the Soulseek network. Sign in with your Soulseek
-        account, or pick a new username and password to create one.
+        jim-box manages your rekordbox library, and finds lossless copies of tracks for it on the
+        Soulseek network. Sign in with your Soulseek account, or pick a new username and password
+        to create one.
       </p>
       <p class="mt-2 text-xs text-text-muted">
         Your password is stored in the macOS Keychain. Your music folder is shared back to the

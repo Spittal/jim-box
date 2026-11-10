@@ -1,0 +1,272 @@
+<script setup lang="ts">
+import { computed, ref, watch } from 'vue';
+import { storeToRefs } from 'pinia';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
+import { formatAgo } from '@/composables/useFormat';
+import { useBrowseStore } from '@/stores/browse';
+import { useCollectionStore } from '@/stores/collection';
+import { useJobsStore } from '@/stores/jobs';
+import { useLibraryStore } from '@/stores/library';
+import { usePlaylistStore } from '@/stores/playlist';
+
+/** The heading of the list being shown, and what can be done to it or the tracks selected in it. */
+const store = useCollectionStore();
+const { status, playlists, waiting, analysis, loading, error } = storeToRefs(store);
+const browse = useBrowseStore();
+const { selected, selectedNode, inPlaylist, selection, selectedIds, total, notice, link, pendingRows } =
+  storeToRefs(browse);
+const libraryStore = useLibraryStore();
+const playlistStore = usePlaylistStore();
+const jobs = useJobsStore();
+
+const heading = computed(() => selectedNode.value?.name ?? 'Collection');
+const countLabel = computed(() => `${total.value} ${total.value === 1 ? 'track' : 'tracks'}`);
+
+/** Runs something that reports failure by throwing, showing why it failed. */
+async function run(action: () => Promise<unknown>) {
+  error.value = null;
+  try {
+    await action();
+  } catch (e) {
+    error.value = String(e);
+  }
+}
+
+// --- The selected tracks ----------------------------------------------------
+
+const targetPlaylists = computed(() =>
+  playlists.value.filter((p) => p.kind === 'playlist' && p.id !== selected.value),
+);
+
+function addToChosen(event: Event) {
+  const select = event.target as HTMLSelectElement;
+  const trackIds = selectedIds.value;
+  if (select.value && trackIds.length) store.edit({ kind: 'addTracks', playlistId: select.value, trackIds });
+  select.value = '';
+}
+
+async function removeSelected() {
+  if (!selected.value || !selectedIds.value.length) return;
+  const trackIds = selectedIds.value;
+  selection.value = new Set();
+  await store.edit({ kind: 'removeTracks', playlistId: selected.value, trackIds });
+}
+
+/** Asked before taking tracks out of the collection: how many. */
+const confirmingRemoval = ref(0);
+watch(selection, () => (confirmingRemoval.value = 0));
+
+async function deleteSelected() {
+  const trackIds = selectedIds.value;
+  selection.value = new Set();
+  await store.edit({ kind: 'deleteTracks', trackIds });
+}
+
+/** Looks the selected tracks up on MusicBrainz; what it finds shows beside the list. */
+const identifySelected = () => run(() => libraryStore.identify(selectedIds.value));
+
+// Analysis: BPM, beat grid, key and waveforms.
+
+/** The selection size a re-analysis is being confirmed for; 0 when it isn't. */
+const confirmingAnalysis = ref(0);
+watch(selection, () => (confirmingAnalysis.value = 0));
+
+/** Analyses what in the selection has no analysis; offers to redo it when all of it has. */
+async function analyseSelected(again: boolean) {
+  confirmingAnalysis.value = 0;
+  const queued = await store.analyse(selectedIds.value, again);
+  if (queued === 0 && !again) confirmingAnalysis.value = selection.value.size;
+}
+
+async function analyseAll() {
+  const queued = await store.analyse(null, false);
+  if (queued === 0) notice.value = 'Every track in the collection is analysed.';
+}
+
+// Adding music from disk: to the collection, and to the open playlist.
+
+async function addFromDisk(directory: boolean) {
+  const picked = await openDialog({
+    directory,
+    multiple: true,
+    title: directory ? 'Add folders to the collection' : 'Add files to the collection',
+    filters: directory
+      ? undefined
+      : [{ name: 'Music', extensions: ['mp3', 'm4a', 'aac', 'flac', 'wav', 'aiff', 'aif', 'ogg', 'opus'] }],
+  });
+  const paths = Array.isArray(picked) ? picked : picked ? [picked] : [];
+  if (!paths.length) return;
+  notice.value = null;
+  const report = await store.importPaths(paths, inPlaylist.value ? selected.value : null);
+  if (!report) return;
+  const parts = [`Added ${report.added} ${report.added === 1 ? 'track' : 'tracks'}`];
+  if (report.existing) parts.push(`${report.existing} already in the collection`);
+  if (report.skipped.length) parts.push(`${report.skipped.length} couldn't be read`);
+  notice.value = `${parts.join(' · ')}.`;
+}
+
+// --- A playlist that came from Spotify ---------------------------------------
+
+/** Missing tracks with a sure match and no fetch yet. */
+const fetchable = computed(() =>
+  link.value ? pendingRows.value.filter((r) => r.entry?.request && r.entry.confidence === 'high' && !r.job) : [],
+);
+const fetchingAll = ref(false);
+
+function fetchAll() {
+  fetchingAll.value = true;
+  // Fetches queue in the backend (a few run at a time), so starting them all is fine.
+  run(async () => {
+    for (const row of fetchable.value) await jobs.fetch(row.entry!.request!, selected.value);
+  }).finally(() => (fetchingAll.value = false));
+}
+
+const buttonClass =
+  'rounded bg-surface-2 px-3 py-1.5 text-xs transition-colors hover:bg-surface-3 disabled:opacity-50';
+</script>
+
+<template>
+  <header class="flex flex-col gap-2 border-b border-border px-4 py-3">
+    <div class="flex items-center justify-between gap-4">
+      <div class="min-w-0">
+        <h1 class="truncate text-sm font-medium">{{ heading }}</h1>
+        <p class="truncate font-mono text-xs text-text-muted">
+          <template v-if="status">{{ countLabel }} · {{ status.masterDb }}</template>
+          <template v-else-if="loading">Reading your rekordbox library…</template>
+        </p>
+      </div>
+      <div class="flex shrink-0 items-center gap-2">
+        <span
+          v-if="status?.rekordboxRunning"
+          class="rounded bg-status-busy/15 px-2 py-0.5 text-[11px] text-status-busy"
+          title="rekordbox (or its background agent) is running. Its library can be read, but not changed, until you quit it."
+        >rekordbox is open: read-only</span>
+        <button
+          v-if="waiting.count"
+          class="rounded bg-status-busy/15 px-2 py-0.5 text-[11px] text-status-busy hover:bg-status-busy/25"
+          :title="`${waiting.error ?? 'Waiting for rekordbox to close.'} Click to try adding them now.`"
+          @click="store.open()"
+        >{{ waiting.count }} {{ waiting.count === 1 ? 'file waits' : 'files wait' }} to be added</button>
+        <template v-if="selection.size">
+          <span class="text-[11px] text-text-muted">{{ selection.size }} selected</span>
+          <button
+            :class="buttonClass"
+            :disabled="libraryStore.busy"
+            title="Look the selected tracks up on MusicBrainz and propose tags and file names to review"
+            @click="identifySelected"
+          >
+            Identify
+          </button>
+          <template v-if="confirmingAnalysis === selection.size">
+            <button
+              :class="buttonClass"
+              title="Cues are kept. Beat grids are replaced, including any adjusted by hand in rekordbox."
+              @click="analyseSelected(true)"
+            >
+              Already analysed. Replace {{ selection.size === 1 ? 'its beat grid' : 'their beat grids' }}
+            </button>
+            <button :class="buttonClass" @click="confirmingAnalysis = 0">Cancel</button>
+          </template>
+          <button
+            v-else
+            :class="buttonClass"
+            title="Work out the BPM, beat grid, key and waveforms of the selected tracks that don't have them"
+            @click="analyseSelected(false)"
+          >
+            Analyse
+          </button>
+          <select
+            v-if="targetPlaylists.length"
+            class="max-w-40 rounded border border-border bg-surface-1 px-2 py-1 text-xs outline-none"
+            @change="addToChosen"
+          >
+            <option value="">Add to playlist…</option>
+            <option v-for="p in targetPlaylists" :key="p.id" :value="p.id">{{ p.name }}</option>
+          </select>
+          <button
+            v-if="inPlaylist"
+            :class="buttonClass"
+            title="Take the selected tracks out of this playlist. They stay in the collection."
+            @click="removeSelected"
+          >
+            Remove from playlist
+          </button>
+          <template v-if="confirmingRemoval === selection.size">
+            <button :class="buttonClass" class="text-status-error" @click="deleteSelected">
+              Remove {{ selection.size }} from collection
+            </button>
+            <button :class="buttonClass" @click="confirmingRemoval = 0">Cancel</button>
+          </template>
+          <button
+            v-else
+            :class="buttonClass"
+            title="Take the selected tracks out of the collection and every playlist. Their files stay on disk."
+            @click="confirmingRemoval = selection.size"
+          >
+            Remove…
+          </button>
+        </template>
+        <template v-else>
+          <button
+            :class="buttonClass"
+            :disabled="analysis?.active"
+            title="Work out the BPM, beat grid, key and waveforms of every track in the collection that doesn't have them"
+            @click="analyseAll"
+          >
+            Analyse new
+          </button>
+          <button
+            :class="buttonClass"
+            :title="inPlaylist ? 'Add music files to the collection and this playlist' : 'Add music files to the collection'"
+            @click="addFromDisk(false)"
+          >
+            Add files…
+          </button>
+          <button
+            :class="buttonClass"
+            :title="inPlaylist ? 'Add all the music in a folder to the collection and this playlist' : 'Add all the music in a folder to the collection'"
+            @click="addFromDisk(true)"
+          >
+            Add folder…
+          </button>
+        </template>
+        <button
+          :class="buttonClass"
+          :disabled="loading"
+          title="Read the library again to pick up changes made in rekordbox"
+          @click="store.open()"
+        >
+          Refresh
+        </button>
+      </div>
+    </div>
+
+    <!-- A playlist brought in from Spotify: what it still lacks. -->
+    <div v-if="link" class="flex items-center gap-3 text-xs text-text-secondary">
+      <span class="min-w-0 flex-1 truncate">
+        From Spotify · {{ link.total - link.missing.length }} of {{ link.total }} tracks in your collection ·
+        read {{ formatAgo(link.loadedAt) }}
+        <template v-if="link.truncated">
+          · Spotify only shares the first 100 tracks of a playlist without signing in
+        </template>
+      </span>
+      <button
+        v-if="fetchable.length"
+        class="shrink-0 rounded bg-accent px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
+        :disabled="fetchingAll"
+        title="Fetch every missing track whose match is sure. The others are left for you to check."
+        @click="fetchAll"
+      >
+        {{ fetchingAll ? 'Queuing…' : `Get lossless for ${fetchable.length} missing` }}
+      </button>
+      <button
+        class="shrink-0 rounded bg-surface-2 px-3 py-1 text-xs transition-colors hover:bg-surface-3 disabled:opacity-50"
+        :disabled="playlistStore.importing"
+        title="Read the playlist from Spotify again to pick up added tracks, and add the ones you have. rekordbox must be closed."
+        @click="run(playlistStore.refresh)"
+      >
+        {{ playlistStore.importing ? 'Reading…' : 'Refresh from Spotify' }}
+      </button>
+    </div>
+  </header>
+</template>

@@ -1,15 +1,15 @@
 <script setup lang="ts">
-import { computed } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { onMounted, onUnmounted } from 'vue';
+import { storeToRefs } from 'pinia';
 import SettingsSoulseek from '@/components/SettingsSoulseek.vue';
 import SettingsLibrary from '@/components/SettingsLibrary.vue';
 import SettingsSharing from '@/components/SettingsSharing.vue';
 import SettingsFormats from '@/components/SettingsFormats.vue';
 import SettingsYoutube from '@/components/SettingsYoutube.vue';
+import { useUiStore, type SettingsTab } from '@/stores/ui';
 
-type Section = 'soulseek' | 'library' | 'sharing' | 'formats' | 'youtube';
-
-const sections: { id: Section; label: string }[] = [
+/** Settings, shown over the collection. */
+const sections: { id: SettingsTab; label: string }[] = [
   { id: 'library', label: 'Library' },
   { id: 'formats', label: 'Formats' },
   { id: 'soulseek', label: 'Soulseek' },
@@ -17,20 +17,26 @@ const sections: { id: Section; label: string }[] = [
   { id: 'youtube', label: 'YouTube Music' },
 ];
 
-const route = useRoute();
-const router = useRouter();
+const { settings: active } = storeToRefs(useUiStore());
 
-// The URL is the source of truth for the active tab.
-const active = computed<Section>(() => {
-  const tab = route.query.tab;
-  return sections.some((s) => s.id === tab) ? (tab as Section) : 'library';
-});
+function onKey(event: KeyboardEvent) {
+  if (event.key === 'Escape' && !event.defaultPrevented) active.value = null;
+}
+onMounted(() => window.addEventListener('keydown', onKey));
+onUnmounted(() => window.removeEventListener('keydown', onKey));
 </script>
 
 <template>
-  <div class="flex h-full flex-col">
-    <header class="border-b border-border px-4 py-3">
+  <div class="absolute inset-0 z-30 flex flex-col bg-surface-0">
+    <header class="flex items-center justify-between border-b border-border px-4 py-3">
       <h1 class="text-sm font-medium">Settings</h1>
+      <button
+        class="rounded bg-surface-2 px-3 py-1 text-xs transition-colors hover:bg-surface-3"
+        title="Back to the collection (Esc)"
+        @click="active = null"
+      >
+        Done
+      </button>
     </header>
     <div class="flex min-h-0 flex-1">
       <nav class="w-40 shrink-0 border-r border-border py-2">
@@ -41,7 +47,7 @@ const active = computed<Section>(() => {
           :class="active === section.id
             ? 'bg-surface-1 font-medium text-text-primary'
             : 'text-text-muted hover:text-text-secondary'"
-          @click="router.replace({ query: { tab: section.id } })"
+          @click="active = section.id"
         >
           {{ section.label }}
         </button>

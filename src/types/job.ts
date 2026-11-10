@@ -83,8 +83,8 @@ export interface Job {
   replaces: string | null;
   /** Completed without downloading because `outputPath` already had this track. */
   alreadyInLibrary: boolean;
-  /** A rekordbox playlist the track joins once it's in the collection. */
-  playlist: string | null;
+  /** The rekordbox playlist (its id) the track joins once it's in the collection. */
+  playlistId: string | null;
   error: string | null;
   source: JobSource;
   /** Set while and after downloading from YouTube Music. */

@@ -2,45 +2,72 @@ import { acceptHMRUpdate, defineStore } from 'pinia';
 import { ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { TrackRequest } from '@/types/track';
-import { isPlaylistLink, usePlaylistStore } from './playlist';
 
+/** Looking for tracks online: Deezer's results, then MusicBrainz's. */
 export const useSearchStore = defineStore('search', () => {
-  const query = ref('');
+  /** Whether the results panel is showing. */
+  const open = ref(false);
   const results = ref<TrackRequest[]>([]);
+  /** For each result, the collection track it already is, if any. */
+  const owned = ref<(string | null)[]>([]);
   const loading = ref(false);
   const error = ref<string | null>(null);
-  /** The query the current results belong to. */
+  /** The text the current results belong to. */
   const searchedFor = ref('');
+  /** Identifies the latest search, so an earlier one's late answer is dropped. */
+  let latest = 0;
 
-  /** Searches tracks, or loads a playlist when given a Spotify playlist link. */
-  async function search() {
-    const q = query.value.trim();
-    if (!q) return;
-    const playlistStore = usePlaylistStore();
-    if (isPlaylistLink(q)) {
-      results.value = [];
-      searchedFor.value = '';
-      error.value = null;
-      await playlistStore.load(q);
-      return;
-    }
-    playlistStore.clear();
+  const find = (query: string) => invoke<TrackRequest[]>('search_tracks', { query });
+
+  async function run(text: string) {
+    const query = text.trim();
+    if (!query) return;
+    const mine = ++latest;
+    open.value = true;
     loading.value = true;
     error.value = null;
     try {
-      results.value = await invoke<TrackRequest[]>('search_tracks', { query: q });
-      searchedFor.value = q;
+      const found = await find(query);
+      if (mine !== latest) return;
+      results.value = found;
+      owned.value = [];
+      searchedFor.value = query;
+      await refreshOwned();
     } catch (e) {
-      error.value = String(e);
+      if (mine === latest) error.value = String(e);
     } finally {
-      loading.value = false;
+      if (mine === latest) loading.value = false;
     }
   }
 
-  /** Searches tracks without touching the page's results, e.g. to re-match one playlist track. */
-  const find = (q: string) => invoke<TrackRequest[]>('search_tracks', { query: q });
+  /** Looks the results up in the collection again, as after it changes. */
+  async function refreshOwned() {
+    const asked = results.value;
+    if (!asked.length) return;
+    try {
+      const ids = await invoke<(string | null)[]>('find_in_collection', {
+        tracks: asked.map((t) => ({ title: t.title, artist: t.artist })),
+      });
+      if (results.value === asked) owned.value = ids;
+    } catch {
+      // The collection isn't open: nothing is marked as owned.
+    }
+  }
 
-  return { query, results, loading, error, searchedFor, search, find };
+  /** Shows a message in the panel in place of results. */
+  function fail(message: string) {
+    latest++;
+    loading.value = false;
+    open.value = true;
+    error.value = message;
+  }
+
+  function close() {
+    open.value = false;
+    error.value = null;
+  }
+
+  return { open, results, owned, loading, error, searchedFor, find, run, refreshOwned, fail, close };
 });
 
 // Swap in new actions on hot reload instead of keeping the old store.

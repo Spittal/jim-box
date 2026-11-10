@@ -10,10 +10,27 @@ export function isActive(job: Job): boolean {
   return ACTIVE.includes(job.status);
 }
 
+/** Still wanted: on its way, or stopped short of a file. Shown among the tracks. */
+export function isPending(job: Job): boolean {
+  return isActive(job) || job.status === 'notFound' || job.status === 'failed';
+}
+
 export const useJobsStore = defineStore('jobs', () => {
   const jobs = ref<Job[]>([]);
 
   const activeCount = computed(() => jobs.value.filter(isActive).length);
+  /** Fetches that haven't landed, newest first. */
+  const pending = computed(() => jobs.value.filter(isPending));
+  const notFoundCount = computed(() => jobs.value.filter((j) => j.status === 'notFound').length);
+
+  /** The fetch on its way to replace each file, by the file's path. */
+  const replacing = computed(() => {
+    const map = new Map<string, Job>();
+    for (const job of jobs.value) {
+      if (job.replaces && isActive(job) && !map.has(job.replaces)) map.set(job.replaces, job);
+    }
+    return map;
+  });
 
   /** Latest job per track (see `trackKey`), so search results can show their status. */
   const jobByTrack = computed(() => {
@@ -49,16 +66,27 @@ export const useJobsStore = defineStore('jobs', () => {
 
   /**
    * Starts a download. `replaces` is a file to trash once it succeeds;
-   * `playlist` names a rekordbox playlist the track then joins.
+   * `playlistId` is a rekordbox playlist the track then joins.
    */
-  async function start(track: TrackRequest, replaces?: string, playlist?: string): Promise<Job> {
+  async function start(track: TrackRequest, replaces?: string, playlistId?: string | null): Promise<Job> {
     const job = await invoke<Job>('start_job', {
       track,
       replaces: replaces ?? null,
-      playlist: playlist ?? null,
+      playlistId: playlistId ?? null,
     });
     upsert(job);
     return job;
+  }
+
+  /**
+   * Fetches a track into the collection, and a playlist if one is given. A
+   * fetch already on its way is left to it; one that stopped short starts again.
+   */
+  async function fetch(track: TrackRequest, playlistId?: string | null): Promise<Job> {
+    const existing = jobFor(track);
+    if (existing && isActive(existing)) return existing;
+    if (existing && existing.status !== 'completed') await remove(existing.id);
+    return start(track, undefined, playlistId);
   }
 
   const retry = (id: string) => invoke('retry_job', { id });
@@ -67,7 +95,6 @@ export const useJobsStore = defineStore('jobs', () => {
   const redownload = (id: string) => invoke('redownload_job', { id });
   const cancel = (id: string) => invoke('cancel_job', { id });
   const remove = (id: string) => invoke('remove_job', { id });
-  const clearFinished = () => invoke('clear_finished_jobs');
   const downloadCandidate = (id: string, index: number) =>
     invoke('download_candidate', { id, index });
   /** Downloads the track from YouTube Music instead, as lossy AAC. */
@@ -76,6 +103,9 @@ export const useJobsStore = defineStore('jobs', () => {
   return {
     jobs,
     activeCount,
+    pending,
+    notFoundCount,
+    replacing,
     jobByTrack,
     jobFor,
     byId,
@@ -83,12 +113,12 @@ export const useJobsStore = defineStore('jobs', () => {
     upsert,
     drop,
     start,
+    fetch,
     retry,
     retryNotFound,
     redownload,
     cancel,
     remove,
-    clearFinished,
     downloadCandidate,
     downloadFromYoutube,
   };

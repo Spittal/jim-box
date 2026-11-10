@@ -1,17 +1,18 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
 import TrackSummary from '@/components/TrackSummary.vue';
+import { useBrowseStore } from '@/stores/browse';
 import { useJobsStore } from '@/stores/jobs';
 import { usePlaylistStore } from '@/stores/playlist';
 import { useSearchStore } from '@/stores/search';
 import { formatDuration } from '@/composables/useFormat';
-import type { Job } from '@/types/job';
-import type { PlaylistEntry } from '@/types/playlist';
+import type { MissingEntry } from '@/types/playlist';
 import { trackKey, type TrackRequest } from '@/types/track';
 
-const props = defineProps<{ entry: PlaylistEntry; index: number }>();
-const emit = defineEmits<{ started: [job: Job] }>();
+/** A Spotify playlist's track that isn't in the collection: which version to fetch for it. */
+const props = defineProps<{ entry: MissingEntry }>();
 
+const browse = useBrowseStore();
 const jobsStore = useJobsStore();
 const playlistStore = usePlaylistStore();
 const searchStore = useSearchStore();
@@ -35,13 +36,13 @@ async function search() {
   }
 }
 
-/** Uses `request` for this playlist track and starts its download. */
+/** Uses `request` for this playlist track and fetches it into the playlist. */
 async function choose(request: TrackRequest) {
   starting.value = true;
   error.value = null;
   try {
-    await playlistStore.setMatch(props.index, request);
-    emit('started', await jobsStore.start(request));
+    await playlistStore.setMatch(props.entry.index, request);
+    await jobsStore.fetch(request, browse.link?.playlistId);
   } catch (e) {
     error.value = String(e);
   } finally {
@@ -53,7 +54,7 @@ onMounted(search);
 </script>
 
 <template>
-  <div class="flex flex-col gap-5 p-6">
+  <div class="flex flex-col gap-5 px-5 pb-5">
     <div>
       <h2 class="truncate text-lg font-semibold">{{ entry.track.title }}</h2>
       <div class="truncate text-sm text-text-secondary">{{ entry.track.artists.join(', ') }}</div>
