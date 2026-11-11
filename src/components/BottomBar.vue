@@ -93,6 +93,8 @@ const soulseek = computed(() => {
       return { dot: 'bg-status-busy animate-pulse', label: 'Connecting to Soulseek…' };
     case 'error':
       return { dot: 'bg-status-error', label: 'Soulseek error' };
+    case 'needsCredentials':
+      return { dot: 'bg-status-idle', label: 'Sign in to Soulseek' };
     default:
       return { dot: 'bg-status-idle', label: 'Soulseek offline' };
   }

@@ -37,7 +37,8 @@ export type TrackSort =
 
 export interface TrackQuery {
   source: TrackSource;
-  sort: TrackSort;
+  /** `keyCamelot` is the Key column in Camelot wheel order. */
+  sort: TrackSort | 'keyCamelot';
   descending: boolean;
   query: string;
 }
@@ -141,6 +142,19 @@ export interface Preparation {
   cues: Cue[];
   /** rekordbox's analysis lock: the grid can't be changed. */
   locked: boolean;
+}
+
+/** What the track list shows of a track: its whole waveform, small, and its cues. */
+export interface TrackPreview {
+  trackId: string;
+  /** The waveform's form: 7 three-band, 5 colour, 3 blue; 0 before analysis. */
+  kind: number;
+  /** The whole track in a few hundred columns of that form. */
+  data: Uint8Array;
+  columns: number;
+  /** The length the waveform covers, which cues are placed along. */
+  durationMs: number;
+  cues: Cue[];
 }
 
 export interface EditOutcome {

@@ -36,7 +36,12 @@ export interface Settings {
   analyseNewTracks: boolean;
   /** Let a beat grid change tempo part-way through a track. */
   followTempoChanges: boolean;
+  /** How musical keys are shown. */
+  keyNotation: KeyNotation;
 }
+
+/** Musical names (`Am`, `F#`) or Camelot wheel codes (`8A`, `2B`). */
+export type KeyNotation = 'standard' | 'camelot';
 
 export type CookieBrowser = 'safari' | 'chrome' | 'edge' | 'firefox' | 'brave' | 'vivaldi';
 

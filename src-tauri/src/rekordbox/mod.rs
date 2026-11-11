@@ -13,8 +13,9 @@ mod prepare;
 
 pub use edit::{Edit, EditOutcome};
 pub use ingest::{Arrival, ImportReport};
-pub use prepare::{Audio, GridChange, Preparation};
+pub use prepare::{Audio, GridChange, Preparation, Preview};
 
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -89,7 +90,10 @@ pub enum Sort {
     Album,
     Genre,
     Bpm,
+    /// The key by its musical name, however the library spells it.
     Key,
+    /// The key, round the Camelot wheel.
+    KeyCamelot,
     Duration,
     Rating,
     DateAdded,
@@ -108,13 +112,12 @@ impl From<Sort> for SortColumn {
             Sort::Album => Self::Album,
             Sort::Genre => Self::Genre,
             Sort::Bpm => Self::Bpm,
-            Sort::Key => Self::Key,
             Sort::Duration => Self::Duration,
             Sort::Rating => Self::Rating,
             Sort::DateAdded => Self::DateAdded,
             Sort::Path => Self::Location,
             // Sorted here, from the list's own order: see `open_view`.
-            Sort::Playlists => Self::TrackNo,
+            Sort::Key | Sort::KeyCamelot | Sort::Playlists => Self::TrackNo,
         }
     }
 }
@@ -415,11 +418,13 @@ impl Collection {
             }
         };
         let by_playlists = query.sort == Sort::Playlists;
+        let by_key = matches!(query.sort, Sort::Key | Sort::KeyCamelot);
+        let sorted_here = by_playlists || by_key;
         let mut view = loaded.index.open_view(&ViewSpec {
             source,
             sort: query.sort.into(),
-            // The playlists sort below starts from the list's own order.
-            descending: query.descending && !by_playlists,
+            // The sorts below start from the list's own order.
+            descending: query.descending && !sorted_here,
             query: query.query.trim().to_owned(),
             filter: Default::default(),
         });
@@ -434,6 +439,30 @@ impl Collection {
                 let (a, b) = (&keys[a], &keys[b]);
                 let named = if query.descending { b.cmp(a) } else { a.cmp(b) };
                 a.is_empty().cmp(&b.is_empty()).then(named)
+            });
+        }
+        if by_key {
+            // Keys sort as they're shown, not as they're stored: a library
+            // holds `Am`, `G#m` and `8A` side by side. One that isn't a key
+            // comes after the ones that are; a blank comes last.
+            let keys: HashMap<u32, (u32, String)> = view
+                .rows
+                .iter()
+                .map(|&row| {
+                    let stored = loaded.index.key_name(row).trim();
+                    let name = rbl_core::musickey::parse(stored).map_or_else(|| stored.to_owned(), |key| key.name());
+                    (row, (rbl_index::key::camelot_rank(&name), name))
+                })
+                .collect();
+            let camelot = query.sort == Sort::KeyCamelot;
+            // Stable, so tracks in the same key keep the list's order.
+            view.rows.sort_by(|a, b| {
+                let ((a_rank, a), (b_rank, b)) = (&keys[a], &keys[b]);
+                let known = (*a_rank == u32::MAX).cmp(&(*b_rank == u32::MAX));
+                let ordered = if camelot { a_rank.cmp(b_rank) } else { Ordering::Equal }
+                    .then_with(|| rbl_index::key::cmp_names(a, b));
+                let ordered = if query.descending { ordered.reverse() } else { ordered };
+                a.is_empty().cmp(&b.is_empty()).then(known).then(ordered)
             });
         }
         let view = Arc::new(view);

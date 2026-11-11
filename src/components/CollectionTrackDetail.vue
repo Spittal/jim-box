@@ -6,6 +6,7 @@ import JobStatusBadge from '@/components/JobStatusBadge.vue';
 import LibraryCover from '@/components/LibraryCover.vue';
 import { TRACK_COLORS } from '@/composables/useTrackColors';
 import { formatDuration } from '@/composables/useFormat';
+import { useKeyNotation } from '@/composables/useKeyNotation';
 import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
 import { isActive, useJobsStore } from '@/stores/jobs';
@@ -17,6 +18,7 @@ const props = defineProps<{ track: CollectionTrack }>();
 defineEmits<{ close: [] }>();
 
 const store = useCollectionStore();
+const { formatKey } = useKeyNotation();
 const libraryStore = useLibraryStore();
 const jobsStore = useJobsStore();
 const browse = useBrowseStore();
@@ -168,7 +170,7 @@ const inputClass =
       <dt class="text-text-muted">BPM</dt>
       <dd class="font-mono">{{ track.bpm?.toFixed(2) ?? '–' }}</dd>
       <dt class="text-text-muted">Key</dt>
-      <dd class="font-mono">{{ track.key || '–' }}</dd>
+      <dd class="font-mono">{{ formatKey(track.key) || '–' }}</dd>
       <dt class="text-text-muted">Time</dt>
       <dd class="font-mono">{{ track.durationSecs ? formatDuration(track.durationSecs) : '–' }}</dd>
       <dt class="text-text-muted">Format</dt>

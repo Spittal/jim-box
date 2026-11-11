@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
 
 export type SettingsTab = 'soulseek' | 'library' | 'sharing' | 'formats' | 'youtube';
 
@@ -11,6 +11,20 @@ export const useUiStore = defineStore('ui', () => {
   /** Set to bring the Library tab's Consolidate part into view. */
   const consolidate = ref(false);
 
+  /** Whether the Soulseek tab is asking for a sign-in, as finding online needs one. */
+  const soulseekPrompt = ref(false);
+
+  /** Opens the Soulseek tab, asking for the account that finding online needs. */
+  function promptSoulseek() {
+    settings.value = 'soulseek';
+    soulseekPrompt.value = true;
+  }
+
+  // The request goes with the tab: opened another way later, it only shows the settings.
+  watch(settings, (tab) => {
+    if (tab !== 'soulseek') soulseekPrompt.value = false;
+  });
+
   function showConsolidate() {
     settings.value = 'library';
     consolidate.value = true;
@@ -20,5 +34,5 @@ export const useUiStore = defineStore('ui', () => {
     settings.value = settings.value ? null : tab;
   }
 
-  return { settings, consolidate, toggleSettings, showConsolidate };
+  return { settings, consolidate, soulseekPrompt, toggleSettings, showConsolidate, promptSoulseek };
 });

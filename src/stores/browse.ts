@@ -4,6 +4,7 @@ import { useCollectionStore } from './collection';
 import { useJobsStore } from './jobs';
 import { isPlaylistLink, usePlaylistStore } from './playlist';
 import { useSearchStore } from './search';
+import { useSettingsStore } from './settings';
 import type { CollectionTrack, TrackQuery, TrackSort, TrackSource } from '@/types/collection';
 import type { Job } from '@/types/job';
 import type { MissingEntry } from '@/types/playlist';
@@ -33,6 +34,7 @@ export const useBrowseStore = defineStore('browse', () => {
   const jobs = useJobsStore();
   const playlist = usePlaylistStore();
   const online = useSearchStore();
+  const settings = useSettingsStore();
 
   // --- Which list -------------------------------------------------------------
 
@@ -87,7 +89,9 @@ export const useBrowseStore = defineStore('browse', () => {
 
   const query = computed<TrackQuery>(() => {
     const source: TrackSource = selected.value ? { kind: 'playlist', id: selected.value } : { kind: 'collection' };
-    return { source, sort: sort.value, descending: descending.value, query: filter.value };
+    // Keys sort the way they're shown: by name, or round the Camelot wheel.
+    const camelot = sort.value === 'key' && settings.settings?.keyNotation === 'camelot';
+    return { source, sort: camelot ? 'keyCamelot' : sort.value, descending: descending.value, query: filter.value };
   });
 
   // --- Its rows, a page at a time ---------------------------------------------

@@ -5,11 +5,16 @@ import SettingsSection from '@/components/SettingsSection.vue';
 import SoulseekCredentialsForm from '@/components/SoulseekCredentialsForm.vue';
 import { useDaemonStore } from '@/stores/daemon';
 import { useSettingsStore } from '@/stores/settings';
+import { useUiStore } from '@/stores/ui';
 import { passwordStore } from '@/platform';
 
 const daemonStore = useDaemonStore();
 const { status } = storeToRefs(daemonStore);
 const { settings } = storeToRefs(useSettingsStore());
+const ui = useUiStore();
+
+/** Finding online was asked for with no account: say why this tab opened. */
+const askToSignIn = computed(() => ui.soulseekPrompt && daemonStore.needsCredentials);
 
 const description = computed(() => {
   const s = status.value;
@@ -37,6 +42,15 @@ function reconnect() {
 
 <template>
   <div class="flex flex-col gap-8">
+    <p
+      v-if="askToSignIn"
+      role="status"
+      class="max-w-xl rounded border border-accent bg-surface-1 px-3 py-2 text-xs text-text-primary"
+    >
+      Sign in to Soulseek to find tracks online. Tracks are fetched from the Soulseek network, so
+      this needs an account: enter yours below, or pick a new username and password to create one.
+    </p>
+
     <SettingsSection title="Connection" :description="description">
       <button
         class="self-start rounded bg-surface-2 px-3 py-1.5 text-xs transition-colors hover:bg-surface-3"
@@ -51,7 +65,7 @@ function reconnect() {
       :description="`Entering a new username and password creates a Soulseek account automatically. The password is kept in ${passwordStore}.`"
     >
       <SoulseekCredentialsForm
-        submit-label="Save and reconnect"
+        :submit-label="daemonStore.needsCredentials ? 'Sign in' : 'Save and reconnect'"
         :initial-username="settings?.soulseekUsername"
       />
     </SettingsSection>

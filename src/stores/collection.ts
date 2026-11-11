@@ -11,6 +11,7 @@ import type {
   PlaylistNode,
   Preparation,
   TrackPage,
+  TrackPreview,
   TrackQuery,
   Waiting,
 } from '@/types/collection';
@@ -139,9 +140,25 @@ export const useCollectionStore = defineStore('collection', () => {
   const waveform = async (trackId: string) =>
     new Uint8Array(await invoke<ArrayBuffer>('track_waveform', { trackId }));
 
+  /**
+   * What the track list shows of these tracks: a small waveform each, in the
+   * form `prefer` (7, 5 or 3) where the track has it, and their cues. Tracks
+   * no longer in the collection are left out.
+   */
+  async function previews(trackIds: string[], prefer: number): Promise<TrackPreview[]> {
+    type Sent = Omit<TrackPreview, 'data' | 'columns'> & { columns: number[] };
+    const sent = await invoke<Sent[]>('track_previews', { trackIds, prefer });
+    return sent.map(({ columns, ...preview }) => ({
+      ...preview,
+      data: Uint8Array.from(columns),
+      columns: Math.floor(columns.length / (preview.kind === 7 ? 3 : preview.kind === 5 ? 2 : 1)),
+    }));
+  }
+
   return {
     preparation,
     waveform,
+    previews,
     status,
     playlists,
     waiting,

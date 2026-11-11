@@ -136,6 +136,7 @@ pub fn run() {
             commands::collection::analysis_progress,
             commands::collection::track_preparation,
             commands::collection::track_waveform,
+            commands::collection::track_previews,
             commands::collection::track_audio,
             commands::collection::stop_track_audio,
             commands::playlist::link_spotify_playlist,

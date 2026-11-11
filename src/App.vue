@@ -7,7 +7,6 @@ import BottomBar from '@/components/BottomBar.vue';
 import SearchPanel from '@/components/SearchPanel.vue';
 import CollectionView from '@/views/CollectionView.vue';
 import SettingsView from '@/views/SettingsView.vue';
-import SetupView from '@/views/SetupView.vue';
 import WelcomeView from '@/views/WelcomeView.vue';
 import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
@@ -70,11 +69,13 @@ async function focusSearchBar() {
 }
 
 function runCommand(command: string) {
-  if (!loaded.value || needsCredentials.value) return;
+  if (!loaded.value) return;
   if (command === 'settings') ui.toggleSettings();
   else if (command === 'consolidate') ui.showConsolidate();
   else if (command === 'find') void focusSearchBar();
   else if (command === 'find-online') {
+    // With no Soulseek account, the sign-in comes first (as it does in the search itself).
+    if (needsCredentials.value) return ui.promptSoulseek();
     void focusSearchBar();
     useSearchStore().run(useBrowseStore().search);
   }
@@ -105,7 +106,7 @@ if (!isMac) {
     <!-- Titlebar drag region, under the traffic lights. Windows has a title bar of its own. -->
     <div v-if="isMac" data-tauri-drag-region class="h-8 shrink-0" />
     <WelcomeView v-if="asked && !libraryOpen" />
-    <template v-else-if="loaded && !needsCredentials">
+    <template v-else-if="loaded">
       <main class="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <div class="min-h-0 flex-1">
           <CollectionView />
@@ -115,6 +116,5 @@ if (!isMac) {
       </main>
       <BottomBar />
     </template>
-    <SetupView v-else-if="loaded" />
   </div>
 </template>

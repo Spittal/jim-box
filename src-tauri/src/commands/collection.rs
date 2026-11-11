@@ -10,7 +10,7 @@ use crate::ingest::{self, ArrivalQueue, Waiting};
 use crate::library;
 use crate::state::SettingsState;
 use crate::rekordbox::{
-    Audio, Collection, CollectionStatus, Edit, EditOutcome, ImportReport, PlaylistNode, Preparation, TrackPage,
+    Audio, Collection, CollectionStatus, Edit, EditOutcome, ImportReport, PlaylistNode, Preparation, Preview, TrackPage,
     TrackQuery,
 };
 
@@ -144,6 +144,15 @@ pub async fn track_preparation(app: AppHandle, track_id: String) -> AppResult<Pr
 pub async fn track_waveform(app: AppHandle, track_id: String) -> AppResult<Response> {
     let bytes = library::blocking(move || app.state::<Collection>().waveform(&track_id)).await?;
     Ok(Response::new(bytes))
+}
+
+/// What the track list shows of each of these tracks: a small waveform, in
+/// the form `prefer` (7 three-band, 5 colour, 3 blue) where the track has
+/// it, and its cues. At most a screenful or two at a time.
+#[tauri::command]
+pub async fn track_previews(app: AppHandle, mut track_ids: Vec<String>, prefer: u8) -> AppResult<Vec<Preview>> {
+    track_ids.truncate(200);
+    library::blocking(move || app.state::<Collection>().previews(&track_ids, prefer)).await
 }
 
 /// The player's audio being decoded: the latest stream asked for, which is

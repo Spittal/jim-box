@@ -2,6 +2,8 @@ import { acceptHMRUpdate, defineStore } from 'pinia';
 import { ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { TrackRequest } from '@/types/track';
+import { useDaemonStore } from '@/stores/daemon';
+import { useUiStore } from '@/stores/ui';
 
 /** Looking for tracks online: Deezer's results, then MusicBrainz's. */
 export const useSearchStore = defineStore('search', () => {
@@ -24,6 +26,11 @@ export const useSearchStore = defineStore('search', () => {
   async function run(text: string) {
     const query = text.trim();
     if (!query) return;
+    // What's found is fetched from Soulseek, so with no account the sign-in comes first.
+    if (useDaemonStore().needsCredentials) {
+      useUiStore().promptSoulseek();
+      return;
+    }
     const mine = ++latest;
     asked.value = query;
     open.value = true;

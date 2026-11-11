@@ -76,6 +76,17 @@ impl PathTemplates {
     }
 }
 
+/// How musical keys are shown, whichever way a library stores them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KeyNotation {
+    /// Musical names: `Am`, `F#`.
+    #[default]
+    Standard,
+    /// Camelot wheel codes: `8A`, `2B`.
+    Camelot,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
@@ -120,6 +131,9 @@ pub struct Settings {
     /// fitting one tempo to the whole of it as rekordbox's normal analysis does.
     #[serde(default)]
     pub follow_tempo_changes: bool,
+    /// How musical keys are shown.
+    #[serde(default)]
+    pub key_notation: KeyNotation,
 }
 
 impl Settings {
@@ -138,6 +152,7 @@ impl Settings {
             youtube_cookies_browser: None,
             analyse_new_tracks: true,
             follow_tempo_changes: false,
+            key_notation: KeyNotation::default(),
         }
     }
 

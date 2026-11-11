@@ -1,20 +1,23 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import CoverArt from '@/components/CoverArt.vue';
 import JobStatusBadge from '@/components/JobStatusBadge.vue';
 import LibraryCover from '@/components/LibraryCover.vue';
 import ProgressBar from '@/components/ProgressBar.vue';
+import TrackPreview from '@/components/TrackPreview.vue';
 import { dragging, dropRow, endDrag, startDrag } from '@/composables/useDrag';
 import { formatDuration } from '@/composables/useFormat';
+import { useKeyNotation } from '@/composables/useKeyNotation';
 import { progressPercent } from '@/composables/useJobStatus';
 import { TRACK_COLORS } from '@/composables/useTrackColors';
+import { PALETTES, chosenPalette } from '@/composables/useWaveform';
 import { useBrowseStore, type PendingRow } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
 import { isActive, useJobsStore } from '@/stores/jobs';
 import { useLibraryStore } from '@/stores/library';
 import { commandKey } from '@/platform';
-import type { CollectionTrack, TrackSort } from '@/types/collection';
+import type { CollectionTrack, TrackPreview as Preview, TrackSort } from '@/types/collection';
 
 /**
  * The tracks of the list being shown. Tracks still being fetched come first,
@@ -23,6 +26,7 @@ import type { CollectionTrack, TrackSort } from '@/types/collection';
 const emit = defineEmits<{ open: [track: CollectionTrack] }>();
 
 const store = useCollectionStore();
+const { formatKey } = useKeyNotation();
 const { analysis } = storeToRefs(store);
 const browse = useBrowseStore();
 const { sort, descending, filter, total, listError, selection, selectedIds, pendingRows, pendingSelection, pendingOnly, inPlaylist, selected } =
@@ -118,6 +122,14 @@ function clickRow(index: number, track: CollectionTrack, event: MouseEvent) {
   browse.selectTracks(next);
 }
 
+/** Clicking the current rating clears it, as in rekordbox. */
+function rate(track: CollectionTrack, stars: number) {
+  const next = track.rating === stars ? 0 : stars;
+  // Shown at once: saving takes a moment, and a star should answer the click.
+  browse.patchTrack(track.id, { rating: next });
+  store.edit({ kind: 'setRating', trackId: track.id, stars: next });
+}
+
 // --- Tracks on their way ----------------------------------------------------
 
 /** Where a shift-click's range of pending rows starts. */
@@ -186,39 +198,47 @@ async function dropOnRow(index: number) {
 
 // --- Display ----------------------------------------------------------------
 
-/** A column: something the list can be sorted by, or the artwork. */
-type ColumnId = TrackSort | 'art';
+/** A column: something the list can be sorted by, or the artwork, or the waveform. */
+type ColumnId = TrackSort | 'art' | 'preview';
+
+/** The list can be sorted by every column but the pictures. */
+const sortable = (id: ColumnId): id is TrackSort => id !== 'art' && id !== 'preview';
 
 interface Column {
   id: ColumnId;
   label: string;
   /** Its name in the columns menu, where the header's is too short to say. */
   name?: string;
-  /** Its width, for the header and every row. */
-  class: string;
+  /** Its width in pixels until it's dragged to another; without one it shares the room left over. */
+  width?: number;
+  /** How much of the room left over it takes, against the others sharing it. */
+  grow?: number;
+  /** How its header and cells are set, where not to the left. */
+  class?: string;
   /** Shown only for the whole collection. */
   collectionOnly?: boolean;
 }
 
 const COLUMNS: Column[] = [
-  { id: 'art', label: '', name: 'Artwork', class: 'w-5 shrink-0' },
-  { id: 'trackNo', label: '#', name: 'Number', class: 'w-10 shrink-0 text-right' },
-  { id: 'title', label: 'Title', class: 'min-w-0 flex-[3]' },
-  { id: 'artist', label: 'Artist', class: 'min-w-0 flex-[2]' },
-  { id: 'album', label: 'Album', class: 'min-w-0 flex-[2]' },
-  { id: 'genre', label: 'Genre', class: 'min-w-0 flex-1' },
-  { id: 'playlists', label: 'Playlists', class: 'min-w-0 flex-[2]', collectionOnly: true },
-  { id: 'bpm', label: 'BPM', class: 'w-14 shrink-0 text-right' },
-  { id: 'key', label: 'Key', class: 'w-10 shrink-0' },
-  { id: 'duration', label: 'Time', class: 'w-12 shrink-0 text-right' },
-  { id: 'rating', label: 'Rating', class: 'w-16 shrink-0' },
-  { id: 'dateAdded', label: 'Added', class: 'w-24 shrink-0' },
-  { id: 'path', label: 'File path', class: 'min-w-0 flex-[3]' },
+  { id: 'art', label: '', name: 'Artwork', width: 16 },
+  { id: 'trackNo', label: '#', name: 'Number', width: 40, class: 'text-center' },
+  { id: 'preview', label: 'Preview', name: 'Waveform and cues', width: 160, class: 'text-center' },
+  { id: 'title', label: 'Title', grow: 3 },
+  { id: 'artist', label: 'Artist', grow: 2 },
+  { id: 'album', label: 'Album', grow: 2 },
+  { id: 'genre', label: 'Genre', grow: 1 },
+  { id: 'playlists', label: 'Playlists', grow: 2, collectionOnly: true },
+  { id: 'bpm', label: 'BPM', width: 56, class: 'text-center' },
+  { id: 'key', label: 'Key', width: 40, class: 'text-center' },
+  { id: 'duration', label: 'Time', width: 48, class: 'text-center' },
+  { id: 'rating', label: 'Rating', width: 64, class: 'text-center' },
+  { id: 'dateAdded', label: 'Added', width: 96, class: 'text-center' },
+  { id: 'path', label: 'File path', grow: 3 },
 ];
 
-/** The columns' order and which are hidden, kept between runs. */
+/** The columns' order, which are hidden, and the widths they've been dragged to, kept between runs. */
 const COLUMNS_KEY = 'tracks.columns';
-function savedColumns(): { order: ColumnId[]; hidden: ColumnId[] } {
+function savedColumns(): { order: ColumnId[]; hidden: ColumnId[]; widths: Partial<Record<ColumnId, number>> } {
   try {
     const saved = JSON.parse(localStorage.getItem(COLUMNS_KEY) ?? '{}');
     const known = (ids: unknown) =>
@@ -228,15 +248,24 @@ function savedColumns(): { order: ColumnId[]; hidden: ColumnId[] } {
     COLUMNS.forEach((column, at) => {
       if (!order.includes(column.id)) order.splice(Math.min(at, order.length), 0, column.id);
     });
-    return { order, hidden: known(saved.hidden) };
+    const widths: Partial<Record<ColumnId, number>> = {};
+    for (const { id } of COLUMNS) {
+      const width = saved.widths?.[id];
+      if (typeof width === 'number' && width > 0) widths[id] = width;
+    }
+    return { order, hidden: known(saved.hidden), widths };
   } catch {
-    return { order: COLUMNS.map((c) => c.id), hidden: [] };
+    return { order: COLUMNS.map((c) => c.id), hidden: [], widths: {} };
   }
 }
 const columnOrder = ref(savedColumns().order);
 const hiddenColumns = ref(new Set(savedColumns().hidden));
-watch([columnOrder, hiddenColumns], () =>
-  localStorage.setItem(COLUMNS_KEY, JSON.stringify({ order: columnOrder.value, hidden: [...hiddenColumns.value] })),
+const columnWidths = ref(savedColumns().widths);
+watch([columnOrder, hiddenColumns, columnWidths], () =>
+  localStorage.setItem(
+    COLUMNS_KEY,
+    JSON.stringify({ order: columnOrder.value, hidden: [...hiddenColumns.value], widths: columnWidths.value }),
+  ),
 );
 
 /** Every column this list can show, in the order chosen. */
@@ -258,6 +287,79 @@ function toggleColumn(id: ColumnId) {
 function resetColumns() {
   columnOrder.value = COLUMNS.map((c) => c.id);
   hiddenColumns.value = new Set();
+  columnWidths.value = {};
+}
+
+// --- Column widths ------------------------------------------------------------
+
+/** The gap between columns, and the room either side of them: the rows' `gap-3`, `pl-4` and `pr-7`. */
+const COLUMN_GAP = 12;
+const ROW_PADDING = 16 + 28;
+/** The narrowest a column goes, and the least one sharing the room left over is squeezed to. */
+const MIN_WIDTH = 24;
+const MIN_SHARED_WIDTH = 48;
+/** The artwork is square, so it's no wider than a row is tall. */
+const ART_WIDTHS = [12, ROW_HEIGHT - 4] as const;
+
+const clampWidth = (id: ColumnId, width: number) =>
+  id === 'art'
+    ? Math.min(ART_WIDTHS[1], Math.max(ART_WIDTHS[0], Math.round(width)))
+    : Math.max(MIN_WIDTH, Math.round(width));
+
+/** A column's width in pixels, or undefined where it shares the room left over. */
+const widthOf = (column: Column) => {
+  const width = columnWidths.value[column.id] ?? column.width;
+  return width === undefined ? undefined : clampWidth(column.id, width);
+};
+
+/** How each column's header and cells are sized. */
+const cellStyle = computed(() => {
+  const styles = {} as Record<ColumnId, Record<string, string>>;
+  for (const column of COLUMNS) {
+    const width = widthOf(column);
+    if (width === undefined) styles[column.id] = { flex: `${column.grow ?? 1} 1 0%`, minWidth: `${MIN_SHARED_WIDTH}px` };
+    else if (column.id === 'art') styles[column.id] = { flex: `0 0 ${width}px`, width: `${width}px`, height: `${width}px` };
+    else styles[column.id] = { flex: `0 0 ${width}px`, width: `${width}px` };
+  }
+  return styles;
+});
+
+/** The least room the columns need; in less, the list scrolls sideways. */
+const minListWidth = computed(
+  () =>
+    ROW_PADDING +
+    columns.value.reduce((sum, column) => sum + COLUMN_GAP + (widthOf(column) ?? MIN_SHARED_WIDTH), 0) -
+    COLUMN_GAP,
+);
+
+/** The column whose edge is being dragged, where the drag began, and how wide the column was then. */
+const resizing = ref<{ id: ColumnId; startX: number; startWidth: number } | null>(null);
+
+function startResize(event: PointerEvent, id: ColumnId) {
+  if (event.button !== 0) return;
+  const handle = event.currentTarget as HTMLElement;
+  const header = handle.parentElement;
+  if (!header) return;
+  event.preventDefault();
+  handle.setPointerCapture(event.pointerId);
+  resizing.value = { id, startX: event.clientX, startWidth: header.getBoundingClientRect().width };
+}
+
+function resize(event: PointerEvent) {
+  const drag = resizing.value;
+  if (!drag) return;
+  const width = clampWidth(drag.id, drag.startWidth + event.clientX - drag.startX);
+  if (columnWidths.value[drag.id] !== width) columnWidths.value = { ...columnWidths.value, [drag.id]: width };
+}
+
+function endResize() {
+  resizing.value = null;
+}
+
+/** Puts a column back to the width it came with. */
+function resetWidth(id: ColumnId) {
+  const { [id]: _, ...rest } = columnWidths.value;
+  columnWidths.value = rest;
 }
 
 /** The column header being dragged to a new place, and the one it is over. */
@@ -296,36 +398,119 @@ function endColumnDrag() {
   columnTarget.value = null;
 }
 
+// --- Waveform previews --------------------------------------------------------
+
+/** How long rows must stay in view before their previews are fetched, so rows scrolled past fetch nothing. */
+const PREVIEW_SETTLE_MS = 120;
+/** Previews kept at once; they're about a kilobyte each. */
+const MAX_PREVIEWS = 2000;
+
+/** The waveform and cues of the tracks that have been in view, by track id. */
+const previews = shallowRef(new Map<string, Preview>());
+/** What each was read as: the collection it was read from, and in which style. */
+const previewRead = new Map<string, string>();
+const previewShown = computed(() => columns.value.some((column) => column.id === 'preview'));
+const previewKind = computed(() => PALETTES.find((p) => p.id === chosenPalette.value)?.kind ?? 7);
+
+/**
+ * Reads the previews of the rows in view that haven't been read since the
+ * collection last changed: a cue set in the player, or an analysis finishing,
+ * shows here too. What was read before stays up until its replacement arrives.
+ */
+async function loadPreviews() {
+  if (!previewShown.value) return;
+  const read = `${store.generation}/${previewKind.value}`;
+  const inView = visibleRows.value.flatMap((row) => (row.track ? [row.track.id] : []));
+  const ids = inView.filter((id) => previewRead.get(id) !== read);
+  if (!ids.length) return;
+  for (const id of ids) previewRead.set(id, read);
+  try {
+    const found = await store.previews(ids, previewKind.value);
+    const next = new Map(previews.value);
+    for (const preview of found) {
+      // Unless it has been asked for again since, for a newer collection.
+      if (previewRead.get(preview.trackId) === read) next.set(preview.trackId, preview);
+    }
+    if (next.size > MAX_PREVIEWS) {
+      const keep = new Set(inView);
+      for (const id of next.keys()) {
+        if (keep.has(id)) continue;
+        next.delete(id);
+        previewRead.delete(id);
+      }
+    }
+    previews.value = next;
+  } catch {
+    // Left for the next time they're in view.
+    for (const id of ids) if (previewRead.get(id) === read) previewRead.delete(id);
+  }
+}
+
+let previewTimer = 0;
+watch(
+  [visibleRows, () => store.generation, previewKind, previewShown],
+  () => {
+    clearTimeout(previewTimer);
+    previewTimer = window.setTimeout(loadPreviews, PREVIEW_SETTLE_MS);
+  },
+  { immediate: true },
+);
+onUnmounted(() => clearTimeout(previewTimer));
+
 const smallButtonClass =
   'shrink-0 rounded bg-surface-2 px-2 py-0.5 text-[11px] text-text-primary transition-colors hover:bg-surface-3';
 </script>
 
 <template>
-  <div class="flex min-h-0 min-w-0 flex-1 flex-col">
+  <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-auto">
+  <div class="flex min-h-0 flex-1 flex-col" :style="{ minWidth: `${minListWidth}px` }">
     <div
-      class="relative flex shrink-0 items-center gap-3 border-b border-border px-4 py-1.5 text-[11px] text-text-muted"
+      class="relative flex shrink-0 items-center gap-3 border-b border-border py-1.5 pr-7 pl-4 text-[11px] text-text-muted"
+      :class="{ 'cursor-col-resize': resizing }"
       @contextmenu.prevent="columnsMenu = true"
     >
-      <span class="w-1.5 shrink-0" />
-      <button
+      <div
         v-for="column in columns"
         :key="column.id"
-        class="truncate text-left hover:text-text-secondary"
+        class="relative flex"
+        :style="{ ...cellStyle[column.id], height: 'auto' }"
+      >
+      <button
+        class="min-w-0 flex-1 truncate hover:text-text-secondary"
         :class="[
-          column.class,
+          column.class ?? 'text-left',
           { 'text-text-primary': sort === column.id, 'opacity-40': movingColumn === column.id },
           columnTarget === column.id && movingColumn !== column.id ? 'text-accent' : '',
         ]"
-        :title="column.id === 'art' ? 'Artwork. Drag to move the column.' : 'Click to sort by this. Drag to move the column.'"
+        :title="sortable(column.id)
+          ? 'Click to sort by this. Drag to move the column.'
+          : `${column.name}. Drag to move the column.`"
         draggable="true"
-        @click="column.id !== 'art' && browse.sortBy(column.id)"
+        @click="sortable(column.id) && browse.sortBy(column.id)"
         @dragstart="dragColumn($event, column.id)"
         @dragover="overColumn($event, column.id)"
         @drop.prevent="dropColumn(column.id)"
         @dragend="endColumnDrag"
       >
-        {{ column.label }}<span v-if="sort === column.id">{{ descending ? ' ↓' : ' ↑' }}</span>
+        {{ column.label || '\u00a0' }}<span v-if="sort === column.id">{{ descending ? ' ↓' : ' ↑' }}</span>
       </button>
+        <!-- The column's right edge, in the gap after it: drag to resize. -->
+        <span
+          class="group absolute -top-1.5 -right-2.5 -bottom-1.5 z-[1] flex w-2 cursor-col-resize justify-center"
+          title="Drag to resize the column. Double-click for its usual width."
+          @pointerdown="startResize($event, column.id)"
+          @pointermove="resize"
+          @pointerup="endResize"
+          @pointercancel="endResize"
+          @dblclick.stop="resetWidth(column.id)"
+          @click.stop
+        >
+          <span
+            class="w-px group-hover:bg-text-muted"
+            :class="resizing?.id === column.id ? 'bg-accent' : 'bg-border'"
+          />
+        </span>
+      </div>
       <button
         class="absolute top-1/2 right-0.5 -translate-y-1/2 rounded px-1 leading-none hover:bg-surface-2 hover:text-text-primary"
         title="Choose columns"
@@ -374,27 +559,27 @@ const smallButtonClass =
       <div
         v-for="row in pendingRows"
         :key="row.key"
-        class="flex cursor-default items-center gap-3 px-4 text-xs text-text-secondary"
+        class="flex cursor-default items-center gap-3 pr-7 pl-4 text-xs text-text-secondary"
         :class="pendingSelection.has(row.key) ? 'bg-surface-2' : 'hover:bg-surface-1'"
         :style="{ height: `${ROW_HEIGHT}px` }"
         @click="clickPending(row, $event)"
       >
-        <span class="w-1.5 shrink-0" />
         <template v-for="column in columns" :key="column.id">
           <CoverArt
             v-if="column.id === 'art'"
             :src="row.job?.request.coverUrl ?? row.entry?.request?.coverUrl ?? null"
-            class="size-5"
+            :style="cellStyle.art"
           />
           <span
             v-else-if="column.id === 'trackNo'"
-            class="font-mono text-text-muted"
-            :class="column.class"
+            class="truncate font-mono text-text-muted"
+            :class="column.class" :style="cellStyle[column.id]"
             title="Not in the collection yet"
           >↓</span>
-          <span v-else-if="column.id === 'title'" class="truncate" :class="column.class">{{ row.title }}</span>
-          <span v-else-if="column.id === 'artist'" class="truncate text-text-muted" :class="column.class">{{ row.artist }}</span>
-          <span v-else-if="column.id === 'album'" class="truncate text-text-muted" :class="column.class">{{ row.album }}</span>
+          <span v-else-if="column.id === 'preview'" :class="column.class" :style="cellStyle[column.id]" />
+          <span v-else-if="column.id === 'title'" class="truncate" :class="column.class" :style="cellStyle[column.id]">{{ row.title }}</span>
+          <span v-else-if="column.id === 'artist'" class="truncate text-text-muted" :class="column.class" :style="cellStyle[column.id]">{{ row.artist }}</span>
+          <span v-else-if="column.id === 'album'" class="truncate text-text-muted" :class="column.class" :style="cellStyle[column.id]">{{ row.album }}</span>
         </template>
         <span class="min-w-0 flex-1">
           <ProgressBar v-if="row.job && progressPercent(row.job) !== null" :percent="progressPercent(row.job)!" />
@@ -451,7 +636,7 @@ const smallButtonClass =
         <div
           v-for="row in visibleRows"
           :key="row.index"
-          class="absolute right-0 left-0 flex cursor-default items-center gap-3 px-4 text-xs"
+          class="absolute right-0 left-0 flex cursor-default items-center gap-3 pr-7 pl-4 text-xs"
           :class="[
             row.track && selection.has(row.track.id) ? 'bg-surface-2' : 'hover:bg-surface-1',
             dropRow === row.index ? 'border-t border-accent' : '',
@@ -466,14 +651,21 @@ const smallButtonClass =
           @drop.prevent.stop="dropOnRow(row.index)"
         >
           <template v-if="row.track">
+            <!-- The track's colour, in the row's left margin. -->
             <span
-              class="size-1.5 shrink-0 rounded-full"
-              :style="{ backgroundColor: TRACK_COLORS[row.track.color]?.hex || 'transparent' }"
+              v-if="TRACK_COLORS[row.track.color]?.hex"
+              class="absolute top-1/2 left-1.5 size-1.5 -translate-y-1/2 rounded-full"
+              :style="{ backgroundColor: TRACK_COLORS[row.track.color].hex }"
             />
             <template v-for="column in columns" :key="column.id">
-            <LibraryCover v-if="column.id === 'art'" :path="row.track.path" thumb class="size-5" />
-            <span v-else-if="column.id === 'trackNo'" class="font-mono text-text-muted" :class="column.class">{{ row.track.position }}</span>
-            <span v-else-if="column.id === 'title'" class="flex items-center gap-1.5" :class="column.class">
+            <LibraryCover v-if="column.id === 'art'" :path="row.track.path" thumb :style="cellStyle.art" />
+            <span v-else-if="column.id === 'trackNo'" class="truncate font-mono text-text-muted" :class="column.class" :style="cellStyle[column.id]">{{ row.track.position }}</span>
+            <TrackPreview
+              v-else-if="column.id === 'preview'"
+              :preview="previews.get(row.track.id) ?? null"
+              :class="column.class" :style="cellStyle[column.id]"
+            />
+            <span v-else-if="column.id === 'title'" class="flex items-center gap-1.5 overflow-hidden" :class="column.class" :style="cellStyle[column.id]">
               <span class="truncate" :title="row.track.path">{{ row.track.title }}</span>
               <span
                 v-if="library.forTrack(row.track.id)?.status === 'matched'"
@@ -486,29 +678,43 @@ const smallButtonClass =
                 title="A new copy of this track is being fetched"
               >↓</span>
             </span>
-            <span v-else-if="column.id === 'artist'" class="truncate text-text-secondary" :class="column.class">{{ row.track.artist }}</span>
-            <span v-else-if="column.id === 'album'" class="truncate text-text-secondary" :class="column.class">{{ row.track.album }}</span>
-            <span v-else-if="column.id === 'genre'" class="truncate text-text-muted" :class="column.class">{{ row.track.genre }}</span>
+            <span v-else-if="column.id === 'artist'" class="truncate text-text-secondary" :class="column.class" :style="cellStyle[column.id]">{{ row.track.artist }}</span>
+            <span v-else-if="column.id === 'album'" class="truncate text-text-secondary" :class="column.class" :style="cellStyle[column.id]">{{ row.track.album }}</span>
+            <span v-else-if="column.id === 'genre'" class="truncate text-text-muted" :class="column.class" :style="cellStyle[column.id]">{{ row.track.genre }}</span>
             <span
               v-else-if="column.id === 'playlists'"
               class="truncate text-text-muted"
-              :class="column.class"
+              :class="column.class" :style="cellStyle[column.id]"
               :title="row.track.playlists.join('\n')"
             >{{ row.track.playlists.join(', ') }}</span>
-            <span v-else-if="column.id === 'bpm'" class="font-mono" :class="column.class">
+            <span v-else-if="column.id === 'bpm'" class="truncate font-mono" :class="column.class" :style="cellStyle[column.id]">
               <span v-if="analysis?.running.includes(row.track.id)" class="text-text-muted" title="Being analysed">…</span>
               <template v-else>{{ row.track.bpm?.toFixed(1) ?? '' }}</template>
             </span>
-            <span v-else-if="column.id === 'key'" class="font-mono text-text-secondary" :class="column.class">{{ row.track.key }}</span>
-            <span v-else-if="column.id === 'duration'" class="font-mono text-text-muted" :class="column.class">
+            <span v-else-if="column.id === 'key'" class="truncate font-mono text-text-secondary" :class="column.class" :style="cellStyle[column.id]">{{ formatKey(row.track.key) }}</span>
+            <span v-else-if="column.id === 'duration'" class="truncate font-mono text-text-muted" :class="column.class" :style="cellStyle[column.id]">
               {{ row.track.durationSecs ? formatDuration(row.track.durationSecs) : '' }}
             </span>
-            <span v-else-if="column.id === 'rating'" class="text-[10px] tracking-tight text-text-secondary" :class="column.class">{{ '★'.repeat(row.track.rating) }}</span>
-            <span v-else-if="column.id === 'dateAdded'" class="font-mono text-text-muted" :class="column.class">{{ row.track.dateAdded.slice(0, 10) }}</span>
+            <span
+              v-else-if="column.id === 'rating'"
+              class="flex justify-center overflow-hidden text-[11px] leading-none"
+              :style="cellStyle[column.id]"
+              @click.stop
+              @dblclick.stop
+            >
+              <button
+                v-for="star in 5"
+                :key="star"
+                :class="star <= row.track.rating ? 'text-text-secondary hover:text-text-primary' : 'text-text-muted/50 hover:text-text-secondary'"
+                :title="`${star} ${star === 1 ? 'star' : 'stars'}`"
+                @click="rate(row.track, star)"
+              >{{ star <= row.track.rating ? '★' : '☆' }}</button>
+            </span>
+            <span v-else-if="column.id === 'dateAdded'" class="truncate font-mono text-text-muted" :class="column.class" :style="cellStyle[column.id]">{{ row.track.dateAdded.slice(0, 10) }}</span>
             <span
               v-else-if="column.id === 'path'"
               class="truncate text-text-muted"
-              :class="column.class"
+              :class="column.class" :style="cellStyle[column.id]"
               :title="row.track.path"
             >{{ row.track.path }}</span>
             </template>
@@ -529,5 +735,6 @@ const smallButtonClass =
         <template v-else>No tracks here.</template>
       </p>
     </div>
+  </div>
   </div>
 </template>

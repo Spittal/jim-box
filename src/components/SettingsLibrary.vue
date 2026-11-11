@@ -9,7 +9,7 @@ import ToggleRow from '@/components/ToggleRow.vue';
 import { useLibrariesStore } from '@/stores/libraries';
 import { useSettingsStore } from '@/stores/settings';
 import { useSettingsSave } from '@/composables/useSettingsSave';
-import type { PathTemplates } from '@/types/settings';
+import type { KeyNotation, PathTemplates } from '@/types/settings';
 
 const settingsStore = useSettingsStore();
 const { settings } = storeToRefs(settingsStore);
@@ -34,6 +34,11 @@ const PATH_KINDS: { key: keyof PathTemplates; label: string }[] = [
 ];
 const paths = ref<PathTemplates>({ default: '', comp: '', singleton: '' });
 watch(() => settings.value?.paths, (p) => p && (paths.value = { ...p }), { immediate: true });
+
+const KEY_NOTATIONS: { id: KeyNotation; label: string; example: string }[] = [
+  { id: 'standard', label: 'Musical', example: 'Am, F#' },
+  { id: 'camelot', label: 'Camelot', example: '8A, 2B' },
+];
 
 const fields = ['albumartist', 'artist', 'album', 'year', 'track', 'disc', 'title'].map((f) => `$${f}`);
 
@@ -120,6 +125,33 @@ async function savePaths() {
         :model-value="settings.followTempoChanges"
         @update:model-value="(on) => save({ followTempoChanges: on })"
       />
+    </div>
+
+    <div class="flex flex-col gap-2">
+      <span class="text-xs text-text-secondary">Keys</span>
+      <div class="flex items-start justify-between gap-4 rounded border border-border bg-surface-1 px-3 py-2">
+        <span class="flex flex-col">
+          <span class="text-sm">Key notation</span>
+          <span class="text-xs text-text-muted">
+            How keys are shown and sorted here, whichever way each track's key is stored. Nothing in your rekordbox library is changed.
+          </span>
+        </span>
+        <div class="flex shrink-0 overflow-hidden rounded border border-border">
+          <button
+            v-for="option in KEY_NOTATIONS"
+            :key="option.id"
+            class="px-3 py-1 text-xs transition-colors"
+            :class="settings.keyNotation === option.id
+              ? 'bg-surface-3 font-medium text-text-primary'
+              : 'bg-surface-1 text-text-muted hover:text-text-secondary'"
+            :title="`e.g. ${option.example}`"
+            :aria-pressed="settings.keyNotation === option.id"
+            @click="settings.keyNotation !== option.id && save({ keyNotation: option.id })"
+          >
+            {{ option.label }}
+          </button>
+        </div>
+      </div>
     </div>
   </SettingsSection>
 </template>

@@ -4,6 +4,7 @@
 //! Cues live in `master.db` (`djmdCue`); the beat grid lives in the track's
 //! analysis files, with its tempo mirrored on the track's row.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use rbl_anlz::grid::{apply_with_duration, tempo_x100, validate, Edit as AnlzEdit};
@@ -116,6 +117,69 @@ pub struct Preparation {
     pub locked: bool,
 }
 
+/// How many columns a track list preview has: enough for the column's width
+/// on a dense screen.
+const PREVIEW_COLUMNS: usize = 400;
+
+/// What the track list shows of a track: its whole waveform, small, and its cues.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Preview {
+    pub track_id: String,
+    /// The form `columns` is in, as [`Collection::waveform`] names them: 7,
+    /// 5 or 3; 0 before analysis.
+    pub kind: u8,
+    /// The whole track in a few hundred columns of that form, each the
+    /// loudest of the detailed columns it covers.
+    pub columns: Vec<u8>,
+    /// The length the waveform covers, which cues are placed along.
+    pub duration_ms: u32,
+    /// Ordered by position.
+    pub cues: Vec<Cue>,
+}
+
+/// Bytes in a column of a detailed waveform of this kind.
+fn stride_of(kind: u8) -> usize {
+    match kind {
+        7 => 3,
+        5 => 2,
+        _ => 1,
+    }
+}
+
+/// A detailed waveform in `width` columns (or as many as it has, if fewer),
+/// each the loudest of those it covers: as the player draws its overview.
+fn shrink(kind: u8, data: &[u8], width: usize) -> Vec<u8> {
+    let stride = stride_of(kind);
+    let columns = data.len() / stride;
+    let width = width.min(columns);
+    let mut out = Vec::with_capacity(width * stride);
+    for px in 0..width {
+        let from = px * columns / width;
+        let to = ((px + 1) * columns / width).clamp(from + 1, columns);
+        let covered = data[from * stride..to * stride].chunks_exact(stride);
+        match kind {
+            // Three bands, each its own loudest.
+            7 => {
+                let mut bands = [0u8; 3];
+                for column in covered {
+                    for (band, &value) in bands.iter_mut().zip(column) {
+                        *band = (*band).max(value);
+                    }
+                }
+                out.extend_from_slice(&bands);
+            }
+            // Colour and height in one: the tallest column, whole.
+            5 => {
+                let tallest = covered.max_by_key(|column| (column[1] >> 2) & 31).unwrap_or(&[0, 0]);
+                out.extend_from_slice(tallest);
+            }
+            _ => out.push(covered.map(|column| column[0]).max_by_key(|byte| byte & 31).unwrap_or(0)),
+        }
+    }
+    out
+}
+
 /// A change to a track's beat grid.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -163,29 +227,38 @@ pub(super) fn is_locked(db: &rbl_db::Library, track_id: &str) -> AppResult<bool>
 }
 
 fn cues_of(db: &rbl_db::Library, track_id: &str) -> AppResult<Vec<Cue>> {
+    Ok(cues_of_each(db, &[track_id])?.remove(track_id).unwrap_or_default())
+}
+
+/// The cues of each of these tracks that has any, by track id, in one query.
+fn cues_of_each(db: &rbl_db::Library, track_ids: &[&str]) -> AppResult<HashMap<String, Vec<Cue>>> {
+    let mut found: HashMap<String, Vec<Cue>> = HashMap::new();
+    if track_ids.is_empty() {
+        return Ok(found);
+    }
+    let places = vec!["?"; track_ids.len()].join(",");
     let mut statement = db
         .connection()
-        .prepare(
+        .prepare(&format!(
             "SELECT ID, COALESCE(Kind, 0), COALESCE(InMsec, 0), COALESCE(OutMsec, -1), COALESCE(Comment, ''),
-                    COALESCE(ColorTableIndex, 0)
-             FROM djmdCue WHERE ContentID = ?1 AND rb_local_deleted = 0",
-        )
+                    COALESCE(ColorTableIndex, 0), ContentID
+             FROM djmdCue WHERE ContentID IN ({places}) AND rb_local_deleted = 0"
+        ))
         .map_err(rekordbox_err)?;
-    let rows = statement
-        .query_map([track_id], |r| {
-            let (id, kind, start, end): (String, i64, i64, i64) = (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?);
-            let (comment, color): (String, i64) = (r.get(4)?, r.get(5)?);
-            Ok((id, kind, start, end, comment, color))
-        })
-        .map_err(rekordbox_err)?;
+    for (at, track_id) in track_ids.iter().enumerate() {
+        statement.raw_bind_parameter(at + 1, track_id).map_err(rekordbox_err)?;
+    }
     let colors = HotCueColors::installed();
-    let mut cues = Vec::new();
-    for row in rows {
-        let (id, kind, start, end, comment, color) = row.map_err(rekordbox_err)?;
+    let mut rows = statement.raw_query();
+    while let Some(r) = rows.next().map_err(rekordbox_err)? {
+        let (id, kind): (String, i64) = (r.get(0).map_err(rekordbox_err)?, r.get(1).map_err(rekordbox_err)?);
+        let (start, end): (i64, i64) = (r.get(2).map_err(rekordbox_err)?, r.get(3).map_err(rekordbox_err)?);
+        let (comment, color): (String, i64) = (r.get(4).map_err(rekordbox_err)?, r.get(5).map_err(rekordbox_err)?);
+        let track: String = r.get(6).map_err(rekordbox_err)?;
         let position_ms = u32::try_from(start).unwrap_or(0);
         let slot = slot_of(kind);
         let end_ms = u32::try_from(end).ok().filter(|&end| end > position_ms);
-        cues.push(Cue {
+        found.entry(track).or_default().push(Cue {
             id,
             slot,
             position_ms,
@@ -194,8 +267,10 @@ fn cues_of(db: &rbl_db::Library, track_id: &str) -> AppResult<Vec<Cue>> {
             color: slot.map(|slot| colors.color_of(color, slot, end_ms.is_some())),
         });
     }
-    cues.sort_by_key(|cue| (cue.position_ms, cue.slot));
-    Ok(cues)
+    for cues in found.values_mut() {
+        cues.sort_by_key(|cue| (cue.position_ms, cue.slot));
+    }
+    Ok(found)
 }
 
 impl Collection {
@@ -253,6 +328,50 @@ impl Collection {
             }
         }
         Ok(bytes)
+    }
+
+    /// What the track list shows of each of these tracks: a small waveform
+    /// in the form `prefer` (7, 5 or 3) when the track has it, or else the
+    /// first it has of those; and its cues. Tracks no longer in the
+    /// collection are left out. Blocking.
+    pub fn previews(&self, track_ids: &[String], prefer: u8) -> AppResult<Vec<Preview>> {
+        const FORMS: [(u8, &[u8; 4]); 3] = [(7, b"PWV7"), (5, b"PWV5"), (3, b"PWV3")];
+        let loaded = self.loaded_or_read()?;
+        let index = &loaded.index;
+        let db = rbl_db::Library::open(loaded.location.clone(), OpenMode::ReadOnly).map_err(rekordbox_err)?;
+        let ids: Vec<&str> = track_ids.iter().map(String::as_str).collect();
+        let mut cues = cues_of_each(&db, &ids)?;
+        drop(db);
+
+        let mut previews = Vec::with_capacity(track_ids.len());
+        for track_id in track_ids {
+            let Some(row) = index.row_of(track_id) else { continue };
+            let row = row as usize;
+            let mut preview = Preview {
+                track_id: track_id.clone(),
+                kind: 0,
+                columns: Vec::new(),
+                duration_ms: index.length_sec[row].saturating_mul(1000),
+                cues: cues.remove(track_id.as_str()).unwrap_or_default(),
+            };
+            let relative = index.analysis_path.get(row);
+            if !relative.is_empty() {
+                let [_, ext, two_ex] = analysis_files(&loaded.location.share_root, relative);
+                let preferred = FORMS.iter().filter(|(kind, _)| *kind == prefer);
+                for &(kind, tag) in preferred.chain(FORMS.iter().filter(|(kind, _)| *kind != prefer)) {
+                    let Ok(anlz) = rbl_anlz::Anlz::read(if kind == 7 { &two_ex } else { &ext }) else { continue };
+                    let Some((_, data)) = anlz.waveform(tag).filter(|(_, data)| !data.is_empty()) else { continue };
+                    preview.kind = kind;
+                    preview.columns = shrink(kind, data, PREVIEW_COLUMNS);
+                    // 150 columns a second: the waveform's own length, to the millisecond.
+                    let ms = (data.len() / stride_of(kind)) as u64 * 1000 / 150;
+                    preview.duration_ms = u32::try_from(ms).unwrap_or(u32::MAX);
+                    break;
+                }
+            }
+            previews.push(preview);
+        }
+        Ok(previews)
     }
 
     /// Decodes a track's audio for the player, handing it to `sink` as it
@@ -655,6 +774,44 @@ mod tests {
     }
 
     #[test]
+    fn a_waveform_shrinks_to_the_loudest_of_what_each_column_covers() {
+        // Three bands: each its own loudest.
+        assert_eq!(shrink(7, &[1, 9, 2, 5, 3, 8, 7, 7, 7, 0, 0, 0], 2), [5, 9, 8, 7, 7, 7]);
+        // Colour: the tallest column whole (its height is bits 2 to 6 of the second byte).
+        assert_eq!(shrink(5, &[0xaa, 4 << 2, 0xbb, 9 << 2, 0xcc, 1 << 2, 0xdd, 0], 2), [0xbb, 9 << 2, 0xcc, 1 << 2]);
+        // Blue: the tallest byte, by its low five bits.
+        assert_eq!(shrink(3, &[0xe1, 0x05, 0x02, 0x03], 2), [0x05, 0x03]);
+        // Nothing is made up for a waveform shorter than the preview.
+        assert_eq!(shrink(3, &[1, 2, 3], 400), [1, 2, 3]);
+        assert!(shrink(7, &[], 400).is_empty());
+    }
+
+    #[test]
+    fn previews_carry_a_small_waveform_and_each_tracks_cues() {
+        let (dir, collection, id) = prepared();
+        let raw = dir.path().join("Raw.wav");
+        click_track(&raw, 120.0, 5);
+        let unanalysed = collection.import(&[raw], None).unwrap().track_ids.remove(0);
+        add(&collection, &id, Some(1), 3_000, None);
+        add(&collection, &id, None, 1_000, Some(2_000));
+
+        let asked = [unanalysed.clone(), "gone".to_owned(), id.clone()];
+        let previews = collection.previews(&asked, 5).unwrap();
+        // In the order asked for, without the track that isn't there.
+        assert_eq!(previews.iter().map(|p| p.track_id.as_str()).collect::<Vec<_>>(), [&unanalysed, &id]);
+        let [bare, full] = [&previews[0], &previews[1]];
+        assert_eq!((bare.kind, bare.columns.len(), bare.cues.len()), (0, 0, 0));
+        assert_eq!((full.kind, full.columns.len()), (5, PREVIEW_COLUMNS * 2));
+        assert!((19_900..=20_100).contains(&full.duration_ms), "{} ms", full.duration_ms);
+        let cues: Vec<_> = full.cues.iter().map(|c| (c.slot, c.position_ms, c.end_ms)).collect();
+        assert_eq!(cues, [(None, 1_000, Some(2_000)), (Some(1), 3_000, None)]);
+
+        // The three-band form by default, and when what's asked for isn't one.
+        let three_band = &collection.previews(&[id.clone()], 0).unwrap()[0];
+        assert_eq!((three_band.kind, three_band.columns.len()), (7, PREVIEW_COLUMNS * 3));
+    }
+
+    #[test]
     fn an_unanalysed_track_has_no_grid_to_change() {
         let (dir, collection) = fixture();
         let wav = dir.path().join("Raw.wav");
@@ -715,6 +872,22 @@ mod tests {
             }
         }
         println!("{} tracks: {with_cues} with cues, {with_waves} with a waveform ({colour} with three bands)", page.rows.len());
+
+        // A screenful of the track list's previews, as scrolling asks for them.
+        let screenful: Vec<String> = page.rows.iter().take(60).map(|track| track.id.clone()).collect();
+        let started = std::time::Instant::now();
+        let previews = collection.previews(&screenful, 7).unwrap();
+        println!(
+            "{} previews in {:.0} ms: {} with a waveform, {} with cues",
+            previews.len(),
+            started.elapsed().as_secs_f64() * 1e3,
+            previews.iter().filter(|p| p.kind != 0).count(),
+            previews.iter().filter(|p| !p.cues.is_empty()).count()
+        );
+        for preview in &previews {
+            assert_eq!(preview.cues, collection.preparation(&preview.track_id).unwrap().cues);
+            assert!(preview.cues.iter().all(|cue| cue.position_ms <= preview.duration_ms + 2_000));
+        }
 
         // One of rekordbox's own grids, edited; and a cue set beside its own.
         let track = page

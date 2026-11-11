@@ -2,6 +2,17 @@
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { preview, stopPreview } from '@/audio/preview';
 import { TrackAudio } from '@/audio/trackAudio';
+import {
+  PALETTES,
+  chosenPalette,
+  cueColor,
+  cueLabel,
+  drawSlice,
+  fit,
+  head,
+  type Wave,
+} from '@/composables/useWaveform';
+import { useKeyNotation } from '@/composables/useKeyNotation';
 import { useCollectionStore } from '@/stores/collection';
 import type { Beat, CollectionEdit, CollectionTrack, Cue, GridChange, Preparation } from '@/types/collection';
 
@@ -16,6 +27,7 @@ const props = defineProps<{ track: CollectionTrack | null }>();
 const emit = defineEmits<{ close: []; ended: [] }>();
 
 const store = useCollectionStore();
+const { formatKey } = useKeyNotation();
 
 /** rekordbox's detailed waveforms have 150 columns a second. */
 const COLUMNS_PER_SEC = 150;
@@ -30,28 +42,7 @@ const COLOR = {
   downbeatHead: '#ea3323',
   playheadPaused: '#ff0000',
   playheadPlaying: '#ffffff',
-  hotCue: '#3ceb50',
-  loop: '#ff8205',
-  memoryCue: '#ea3323',
 };
-/** 3Band: one colour for each combination of bands reaching a point. */
-type Rgb = [number, number, number];
-const LOW: Rgb = [0, 85, 225];
-const MID: Rgb = [255, 166, 0];
-const HIGH: Rgb = [255, 255, 255];
-const ALL: Rgb = [245, 235, 215];
-/** Indexed by low = 1, mid = 2, high = 4, added together. */
-const BAND_COLORS = [LOW, LOW, MID, [180, 105, 10], HIGH, [210, 220, 250], [255, 240, 215], ALL].map(
-  (c) => `rgb(${c[0]},${c[1]},${c[2]})`,
-);
-
-type Palette = '3band' | 'rgb' | 'blue';
-const PALETTES: { id: Palette; label: string; kind: number }[] = [
-  { id: '3band', label: '3Band', kind: 7 },
-  { id: 'rgb', label: 'RGB', kind: 5 },
-  { id: 'blue', label: 'Blue', kind: 3 },
-];
-
 /** The track's audio: see `TrackAudio` for why it isn't an <audio> element. */
 const engine = new TrackAudio();
 /** The audio can be played and sought. */
@@ -68,8 +59,6 @@ const prep = ref<Preparation | null>(null);
 /** The waveforms the track's analysis holds, by kind: 7, 5 and 3. */
 const waves = shallowRef(new Map<number, Uint8Array>());
 
-const chosenPalette = ref<Palette>((localStorage.getItem('player.palette') as Palette) || '3band');
-watch(chosenPalette, (palette) => localStorage.setItem('player.palette', palette));
 /** The chosen style, or the nearest one this track has a waveform for. */
 const palette = computed(() => {
   const has = (p: (typeof PALETTES)[number]) => waves.value.has(p.kind);
@@ -351,16 +340,6 @@ function nameCue(cue: Cue, event: Event) {
   if (comment !== cue.comment) change({ kind: 'nameCue', cueId: cue.id, comment });
 }
 
-function cueColor(cue: Cue) {
-  if (cue.slot === null) return COLOR.memoryCue;
-  // A hot cue's own colour in rekordbox, or its pad's.
-  return cue.color ?? (cue.endMs ? COLOR.loop : COLOR.hotCue);
-}
-
-function cueLabel(cue: Cue) {
-  return cue.slot === null ? 'M' : String.fromCharCode(65 + cue.slot);
-}
-
 // --- Beat grid ---------------------------------------------------------------
 
 /** Change the grid only from the playhead on, for a track that changes tempo. */
@@ -455,144 +434,10 @@ const zoom = ref(2);
 /** The overview's waveform, drawn once per track, size and style. */
 let overviewImage: { key: string; canvas: HTMLCanvasElement } | null = null;
 
-/** Fits a canvas's pixels to its size on screen. */
-function fit(canvas: HTMLCanvasElement): [number, number, CanvasRenderingContext2D] {
-  const ratio = window.devicePixelRatio || 1;
-  const { clientWidth: width, clientHeight: height } = canvas;
-  if (canvas.width !== Math.round(width * ratio) || canvas.height !== Math.round(height * ratio)) {
-    canvas.width = Math.round(width * ratio);
-    canvas.height = Math.round(height * ratio);
-  }
-  const context = canvas.getContext('2d')!;
-  context.setTransform(ratio, 0, 0, ratio, 0, 0);
-  return [width, height, context];
-}
-
-/** A colour from its three channels with the strongest at full, as a CDJ draws RGB waveforms. */
-function rgbOf(r: number, g: number, b: number): string {
-  const peak = Math.max(r, g, b);
-  if (!peak) return 'rgb(0,0,0)';
-  const scale = 255 / peak;
-  return `rgb(${Math.round(r * scale)},${Math.round(g * scale)},${Math.round(b * scale)})`;
-}
-
-function blend(a: Rgb, b: Rgb, t: number): string {
-  const c = (n: number) => Math.round(a[n] + (b[n] - a[n]) * t);
-  return `rgb(${c(0)},${c(1)},${c(2)})`;
-}
-
-// Every colour a slice can be, worked out once: slices are drawn by the
-// thousand each frame.
-/** RGB: by the nine bits of red, green and blue. */
-const RGB_COLORS = Array.from({ length: 512 }, (_, bits) => rgbOf(bits >> 6, (bits >> 3) & 7, bits & 7));
-/** Blue: by the three bits of whiteness. */
-const BLUE_COLORS = Array.from({ length: 8 }, (_, shade) => blend(LOW, ALL, shade / 7));
-
-/** The waveform being drawn. */
-interface Wave {
-  kind: number;
-  data: Uint8Array;
-  columns: number;
-}
-
 function currentWave(): Wave | null {
   const p = palette.value;
   const data = p && waves.value.get(p.kind);
   return p && data ? { kind: p.kind, data, columns: columns.value } : null;
-}
-
-/** One pixel-wide bar, `height` (0 to 1) of `reach` tall. */
-function bar(
-  c: CanvasRenderingContext2D,
-  px: number,
-  base: number,
-  reach: number,
-  mirrored: boolean,
-  height: number,
-  color: string,
-) {
-  if (height <= 0) return;
-  const tall = Math.max(1, height * reach);
-  c.fillStyle = color;
-  c.fillRect(px, base - tall, 1, mirrored ? tall * 2 : tall);
-}
-
-/**
- * Draws one pixel-wide slice of waveform from the loudest of the columns
- * `from` to `to`: `reach` pixels up from `base`, and as far down when `mirrored`.
- */
-function drawSlice(
-  c: CanvasRenderingContext2D,
-  wave: Wave,
-  px: number,
-  from: number,
-  to: number,
-  base: number,
-  reach: number,
-  mirrored: boolean,
-) {
-  const { kind, data } = wave;
-  const first = Math.max(0, from);
-  const last = Math.min(wave.columns, Math.max(to, from + 1));
-  if (first >= last) return;
-
-  if (kind === 7) {
-    let low = 0;
-    let mid = 0;
-    let high = 0;
-    for (let i = first; i < last; i++) {
-      const at = i * 3;
-      if (data[at] > low) low = data[at];
-      if (data[at + 1] > mid) mid = data[at + 1];
-      if (data[at + 2] > high) high = data[at + 2];
-    }
-    // The three bands, shortest first (v for value, b for band).
-    let v0 = low;
-    let b0 = 1;
-    let v1 = mid;
-    let b1 = 2;
-    let v2 = high;
-    let b2 = 4;
-    let swap: number;
-    if (v0 > v1) {
-      swap = v0; v0 = v1; v1 = swap;
-      swap = b0; b0 = b1; b1 = swap;
-    }
-    if (v1 > v2) {
-      swap = v1; v1 = v2; v2 = swap;
-      swap = b1; b1 = b2; b2 = swap;
-    }
-    if (v0 > v1) {
-      swap = v0; v0 = v1; v1 = swap;
-      swap = b0; b0 = b1; b1 = swap;
-    }
-    // From the outside in: each band's stretch covers the last, so a point
-    // ends up in the colour of exactly the bands that reach it.
-    bar(c, px, base, reach, mirrored, Math.min(v2, 127) / 127, BAND_COLORS[b2]);
-    bar(c, px, base, reach, mirrored, Math.min(v1, 127) / 127, BAND_COLORS[b1 | b2]);
-    bar(c, px, base, reach, mirrored, Math.min(v0, 127) / 127, BAND_COLORS[7]);
-  } else if (kind === 5) {
-    let best = 0;
-    for (let i = first; i < last; i++) {
-      const word = (data[i * 2] << 8) | data[i * 2 + 1];
-      if (((word >> 2) & 31) >= ((best >> 2) & 31)) best = word;
-    }
-    bar(c, px, base, reach, mirrored, ((best >> 2) & 31) / 31, RGB_COLORS[(best >> 7) & 511]);
-  } else {
-    let best = 0;
-    for (let i = first; i < last; i++) if ((data[i] & 31) >= (best & 31)) best = data[i];
-    bar(c, px, base, reach, mirrored, (best & 31) / 31, BLUE_COLORS[best >> 5]);
-  }
-}
-
-/** A marker's head: a triangle pointing down from the top, or up from the bottom. */
-function head(c: CanvasRenderingContext2D, x: number, edge: number, size: number, down: boolean) {
-  c.beginPath();
-  c.moveTo(x - size, edge);
-  c.lineTo(x + size, edge);
-  c.lineTo(x, edge + (down ? size * 1.4 : -size * 1.4));
-  c.closePath();
-  c.fill();
 }
 
 function drawDetail() {
@@ -874,7 +719,7 @@ const tabClass = 'px-2 py-0.5 text-[11px] disabled:opacity-30';
             <template v-else>{{ timeLabel }}</template>
             <span v-if="barAndBeat" class="ml-2" title="Bar and beat at the playhead">{{ barAndBeat }}</span>
             <span v-if="bpmHere" class="ml-2">{{ bpmHere.toFixed(2) }} BPM</span>
-            <span v-if="track.key" class="ml-2">{{ track.key }}</span>
+            <span v-if="track.key" class="ml-2">{{ formatKey(track.key) }}</span>
             <span v-if="activeLoop" class="ml-2 text-status-busy">
               Looping
               <button class="underline" @click="activeLoop = null">exit</button>
