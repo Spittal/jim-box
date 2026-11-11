@@ -7,7 +7,6 @@ rust-version = "1.80"
 
 [lib]
 name = "jim_box_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]
 name = "jim-box"
@@ -56,7 +55,7 @@ tempfile = "3"
 opt-level = 2
 
 [profile.release]
-# Smaller, faster release builds; the bundle is dominated by slskd anyway.
-codegen-units = 1
-lto = true
+# Thin LTO rather than full: full re-optimised every dependency on each build,
+# which was most of CI's time, and the bundle is dominated by slskd anyway.
+lto = "thin"
 strip = true
