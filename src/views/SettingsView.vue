@@ -8,7 +8,7 @@ import SettingsFormats from '@/components/SettingsFormats.vue';
 import SettingsYoutube from '@/components/SettingsYoutube.vue';
 import { useUiStore, type SettingsTab } from '@/stores/ui';
 
-/** Settings, shown over the collection. */
+/** Settings, in a dialog over the window. */
 const sections: { id: SettingsTab; label: string }[] = [
   { id: 'library', label: 'Library' },
   { id: 'formats', label: 'Formats' },
@@ -27,39 +27,52 @@ onUnmounted(() => window.removeEventListener('keydown', onKey));
 </script>
 
 <template>
-  <div class="absolute inset-0 z-30 flex flex-col bg-surface-0">
-    <header class="flex items-center justify-between border-b border-border px-4 py-3">
-      <h1 class="text-sm font-medium">Settings</h1>
-      <button
-        class="rounded bg-surface-2 px-3 py-1 text-xs transition-colors hover:bg-surface-3"
-        title="Back to the collection (Esc)"
-        @click="active = null"
+  <!-- Over the whole window, like the other dialogs. -->
+  <Teleport to="body">
+    <div
+      class="fixed inset-0 z-40 flex items-center justify-center bg-black/50 p-6"
+      @click.self="active = null"
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Settings"
+        class="flex h-[36rem] max-h-full w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-border bg-surface-0 shadow-xl"
       >
-        Done
-      </button>
-    </header>
-    <div class="flex min-h-0 flex-1">
-      <nav class="w-40 shrink-0 border-r border-border py-2">
-        <button
-          v-for="section in sections"
-          :key="section.id"
-          class="block w-full px-4 py-1.5 text-left text-xs transition-colors"
-          :class="active === section.id
-            ? 'bg-surface-1 font-medium text-text-primary'
-            : 'text-text-muted hover:text-text-secondary'"
-          @click="active = section.id"
-        >
-          {{ section.label }}
-        </button>
-      </nav>
+        <header class="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
+          <h1 class="text-sm font-medium">Settings</h1>
+          <button
+            class="rounded bg-surface-2 px-3 py-1 text-xs transition-colors hover:bg-surface-3"
+            title="Close (Esc)"
+            @click="active = null"
+          >
+            Done
+          </button>
+        </header>
+        <div class="flex min-h-0 flex-1">
+          <nav class="w-40 shrink-0 border-r border-border py-2">
+            <button
+              v-for="section in sections"
+              :key="section.id"
+              class="block w-full px-4 py-1.5 text-left text-xs transition-colors"
+              :class="active === section.id
+                ? 'bg-surface-1 font-medium text-text-primary'
+                : 'text-text-muted hover:text-text-secondary'"
+              @click="active = section.id"
+            >
+              {{ section.label }}
+            </button>
+          </nav>
 
-      <div class="flex-1 overflow-y-auto p-5">
-        <SettingsLibrary v-if="active === 'library'" />
-        <SettingsFormats v-if="active === 'formats'" />
-        <SettingsSoulseek v-if="active === 'soulseek'" />
-        <SettingsSharing v-if="active === 'sharing'" />
-        <SettingsYoutube v-if="active === 'youtube'" />
+          <div class="min-w-0 flex-1 overflow-y-auto p-5">
+            <SettingsLibrary v-if="active === 'library'" />
+            <SettingsFormats v-if="active === 'formats'" />
+            <SettingsSoulseek v-if="active === 'soulseek'" />
+            <SettingsSharing v-if="active === 'sharing'" />
+            <SettingsYoutube v-if="active === 'youtube'" />
+          </div>
+        </div>
       </div>
     </div>
-  </div>
+  </Teleport>
 </template>

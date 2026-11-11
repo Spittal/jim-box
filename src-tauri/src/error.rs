@@ -9,6 +9,17 @@ pub enum AppError {
     #[error("Soulseek is not connected yet")]
     DaemonNotReady,
 
+    /// slskd failed to start or died; carries why.
+    #[error("Soulseek isn't running: {0}")]
+    DaemonFailed(String),
+
+    #[error(
+        "Your library folder, {}, can't be reached. If it's on an external drive, connect it, then \
+         press Reconnect in Settings › Soulseek. Otherwise choose another library folder in Settings › Library.",
+        .0.display()
+    )]
+    LibraryFolderUnavailable(std::path::PathBuf),
+
     #[error("slskd: {0}")]
     Slskd(String),
 

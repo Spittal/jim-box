@@ -97,8 +97,10 @@ impl Daemon {
 
     /// The API client, available once slskd is logged in to Soulseek.
     pub fn client(&self) -> AppResult<Arc<SlskdClient>> {
-        if !matches!(self.status(), DaemonStatus::Online { .. }) {
-            return Err(AppError::DaemonNotReady);
+        match self.status() {
+            DaemonStatus::Online { .. } => {}
+            DaemonStatus::Error { message } => return Err(AppError::DaemonFailed(message)),
+            _ => return Err(AppError::DaemonNotReady),
         }
         self.client
             .read()
@@ -113,6 +115,8 @@ impl Daemon {
         loop {
             match self.client() {
                 Ok(client) => return Ok(client),
+                // It won't come online until whatever stopped it is put right.
+                Err(e @ AppError::DaemonFailed(_)) => return Err(e),
                 Err(e) if Instant::now() > deadline => return Err(e),
                 Err(_) => tokio::time::sleep(Duration::from_millis(500)).await,
             }
@@ -176,10 +180,7 @@ impl Daemon {
             )));
         }
 
-        // Share the library even before the first download creates it.
-        if settings.share_music_dir {
-            std::fs::create_dir_all(&settings.music_dir)?;
-        }
+        ensure_library_folder(&settings.music_dir)?;
 
         let paths = DaemonPaths::resolve(app)?;
         for dir in [&paths.app_dir, &paths.downloads, &paths.incomplete] {
@@ -239,6 +240,16 @@ impl Daemon {
 
         Ok(Some(Process { kill, supervisor, monitor }))
     }
+}
+
+/// Makes sure the folder new tracks are filed in is there, creating it so it
+/// can be shared before the first download. It can't be when it's on a drive
+/// that isn't connected, and then nothing fetched would have anywhere to go.
+fn ensure_library_folder(dir: &Path) -> AppResult<()> {
+    std::fs::create_dir_all(dir).map_err(|e| {
+        warn!("Library folder {} is unavailable: {e}", dir.display());
+        AppError::LibraryFolderUnavailable(dir.to_path_buf())
+    })
 }
 
 /// Owns the child process: kills it on request, or reports an unexpected exit.
@@ -349,4 +360,25 @@ fn kill_stale_process(pid_file: &Path) {
         std::thread::sleep(Duration::from_millis(500));
     }
     let _ = std::fs::remove_file(pid_file);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unreachable_library_folder_says_what_to_do() {
+        let dir = tempfile::tempdir().unwrap();
+        let fresh = dir.path().join("new/library");
+        ensure_library_folder(&fresh).unwrap();
+        assert!(fresh.is_dir());
+
+        // Nothing can be created under a file, as under an unmounted drive.
+        let file = dir.path().join("file");
+        std::fs::write(&file, "").unwrap();
+        let unreachable = file.join("Music");
+        let error = ensure_library_folder(&unreachable).unwrap_err().to_string();
+        assert!(error.contains(&unreachable.display().to_string()), "{error}");
+        assert!(error.contains("connect it"), "{error}");
+    }
 }

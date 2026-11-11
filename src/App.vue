@@ -61,8 +61,8 @@ watch(
 // Menu bar commands (see src-tauri/src/menu.rs).
 
 async function focusSearchBar() {
+  // The settings dialog would otherwise sit over the bar.
   ui.settings = null;
-  // The bar is hidden while settings are open.
   await nextTick();
   const input = document.querySelector<HTMLInputElement>('#search-bar');
   input?.focus();

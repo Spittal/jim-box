@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed } from 'vue';
 import { storeToRefs } from 'pinia';
 import SettingsSection from '@/components/SettingsSection.vue';
 import SoulseekCredentialsForm from '@/components/SoulseekCredentialsForm.vue';
@@ -10,7 +10,6 @@ import { passwordStore } from '@/platform';
 const daemonStore = useDaemonStore();
 const { status } = storeToRefs(daemonStore);
 const { settings } = storeToRefs(useSettingsStore());
-const error = ref<string | null>(null);
 
 const description = computed(() => {
   const s = status.value;
@@ -30,19 +29,15 @@ const description = computed(() => {
   }
 });
 
-async function reconnect() {
-  error.value = null;
-  try {
-    await daemonStore.restart();
-  } catch (e) {
-    error.value = String(e);
-  }
+/** A failure becomes the connection's status, which the description shows. */
+function reconnect() {
+  return daemonStore.restart().catch(() => {});
 }
 </script>
 
 <template>
   <div class="flex flex-col gap-8">
-    <SettingsSection title="Connection" :description="description" :error="error">
+    <SettingsSection title="Connection" :description="description">
       <button
         class="self-start rounded bg-surface-2 px-3 py-1.5 text-xs transition-colors hover:bg-surface-3"
         @click="reconnect"
