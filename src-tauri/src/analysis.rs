@@ -12,7 +12,7 @@ use tracing::{info, warn};
 
 use crate::ingest::ArrivalQueue;
 use crate::library;
-use crate::rekordbox::Collection;
+use crate::rekordbox::{Collection, GridHint};
 use crate::state::SettingsState;
 
 /// Tracks analysed at once. Each holds its decoded audio in memory (about
@@ -46,7 +46,8 @@ pub struct AnalysisProgress {
 
 #[derive(Default)]
 struct Queue {
-    pending: VecDeque<String>,
+    /// Each with what the user said of it, if anything.
+    pending: VecDeque<(String, GridHint)>,
     workers: usize,
     progress: AnalysisProgress,
 }
@@ -66,9 +67,18 @@ fn emit(app: &AppHandle) {
 
 /// Queues tracks for analysis and starts on them. With `again` false, tracks
 /// that already have an analysis are left out. Returns how many were queued.
+///
+/// A grid the user has reviewed is only analysed over when its track is
+/// asked for on its own: a batch leaves it be.
 pub async fn enqueue(app: &AppHandle, track_ids: Vec<String>, again: bool) -> usize {
+    enqueue_with(app, track_ids, again, GridHint::default()).await
+}
+
+/// [`enqueue`], with what the user knows of the tracks' tempo.
+pub async fn enqueue_with(app: &AppHandle, track_ids: Vec<String>, again: bool, hint: GridHint) -> usize {
     let track_ids = if again {
-        track_ids
+        let reviewed = if track_ids.len() > 1 { app.state::<Collection>().reviewed(&track_ids) } else { Vec::new() };
+        track_ids.into_iter().filter(|id| !reviewed.contains(id)).collect()
     } else {
         let reader = app.clone();
         library::blocking(move || Ok(reader.state::<Collection>().unanalysed(&track_ids)))
@@ -83,8 +93,8 @@ pub async fn enqueue(app: &AppHandle, track_ids: Vec<String>, again: bool) -> us
         }
         let mut queued = 0;
         for id in track_ids {
-            if !queue.pending.contains(&id) && !queue.progress.running.contains(&id) {
-                queue.pending.push_back(id);
+            if !queue.pending.iter().any(|(waiting, _)| *waiting == id) && !queue.progress.running.contains(&id) {
+                queue.pending.push_back((id, hint));
                 queued += 1;
             }
         }
@@ -129,9 +139,9 @@ async fn work(app: AppHandle) {
             let state = app.state::<AnalysisQueue>();
             let mut queue = state.0.lock().expect("analysis lock poisoned");
             match queue.pending.pop_front() {
-                Some(id) => {
+                Some((id, hint)) => {
                     queue.progress.running.push(id.clone());
-                    Some(id)
+                    Some((id, hint))
                 }
                 None => {
                     queue.workers -= 1;
@@ -140,22 +150,29 @@ async fn work(app: AppHandle) {
                 }
             }
         };
-        let Some(track_id) = next else {
+        let Some((track_id, hint)) = next else {
             emit(&app);
             return;
         };
         emit(&app);
 
-        let follow = app.state::<SettingsState>().snapshot().follow_tempo_changes;
+        let follow = app.state::<SettingsState>().snapshot().dynamic_grids;
         let (worker, id) = (app.clone(), track_id.clone());
-        let result = library::blocking(move || worker.state::<Collection>().analyse(&id, follow)).await;
+        let result = library::blocking(move || worker.state::<Collection>().analyse_with(&id, follow, &hint)).await;
         {
             let state = app.state::<AnalysisQueue>();
             let mut queue = state.0.lock().expect("analysis lock poisoned");
             queue.progress.running.retain(|id| id != &track_id);
             queue.progress.done += 1;
             match &result {
-                Ok(found) => info!("Analysed track {track_id}: {:.2} BPM, {}", found.bpm, found.key),
+                Ok(found) => info!(
+                    "Analysed track {track_id}: {:.2} BPM, {}, grid {}% sure{} {:?}",
+                    found.bpm,
+                    found.key,
+                    found.grid.confidence,
+                    if found.grid.dynamic { ", following the tempo" } else { "" },
+                    found.grid.issues
+                ),
                 Err(e) => {
                     let title = app.state::<Collection>().title_of(&track_id).unwrap_or_default();
                     warn!("Couldn't analyse {title} ({track_id}): {e}");

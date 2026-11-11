@@ -7,6 +7,7 @@ import type {
   CollectionState,
   CollectionStatus,
   EditOutcome,
+  GridHint,
   ImportReport,
   PlaylistNode,
   Preparation,
@@ -90,6 +91,12 @@ export const useCollectionStore = defineStore('collection', () => {
     }
   }
 
+  /** Marks a track's beat grid as reviewed, or takes that back. */
+  async function reviewGrid(trackId: string, reviewed: boolean) {
+    await invoke('review_grid', { trackId, reviewed });
+    generation.value++;
+  }
+
   /**
    * Adds files, and the music in folders, to the collection (and a playlist).
    * On failure sets `error` and returns undefined.
@@ -109,13 +116,17 @@ export const useCollectionStore = defineStore('collection', () => {
   /**
    * Queues tracks for analysis (BPM, beat grid, key, waveforms). Tracks that
    * have one are skipped unless `again`. With null, queues every track in the
-   * collection that has none. Returns how many were queued; on
-   * failure sets `error` and returns undefined.
+   * collection that has none. `hint` is what the user knows of their tempo.
+   * Returns how many were queued; on failure sets `error` and returns undefined.
    */
-  async function analyse(trackIds: string[] | null, again: boolean): Promise<number | undefined> {
+  async function analyse(
+    trackIds: string[] | null,
+    again: boolean,
+    hint: GridHint | null = null,
+  ): Promise<number | undefined> {
     error.value = null;
     try {
-      return await invoke<number>('analyse_tracks', { trackIds, again });
+      return await invoke<number>('analyse_tracks', { trackIds, again, hint });
     } catch (e) {
       error.value = String(e);
       return undefined;
@@ -157,6 +168,7 @@ export const useCollectionStore = defineStore('collection', () => {
 
   return {
     preparation,
+    reviewGrid,
     waveform,
     previews,
     status,

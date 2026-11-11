@@ -1,0 +1,16 @@
+[package]
+name = "beat-this"
+version = "0.1.0"
+description = "The Beat This! beat and downbeat tracker (CPJKU, ISMIR 2024), run on the CPU"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+
+[dependencies]
+realfft = "3"
+# Matrix products everywhere but macOS, which has Accelerate.
+matrixmultiply = "0.3"
+
+[features]
+# Use the portable matrix product on macOS too, to test what other systems run.
+portable = []

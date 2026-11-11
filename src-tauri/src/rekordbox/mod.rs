@@ -8,10 +8,12 @@
 
 mod analyse;
 mod edit;
+mod grid;
 mod ingest;
 mod prepare;
 
 pub use edit::{Edit, EditOutcome};
+pub use grid::{Hint as GridHint, Source as GridSource};
 pub use ingest::{Arrival, ImportReport};
 pub use prepare::{Audio, GridChange, Preparation, Preview};
 
@@ -101,6 +103,9 @@ pub enum Sort {
     Path,
     /// The names of the playlists a track is in; tracks in none come last.
     Playlists,
+    /// How sure the beat grid is, reviewed ones the surest; tracks nothing
+    /// is known of come last.
+    Confidence,
 }
 
 impl From<Sort> for SortColumn {
@@ -117,7 +122,7 @@ impl From<Sort> for SortColumn {
             Sort::DateAdded => Self::DateAdded,
             Sort::Path => Self::Location,
             // Sorted here, from the list's own order: see `open_view`.
-            Sort::Key | Sort::KeyCamelot | Sort::Playlists => Self::TrackNo,
+            Sort::Key | Sort::KeyCamelot | Sort::Playlists | Sort::Confidence => Self::TrackNo,
         }
     }
 }
@@ -160,6 +165,9 @@ pub struct TrackRow {
     pub playlists: Vec<String>,
     /// Whether the track has a beat grid and waveforms.
     pub analysed: bool,
+    /// What is known of its grid: how this app decided it, and whether
+    /// it has been looked over.
+    pub grid: Option<grid::State>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -215,6 +223,8 @@ pub struct Collection {
     backed_up: AtomicBool,
     /// Held for the length of a change: one at a time.
     editing: Mutex<()>,
+    /// How each grid this app made was decided, and which are reviewed.
+    grids: grid::States,
 }
 
 fn rekordbox_err(e: impl std::fmt::Display) -> AppError {
@@ -230,7 +240,25 @@ impl Collection {
             backup_dir,
             backed_up: AtomicBool::new(false),
             editing: Mutex::new(()),
+            grids: grid::States::default(),
         }
+    }
+
+    /// Keeps what is known of the grids in `file`, and reads what is there.
+    #[must_use]
+    pub fn with_grid_states(self, file: PathBuf) -> Self {
+        Self { grids: grid::States::open(file), ..self }
+    }
+
+    /// Marks a track's grid as looked over and right, or takes that back.
+    /// Nothing of rekordbox's changes.
+    pub fn review_grid(&self, track_id: &str, reviewed: bool) {
+        self.grids.review(track_id, reviewed);
+    }
+
+    /// Of `track_ids`, those whose grid has been reviewed.
+    pub fn reviewed(&self, track_ids: &[String]) -> Vec<String> {
+        track_ids.iter().filter(|id| self.grids.get(id).is_some_and(|state| state.reviewed)).cloned().collect()
     }
 
     /// The collection in the library at `master_db`.
@@ -419,7 +447,8 @@ impl Collection {
         };
         let by_playlists = query.sort == Sort::Playlists;
         let by_key = matches!(query.sort, Sort::Key | Sort::KeyCamelot);
-        let sorted_here = by_playlists || by_key;
+        let by_confidence = query.sort == Sort::Confidence;
+        let sorted_here = by_playlists || by_key || by_confidence;
         let mut view = loaded.index.open_view(&ViewSpec {
             source,
             sort: query.sort.into(),
@@ -439,6 +468,16 @@ impl Collection {
                 let (a, b) = (&keys[a], &keys[b]);
                 let named = if query.descending { b.cmp(a) } else { a.cmp(b) };
                 a.is_empty().cmp(&b.is_empty()).then(named)
+            });
+        }
+        if by_confidence {
+            let ranks = self.grids.ranks();
+            let of = |row: &u32| ranks.get(&loaded.index.ids[*row as usize].to_string()).copied();
+            // Stable, so tracks as sure as each other keep the list's order.
+            view.rows.sort_by(|a, b| {
+                let (a, b) = (of(a), of(b));
+                let ordered = if query.descending { b.cmp(&a) } else { a.cmp(&b) };
+                a.is_none().cmp(&b.is_none()).then(ordered)
             });
         }
         if by_key {
@@ -508,6 +547,7 @@ impl Collection {
                     comment: index.comment.get(r).to_owned(),
                     playlists: loaded.playlist_names(r),
                     analysed: analyse::is_analysed(index.analysed[r]),
+                    grid: self.grids.get(&index.ids[r].to_string()),
                 }
             })
             .collect();

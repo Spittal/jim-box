@@ -653,6 +653,13 @@ watch(
 );
 // An analysis made elsewhere (rekordbox, then Refresh) shows as a new BPM on the row.
 watch([() => props.track?.bpm, () => props.track?.analysed], () => loadPreparation());
+// Another of the analysis's grids tried from the track's details.
+watch(
+  () => [props.track?.id, props.track?.grid?.using] as const,
+  ([id, using], [wasId, wasUsing]) => {
+    if (id && id === wasId && using !== wasUsing && !busy.value) loadPreparation(false);
+  },
+);
 // One made here is done when the track leaves the queue's running list.
 const analysing = computed(() => !!props.track && (store.analysis?.running.includes(props.track.id) ?? false));
 watch(analysing, (now, was) => {

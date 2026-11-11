@@ -33,7 +33,8 @@ export type TrackSort =
   | 'rating'
   | 'dateAdded'
   | 'path'
-  | 'playlists';
+  | 'playlists'
+  | 'confidence';
 
 export interface TrackQuery {
   source: TrackSource;
@@ -41,6 +42,52 @@ export interface TrackQuery {
   sort: TrackSort | 'keyCamelot';
   descending: boolean;
   query: string;
+}
+
+/** What the two beat detectors disagreed about; see `Issue` in src-tauri/src/rekordbox/grid.rs. */
+export type GridIssue = 'unheard' | 'varies' | 'tempo' | 'uneven' | 'halfTime' | 'offBeat' | 'downbeat' | 'bar';
+
+/** How a track's beat grid was decided from the two beat detectors. */
+export interface GridReport {
+  /** How far the detectors agreed on the grid, 0 to 100. */
+  confidence: number;
+  /** The grid changes tempo along the track. */
+  dynamic: boolean;
+  issues: GridIssue[];
+  /** The tempo each detector found: the signal analysis's one tempo, and the model's typical one. */
+  signalBpm: number;
+  modelBpm: number;
+}
+
+/** Whose grid a track has: the analysis's choice, either detector's own, or one changed by hand. */
+export type GridSource = 'chosen' | 'signal' | 'model' | 'hand';
+
+/** What the user knows of a track's tempo, given with an analysis of it. */
+export interface GridHint {
+  /** Roughly its tempo; null for none. */
+  bpm: number | null;
+  /** Whether its tempo moves; null leaves it to the analysis. */
+  varies: boolean | null;
+}
+
+/** A grid the analysis made for a track, in brief. */
+export interface GridChoice {
+  source: GridSource;
+  bpm: number;
+  dynamic: boolean;
+}
+
+/** What is known of a track's beat grid. */
+export interface GridState {
+  /** How the analysis decided it; null for a grid this app didn't make. */
+  report: GridReport | null;
+  /** The user has marked the grid as right, or set it by hand. */
+  reviewed: boolean;
+  using: GridSource;
+  /** The grids to try, the chosen one first; empty when the detectors made the same one. */
+  choices: GridChoice[];
+  /** What the analysis was told of the track. */
+  hint: GridHint;
 }
 
 export interface CollectionTrack {
@@ -67,6 +114,8 @@ export interface CollectionTrack {
   /** The playlists it's in, by name. Intelligent playlists aren't counted. */
   playlists: string[];
   analysed: boolean;
+  /** What is known of its grid; null when this app hasn't analysed it and it hasn't been reviewed. */
+  grid: GridState | null;
 }
 
 export interface TrackPage {
@@ -98,6 +147,8 @@ export type CollectionEdit =
   | { kind: 'nameCue'; cueId: string; comment: string }
   /** A beat grid change: to all of it, or from the beat nearest `fromMs` on. */
   | { kind: 'grid'; trackId: string; change: GridChange; fromMs: number | null }
+  /** Gives a track another of the grids its analysis made, to try. */
+  | { kind: 'useGrid'; trackId: string; source: GridSource }
   | { kind: 'lockAnalysis'; trackId: string; locked: boolean };
 
 /** A change to a track's beat grid. */

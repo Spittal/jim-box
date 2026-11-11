@@ -47,6 +47,9 @@ rbl-index = { git = "https://github.com/chrisle/rbxport", rev = "d0ff75b378ec85b
 rbl-analysis = { git = "https://github.com/chrisle/rbxport", rev = "d0ff75b378ec85be891d9f3067ada1e82bad4cae" }
 rbl-anlz = { git = "https://github.com/chrisle/rbxport", rev = "d0ff75b378ec85be891d9f3067ada1e82bad4cae" }
 rbl-audio = { git = "https://github.com/chrisle/rbxport", rev = "d0ff75b378ec85be891d9f3067ada1e82bad4cae" }
+# The Beat This! beat tracker: a second opinion on every grid, and the grid
+# itself where the tempo moves.
+beat-this = { path = "crates/beat-this" }
 
 [dev-dependencies]
 tempfile = "3"
@@ -54,6 +57,10 @@ tempfile = "3"
 # SQLCipher and its OpenSSL are too slow unoptimized, even in dev builds.
 [profile.dev.package."*"]
 opt-level = 2
+
+# A neural network is unusable unoptimized: minutes a track.
+[profile.dev.package.beat-this]
+opt-level = 3
 
 [profile.release]
 # Thin LTO rather than full: full re-optimised every dependency on each build,

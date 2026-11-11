@@ -50,6 +50,9 @@ pub enum Edit {
     /// Changes a track's beat grid, in its analysis files: all of it, or
     /// from the beat nearest `from_ms` onward.
     Grid { track_id: String, change: GridChange, from_ms: Option<u32> },
+    /// Gives a track another of the grids its analysis made, to try: the
+    /// one it chose, or either detector's own.
+    UseGrid { track_id: String, source: super::GridSource },
     /// Sets or clears rekordbox's analysis lock, which keeps a track's beat
     /// grid from being changed or analysed over.
     LockAnalysis { track_id: String, locked: bool },
@@ -76,7 +79,30 @@ fn named(name: &str) -> AppResult<&str> {
 impl Collection {
     /// Makes one change and reads the library again. Blocking.
     pub fn edit(&self, edit: Edit) -> AppResult<EditOutcome> {
-        let created_id = self.write(|writer, index| apply(writer, index, edit))?;
+        let created_id = match edit {
+            Edit::UseGrid { track_id, source } => {
+                let grid = self
+                    .grids
+                    .choice(&track_id, source)
+                    .ok_or_else(|| AppError::Validation("That grid wasn't kept. Analyse the track again to have it.".into()))?;
+                let change = prepare::GridChange::Restore { beats: grid.beats };
+                self.write(|writer, index| prepare::change_grid(writer, index, &track_id, change, None))?;
+                self.grids.switched(&track_id, source);
+                None
+            }
+            edit => {
+                // Changing a grid by hand is looking it over.
+                let regridded = match &edit {
+                    Edit::Grid { track_id, .. } => Some(track_id.clone()),
+                    _ => None,
+                };
+                let created_id = self.write(|writer, index| apply(writer, index, edit))?;
+                if let Some(track_id) = regridded {
+                    self.grids.edited(&track_id);
+                }
+                created_id
+            }
+        };
         Ok(EditOutcome { status: self.status()?, playlists: self.playlists()?, created_id })
     }
 
@@ -186,6 +212,7 @@ fn apply(writer: &mut Writer, index: &rbl_index::Library, edit: Edit) -> AppResu
         Edit::Grid { track_id, change, from_ms } => {
             prepare::change_grid(writer, index, &track_id, change, from_ms)?;
         }
+        Edit::UseGrid { .. } => unreachable!("handled by `edit`"),
         Edit::LockAnalysis { track_id, locked } => {
             writer.set_analysis_lock(&track_id, locked).map_err(rekordbox_err)?;
         }

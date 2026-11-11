@@ -8,6 +8,7 @@ import ProgressBar from '@/components/ProgressBar.vue';
 import TrackPreview from '@/components/TrackPreview.vue';
 import { dragging, dropRow, endDrag, startDrag } from '@/composables/useDrag';
 import { formatDuration } from '@/composables/useFormat';
+import { gridClass, gridLabel, gridSummary } from '@/composables/useGridReport';
 import { useKeyNotation } from '@/composables/useKeyNotation';
 import { progressPercent } from '@/composables/useJobStatus';
 import { TRACK_COLORS } from '@/composables/useTrackColors';
@@ -229,6 +230,7 @@ const COLUMNS: Column[] = [
   { id: 'genre', label: 'Genre', grow: 1 },
   { id: 'playlists', label: 'Playlists', grow: 2, collectionOnly: true },
   { id: 'bpm', label: 'BPM', width: 56, class: 'text-center' },
+  { id: 'confidence', label: 'Grid', name: 'Grid confidence', width: 44, class: 'text-center' },
   { id: 'key', label: 'Key', width: 40, class: 'text-center' },
   { id: 'duration', label: 'Time', width: 48, class: 'text-center' },
   { id: 'rating', label: 'Rating', width: 64, class: 'text-center' },
@@ -690,6 +692,15 @@ const smallButtonClass =
             <span v-else-if="column.id === 'bpm'" class="truncate font-mono" :class="column.class" :style="cellStyle[column.id]">
               <span v-if="analysis?.running.includes(row.track.id)" class="text-text-muted" title="Being analysed">…</span>
               <template v-else>{{ row.track.bpm?.toFixed(1) ?? '' }}</template>
+            </span>
+            <span
+              v-else-if="column.id === 'confidence'"
+              class="truncate font-mono"
+              :class="[column.class, row.track.grid ? gridClass(row.track.grid) : '']"
+              :style="cellStyle[column.id]"
+              :title="row.track.grid ? gridSummary(row.track.grid) : undefined"
+            >
+              <template v-if="row.track.grid">{{ gridLabel(row.track.grid) }}</template>
             </span>
             <span v-else-if="column.id === 'key'" class="truncate font-mono text-text-secondary" :class="column.class" :style="cellStyle[column.id]">{{ formatKey(row.track.key) }}</span>
             <span v-else-if="column.id === 'duration'" class="truncate font-mono text-text-muted" :class="column.class" :style="cellStyle[column.id]">

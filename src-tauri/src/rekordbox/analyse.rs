@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use rbl_db::write::{AnalysisWrite, Writer};
 use serde::Serialize;
 
+use super::grid;
 use super::{rekordbox_err, Collection};
 use crate::error::{AppError, AppResult};
 
@@ -18,6 +19,11 @@ use crate::error::{AppError, AppResult};
 /// The rest of a longer file is still decoded for its waveforms, and the
 /// grid carried on to the end at the last tempo.
 const HEAD_SECS: usize = 1800;
+
+/// Stretches of a track the beat-tracking model works on at once. Tracks
+/// are analysed a few at a time already, and each stretch takes a core and
+/// about 100 MB.
+const MODEL_THREADS: usize = 2;
 
 /// Whether the index's `analysed` column says the track has been analysed.
 /// The index keeps only whether `djmdContent.Analysed` is non-zero.
@@ -34,6 +40,8 @@ pub struct Analysed {
     /// Empty when no key was found.
     pub key: String,
     pub beats: usize,
+    /// How the grid was decided, and how sure it is.
+    pub grid: grid::Report,
 }
 
 /// A file's analysis, before it's saved anywhere.
@@ -43,9 +51,18 @@ struct Computed {
     bpm_x100: u32,
     key: Option<String>,
     length_secs: u32,
+    /// The grid as decided, with each detector's own beside it.
+    decided: grid::Decided,
 }
 
-fn compute(path: &Path, follow_tempo_changes: bool) -> AppResult<Computed> {
+/// How far either side of a hinted tempo the signal detector looks.
+const HINT_RANGE: f64 = 0.08;
+
+/// Decodes and analyses a file. Two beat detectors run side by side, the
+/// signal analysis and the model, and [`grid::decide`] makes one grid of
+/// what they found; `follow` says whether that grid may change tempo where
+/// the music does, and `hint` what the user knows of the track.
+fn compute(path: &Path, follow: grid::Follow, hint: &grid::Hint) -> AppResult<Computed> {
     let undecodable = |e: rbl_audio::AudioError| AppError::Rekordbox(format!("The file couldn't be decoded: {e}"));
     let mut stream = rbl_audio::MonoStream::open(path).map_err(undecodable)?;
     let mut waves = rbl_analysis::wave_creator::WaveCreator::new(stream.sample_rate());
@@ -66,24 +83,31 @@ fn compute(path: &Path, follow_tempo_changes: bool) -> AppResult<Computed> {
     }
 
     let rate = stream.sample_rate().max(1);
-    let preset = if follow_tempo_changes {
-        rbl_analysis::AnalysisPreset::Rbxport
-    } else {
-        rbl_analysis::AnalysisPreset::Rekordbox
-    };
-    let mut analysis = rbl_analysis::analyse_with(&head, rate, preset.options());
+    let mut options = rbl_analysis::AnalysisPreset::Rekordbox.options();
+    if let Some(bpm) = hint.tempo() {
+        options.tempo.min_bpm = bpm * (1.0 - HINT_RANGE);
+        options.tempo.max_bpm = bpm * (1.0 + HINT_RANGE);
+        options.tempo.prior_centre = bpm;
+    }
+    let (analysis, heard) = std::thread::scope(|scope| {
+        let model = scope.spawn(|| beat_this::track(&head, rate, MODEL_THREADS));
+        let analysis = rbl_analysis::analyse_with(&head, rate, options);
+        // Without the model the grid is the signal's alone, and says so.
+        (analysis, model.join().unwrap_or_default())
+    });
+    let attacks = rbl_analysis::attack::AttackMap::new(&head, rate, options.attacks);
+    let mut decided = grid::decide(&analysis.tempo, &heard, &attacks, &head, rate, follow, hint.tempo());
     let duration = total as f64 / f64::from(rate);
     if total > head.len() {
-        analysis.tempo.extend_to(duration);
+        decided.extend_to(duration);
     }
 
     let w = waves.finish();
     Ok(Computed {
-        beats: analysis
-            .tempo
+        beats: decided
             .beats
             .iter()
-            .map(|b| rbl_anlz::Beat { beat_number: b.beat_number, tempo_x100: b.tempo_x100, time_ms: b.time_ms })
+            .map(|b| rbl_anlz::Beat { beat_number: b.number, tempo_x100: b.tempo_x100, time_ms: b.time_ms })
             .collect(),
         waves: rbl_anlz::RekordboxWaves {
             pwav: w.pwav,
@@ -95,9 +119,10 @@ fn compute(path: &Path, follow_tempo_changes: bool) -> AppResult<Computed> {
             pwv6: w.pwv6,
             pwv7: w.pwv7,
         },
-        bpm_x100: (analysis.tempo.bpm * 100.0).round().clamp(0.0, 100_000.0) as u32,
+        bpm_x100: (decided.bpm * 100.0).round().clamp(0.0, 100_000.0) as u32,
         key: analysis.key.map(|k| k.name),
         length_secs: duration.round() as u32,
+        decided,
     })
 }
 
@@ -133,7 +158,14 @@ impl Collection {
 
     /// Analyses a track and saves the result, replacing any analysis it had.
     /// Its cues are kept. Blocking, for seconds.
-    pub fn analyse(&self, track_id: &str, follow_tempo_changes: bool) -> AppResult<Analysed> {
+    #[cfg(test)]
+    pub fn analyse(&self, track_id: &str, follow_tempo: bool) -> AppResult<Analysed> {
+        self.analyse_with(track_id, follow_tempo, &grid::Hint::default())
+    }
+
+    /// [`Self::analyse`], told what the user knows of the track: roughly
+    /// its tempo, or whether its tempo moves.
+    pub fn analyse_with(&self, track_id: &str, follow_tempo: bool, hint: &grid::Hint) -> AppResult<Analysed> {
         let loaded = self.loaded_or_read()?;
         let row = loaded
             .index
@@ -150,13 +182,15 @@ impl Collection {
         }
         drop(loaded);
 
-        let computed = compute(&path, follow_tempo_changes)?;
+        let computed = compute(&path, grid::Follow::from(follow_tempo, hint), hint)?;
         self.write(|writer, index| save(writer, index, track_id, &path, &computed))?;
+        self.grids.analysed(track_id, &computed.decided, *hint);
         Ok(Analysed {
             track_id: track_id.to_owned(),
             bpm: f64::from(computed.bpm_x100) / 100.0,
             key: computed.key.unwrap_or_default(),
             beats: computed.beats.len(),
+            grid: computed.decided.report,
         })
     }
 }
@@ -408,6 +442,64 @@ pub(super) mod tests {
         std::fs::write(&wav, b"not audio at all").unwrap();
         assert!(collection.analyse(&id, false).is_err());
         assert!(!row(&collection, &id).analysed);
+    }
+
+    #[test]
+    fn another_grid_is_tried_and_a_grid_is_reviewed() {
+        use super::super::{Edit, GridChange, GridSource};
+        let (dir, collection) = fixture();
+        let collection = collection.with_grid_states(dir.path().join("lib.grids.json"));
+        let wav = dir.path().join("Click 120.wav");
+        click_track(&wav, 120.0, 30);
+        let id = collection.import(&[wav], None).unwrap().track_ids.remove(0);
+        collection.analyse(&id, true).unwrap();
+        let chosen = collection.preparation(&id).unwrap().beats;
+        assert!(row(&collection, &id).grid.is_some_and(|grid| grid.report.is_some() && !grid.reviewed));
+
+        // As if the signal detector had counted every other beat.
+        let halved: Vec<(u32, u8, u16)> = chosen.iter().step_by(2).enumerate().map(|(i, b)| (b.0, (i % 4 + 1) as u8, b.2 / 2)).collect();
+        let report = row(&collection, &id).grid.unwrap().report.unwrap();
+        let beats = chosen.iter().map(|&(time_ms, number, tempo_x100)| grid::Beat { number: u16::from(number), tempo_x100, time_ms }).collect();
+        let other = grid::Grid { bpm: 60.0, dynamic: false, beats: halved.clone() };
+        let decided = grid::Decided { beats, bpm: 120.0, report, others: vec![(GridSource::Signal, other)] };
+        collection.grids.analysed(&id, &decided, grid::Hint::default());
+        let state = row(&collection, &id).grid.unwrap();
+        assert_eq!(state.choices.iter().map(|c| (c.source, c.bpm)).collect::<Vec<_>>(), [(GridSource::Chosen, 120.0), (GridSource::Signal, 60.0)]);
+
+        let using = |source| collection.edit(Edit::UseGrid { track_id: id.clone(), source });
+        using(GridSource::Signal).unwrap();
+        assert_eq!(collection.preparation(&id).unwrap().beats, halved);
+        assert!((row(&collection, &id).bpm.unwrap() - 60.0).abs() < 0.5);
+        assert_eq!(row(&collection, &id).grid.unwrap().using, GridSource::Signal);
+
+        // Reviewing is the app's own note; trying another grid takes it back.
+        collection.review_grid(&id, true);
+        assert!(row(&collection, &id).grid.unwrap().reviewed);
+        assert_eq!(collection.reviewed(&[id.clone(), "no such track".into()]), [id.clone()]);
+        using(GridSource::Chosen).unwrap();
+        assert_eq!(collection.preparation(&id).unwrap().beats, chosen);
+        let state = row(&collection, &id).grid.unwrap();
+        assert!(!state.reviewed && state.using == GridSource::Chosen);
+        assert!(using(GridSource::Model).is_err(), "the model's grid wasn't kept");
+
+        // A change by hand is a review.
+        collection.edit(Edit::Grid { track_id: id.clone(), change: GridChange::Nudge { ms: 4 }, from_ms: None }).unwrap();
+        let state = row(&collection, &id).grid.unwrap();
+        assert!(state.reviewed && state.using == GridSource::Hand);
+
+        // The fixture's other tracks, of which nothing is known, come after
+        // it whichever way the list is sorted.
+        let first = |descending| {
+            let mut by = query(Source::Collection, Sort::Confidence);
+            by.descending = descending;
+            collection.tracks(&by, 0, 1).unwrap().rows.remove(0).id
+        };
+        assert_eq!((first(false), first(true)), (id.clone(), id.clone()));
+
+        // Analysing again starts over.
+        collection.analyse(&id, true).unwrap();
+        let state = row(&collection, &id).grid.unwrap();
+        assert!(!state.reviewed && state.using == GridSource::Chosen);
     }
 
     /// Analyses a few tracks of a copy of the installed library, with the

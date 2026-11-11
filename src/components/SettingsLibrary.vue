@@ -120,10 +120,10 @@ async function savePaths() {
         @update:model-value="(on) => save({ analyseNewTracks: on })"
       />
       <ToggleRow
-        label="Follow tempo changes"
-        description="Let a beat grid change tempo part-way through a track, for live drummers and DJ edits. Off, one tempo is fitted to the whole track, as rekordbox's normal analysis does."
-        :model-value="settings.followTempoChanges"
-        @update:model-value="(on) => save({ followTempoChanges: on })"
+        label="Follow the tempo where it moves"
+        description="Two beat detectors analyse every track. Where both find the tempo moving (a drummer who drifts, a DJ edit that changes pace) the beat grid follows it, as rekordbox's dynamic analysis does. Off, every grid is at one tempo, and the Grid column still says which tracks move."
+        :model-value="settings.dynamicGrids"
+        @update:model-value="(on) => save({ dynamicGrids: on })"
       />
     </div>
 

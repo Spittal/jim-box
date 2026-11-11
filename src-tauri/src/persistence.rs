@@ -38,6 +38,13 @@ fn library_file(id: Uuid) -> String {
     format!("libraries/{id}.json")
 }
 
+/// Where what is known of a library's beat grids is kept: a file of its
+/// own beside the library's, as it is written a track at a time. The grids
+/// a track could have instead go in the folder of the same name.
+pub fn grid_states_file(app: &AppHandle, id: Uuid) -> AppResult<std::path::PathBuf> {
+    Ok(app.path().app_data_dir()?.join(format!("libraries/{id}.grids.json")))
+}
+
 /// The open library's file.
 fn open_file(app: &AppHandle) -> String {
     library_file(app.state::<OpenLibrary>().0.id)
@@ -111,10 +118,17 @@ pub fn take_open_next(app: &AppHandle) -> Option<Uuid> {
 /// Removes what was saved for a library. Its rekordbox library isn't touched.
 pub fn delete_library_data(app: &AppHandle, id: Uuid) {
     let Ok(dir) = app.path().app_data_dir() else { return };
-    let file = dir.join(library_file(id));
-    if let Err(e) = std::fs::remove_file(&file) {
+    for file in [dir.join(library_file(id)), dir.join(format!("libraries/{id}.grids.json"))] {
+        if let Err(e) = std::fs::remove_file(&file) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                error!("Couldn't remove {}: {e}", file.display());
+            }
+        }
+    }
+    let grids = dir.join(format!("libraries/{id}.grids"));
+    if let Err(e) = std::fs::remove_dir_all(&grids) {
         if e.kind() != std::io::ErrorKind::NotFound {
-            error!("Couldn't remove {}: {e}", file.display());
+            error!("Couldn't remove {}: {e}", grids.display());
         }
     }
 }

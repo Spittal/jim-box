@@ -34,8 +34,8 @@ export interface Settings {
   youtubeCookiesBrowser: CookieBrowser | null;
   /** Analyse tracks (BPM, beat grid, key, waveforms) as they join the collection. */
   analyseNewTracks: boolean;
-  /** Let a beat grid change tempo part-way through a track. */
-  followTempoChanges: boolean;
+  /** Let a beat grid follow the tempo where both beat detectors find it moving. */
+  dynamicGrids: boolean;
   /** How musical keys are shown. */
   keyNotation: KeyNotation;
 }

@@ -130,6 +130,7 @@ pub fn run() {
             commands::collection::collection_track_ids,
             commands::collection::find_in_collection,
             commands::collection::edit_collection,
+            commands::collection::review_grid,
             commands::collection::import_to_collection,
             commands::collection::analyse_tracks,
             commands::collection::cancel_analysis,

@@ -127,10 +127,12 @@ pub struct Settings {
     /// Analyse tracks (BPM, beat grid, key, waveforms) as they join the collection.
     #[serde(default = "default_true")]
     pub analyse_new_tracks: bool,
-    /// Let a beat grid change tempo part-way through a track, instead of
-    /// fitting one tempo to the whole of it as rekordbox's normal analysis does.
-    #[serde(default)]
-    pub follow_tempo_changes: bool,
+    /// Let a beat grid follow the tempo where both beat detectors find it
+    /// moving (a drummer who drifts, a DJ edit that changes pace) instead
+    /// of fitting one tempo to the whole track as rekordbox's normal
+    /// analysis does.
+    #[serde(default = "default_true")]
+    pub dynamic_grids: bool,
     /// How musical keys are shown.
     #[serde(default)]
     pub key_notation: KeyNotation,
@@ -151,7 +153,7 @@ impl Settings {
             lossy_fallback: true,
             youtube_cookies_browser: None,
             analyse_new_tracks: true,
-            follow_tempo_changes: false,
+            dynamic_grids: true,
             key_notation: KeyNotation::default(),
         }
     }

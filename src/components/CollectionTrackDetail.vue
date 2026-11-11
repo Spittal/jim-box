@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
+import BeatGridSection from '@/components/BeatGridSection.vue';
 import FixCard from '@/components/FixCard.vue';
 import JobStatusBadge from '@/components/JobStatusBadge.vue';
 import LibraryCover from '@/components/LibraryCover.vue';
@@ -47,18 +48,6 @@ async function run(action: () => Promise<unknown>) {
 function redownload() {
   starting.value = true;
   run(() => libraryStore.redownload(props.track.id)).finally(() => (starting.value = false));
-}
-
-const analysing = computed(() => store.analysis?.running.includes(props.track.id) ?? false);
-const analysisError = computed(
-  () => store.analysis?.failed.find((f) => f.trackId === props.track.id)?.error ?? null,
-);
-/** Asked for before replacing an analysis: the beat grid may have been adjusted by hand. */
-const confirmingAnalysis = ref(false);
-
-async function analyse() {
-  confirmingAnalysis.value = false;
-  await store.analyse([props.track.id], true);
 }
 
 const actionClass =
@@ -167,41 +156,18 @@ const inputClass =
     </div>
 
     <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
-      <dt class="text-text-muted">BPM</dt>
-      <dd class="font-mono">{{ track.bpm?.toFixed(2) ?? '–' }}</dd>
       <dt class="text-text-muted">Key</dt>
       <dd class="font-mono">{{ formatKey(track.key) || '–' }}</dd>
       <dt class="text-text-muted">Time</dt>
       <dd class="font-mono">{{ track.durationSecs ? formatDuration(track.durationSecs) : '–' }}</dd>
       <dt class="text-text-muted">Format</dt>
       <dd class="font-mono">{{ track.format.toUpperCase() }} {{ track.bitrate ? `${track.bitrate}k` : '' }}</dd>
-      <dt class="text-text-muted">Analysed</dt>
-      <dd>{{ analysing ? 'Analysing…' : track.analysed ? 'Yes' : 'Not yet' }}</dd>
     </dl>
 
-    <div class="flex flex-col gap-1">
-      <div class="flex flex-wrap gap-1.5">
-        <template v-if="confirmingAnalysis">
-          <button :class="actionClass" @click="analyse">Replace its beat grid</button>
-          <button :class="actionClass" @click="confirmingAnalysis = false">Cancel</button>
-        </template>
-        <button
-          v-else
-          :class="actionClass"
-          :disabled="analysing"
-          :title="track.analysed
-            ? 'Work out the BPM, beat grid, key and waveforms again. Cues are kept; the beat grid is replaced.'
-            : 'Work out the BPM, beat grid, key and waveforms'"
-          @click="track.analysed ? (confirmingAnalysis = true) : analyse()"
-        >
-          {{ track.analysed ? 'Analyse again…' : 'Analyse' }}
-        </button>
-      </div>
-      <p v-if="analysisError" class="error-box">{{ analysisError }}</p>
-    </div>
+    <BeatGridSection :track="track" />
 
-    <div class="flex flex-col gap-1">
-      <span class="text-[11px] text-text-muted">File</span>
+    <div class="flex flex-col gap-1.5 border-t border-border pt-3">
+      <span class="section-label">File</span>
       <p class="font-mono text-[10px] break-all text-text-secondary">{{ track.path }}</p>
       <div class="flex flex-wrap gap-1.5">
         <button :class="actionClass" @click="run(() => revealItemInDir(track.path))">{{ revealLabel }}</button>

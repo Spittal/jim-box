@@ -9,7 +9,7 @@ use crate::error::{AppError, AppResult};
 use crate::ingest::{self, ArrivalQueue, Waiting};
 use crate::library;
 use crate::state::SettingsState;
-use crate::rekordbox::{
+use crate::rekordbox::{GridHint, 
     Audio, Collection, CollectionStatus, Edit, EditOutcome, ImportReport, PlaylistNode, Preparation, Preview, TrackPage,
     TrackQuery,
 };
@@ -89,6 +89,13 @@ pub async fn edit_collection(app: AppHandle, edit: Edit) -> AppResult<EditOutcom
     library::blocking(move || app.state::<Collection>().edit(edit)).await
 }
 
+/// Marks a track's beat grid as reviewed, or takes that back. Only the
+/// app's own note of it changes, so rekordbox may be open.
+#[tauri::command]
+pub fn review_grid(app: AppHandle, track_id: String, reviewed: bool) {
+    app.state::<Collection>().review_grid(&track_id, reviewed);
+}
+
 /// Adds files, and the music in folders, to the collection; and to a
 /// playlist, if one is given.
 #[tauri::command]
@@ -109,8 +116,18 @@ pub async fn import_to_collection(
 /// Queues tracks for analysis: BPM, beat grid, key and waveforms. Tracks
 /// that have an analysis are skipped unless `again`. With no ids, queues
 /// every track in the collection that has none. Returns how many were queued.
+/// `hint` is what the user knows of the tracks: roughly their tempo, or
+/// whether it moves.
 #[tauri::command]
-pub async fn analyse_tracks(app: AppHandle, track_ids: Option<Vec<String>>, again: bool) -> AppResult<usize> {
+pub async fn analyse_tracks(
+    app: AppHandle,
+    track_ids: Option<Vec<String>>,
+    again: bool,
+    hint: Option<GridHint>,
+) -> AppResult<usize> {
+    if hint.is_some_and(|hint| hint.bpm.is_some() && hint.tempo().is_none()) {
+        return Err(AppError::Validation("A tempo is between 40 and 250 BPM".into()));
+    }
     if rbl_db::is_rekordbox_running() {
         return Err(AppError::Rekordbox("rekordbox is running. Quit it before analysing.".into()));
     }
@@ -119,7 +136,7 @@ pub async fn analyse_tracks(app: AppHandle, track_ids: Option<Vec<String>>, agai
         let all = library::blocking(move || Ok(reader.state::<Collection>().all_unanalysed())).await?;
         return Ok(analysis::enqueue(&app, all, true).await);
     };
-    Ok(analysis::enqueue(&app, track_ids, again).await)
+    Ok(analysis::enqueue_with(&app, track_ids, again, hint.unwrap_or_default()).await)
 }
 
 /// Drops the tracks still waiting to be analysed.

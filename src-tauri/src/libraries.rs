@@ -269,7 +269,8 @@ fn start(app: &AppHandle, mut library: KnownLibrary) -> AppResult<()> {
 
     info!("Opening the library at {}", library.master_db.display());
     let backups = app.path().app_data_dir()?.join("rekordbox-backups").join(library.id.to_string());
-    let collection = rekordbox::Collection::at(backups, library.master_db.clone());
+    let collection = rekordbox::Collection::at(backups, library.master_db.clone())
+        .with_grid_states(persistence::grid_states_file(app, library.id)?);
     let others: Vec<Uuid> = known.iter().map(|other| other.id).filter(|id| *id != library.id).collect();
     if !app.manage(OpenLibrary(library)) {
         return Err(AppError::Validation("A library is open already".into()));
