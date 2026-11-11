@@ -1,7 +1,7 @@
 import { acceptHMRUpdate, defineStore } from 'pinia';
 import { ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import type { LinkedPlaylist, PlaylistProgress } from '@/types/playlist';
+import type { Followed, LinkedPlaylist, PlaylistProgress, SyncSettings } from '@/types/playlist';
 import type { TrackRequest } from '@/types/track';
 
 const PLAYLIST_LINK = /open\.spotify\.com\/(?:[\w-]+\/)?playlist\/[A-Za-z0-9]{22}|^spotify:playlist:[A-Za-z0-9]{22}$/;
@@ -14,8 +14,8 @@ export function isPlaylistLink(input: string): boolean {
 export const usePlaylistStore = defineStore('playlist', () => {
   /** The Spotify side of the rekordbox playlist being shown, if it came from one. */
   const linked = ref<LinkedPlaylist | null>(null);
-  /** The rekordbox playlists that follow a Spotify playlist. */
-  const watched = ref(new Set<string>());
+  /** The rekordbox playlists that follow a Spotify playlist, by id. */
+  const watched = ref(new Map<string, Followed>());
   const importing = ref(false);
   /** Tracks matched so far while importing. */
   const progress = ref<PlaylistProgress | null>(null);
@@ -24,23 +24,22 @@ export const usePlaylistStore = defineStore('playlist', () => {
 
   async function loadWatched() {
     try {
-      watched.value = new Set(await invoke<string[]>('linked_playlist_ids'));
+      watched.value = new Map(Object.entries(await invoke<Record<string, Followed>>('followed_playlists')));
     } catch {
       // No library is open yet.
     }
   }
 
   /**
-   * Makes a rekordbox playlist (in the folder `parentId`) that follows a
-   * Spotify playlist: it gets the tracks the collection has, the rest are
-   * fetched, and it is kept in step from then on. A playlist followed
-   * already is read again instead. Throws on failure.
+   * Makes a rekordbox playlist follow a Spotify playlist: it gets the
+   * tracks the collection has, the rest are fetched, and tracks added on
+   * Spotify later are too. Throws on failure.
    */
-  async function importLink(url: string, parentId: string | null = null): Promise<LinkedPlaylist> {
+  async function link(url: string, playlistId: string): Promise<LinkedPlaylist> {
     importing.value = true;
     progress.value = null;
     try {
-      const result = await invoke<LinkedPlaylist>('import_spotify_playlist', { url, parentId });
+      const result = await invoke<LinkedPlaylist>('link_spotify_playlist', { url, playlistId });
       if (shown === result.playlistId) linked.value = result;
       loadWatched();
       return result;
@@ -52,15 +51,20 @@ export const usePlaylistStore = defineStore('playlist', () => {
 
   /** Reads the open playlist from Spotify again now, and looks again for tracks with no match. */
   async function refresh() {
-    if (linked.value) await importLink(`https://open.spotify.com/playlist/${linked.value.spotifyId}`);
+    const current = linked.value;
+    if (current) await link(`https://open.spotify.com/playlist/${current.spotifyId}`, current.playlistId);
   }
 
-  /** Stops the open playlist following Spotify. The playlist stays as it is. */
-  async function unlink() {
-    const current = linked.value;
-    if (!current) return;
-    await invoke('unlink_playlist', { playlistId: current.playlistId });
-    if (linked.value === current) linked.value = null;
+  /** Stops a playlist following Spotify. The playlist stays as it is. */
+  async function unlink(playlistId: string) {
+    await invoke('unlink_playlist', { playlistId });
+    if (linked.value?.playlistId === playlistId) linked.value = null;
+    await loadWatched();
+  }
+
+  /** Changes how a playlist follows Spotify. */
+  async function setSettings(playlistId: string, settings: SyncSettings) {
+    await invoke('set_playlist_settings', { playlistId, settings });
     await loadWatched();
   }
 
@@ -97,7 +101,7 @@ export const usePlaylistStore = defineStore('playlist', () => {
     }
   }
 
-  return { linked, watched, importing, progress, importLink, refresh, unlink, synced, show, setMatch };
+  return { linked, watched, importing, progress, link, refresh, unlink, setSettings, synced, show, setMatch };
 });
 
 // Swap in new actions on hot reload instead of keeping the old store.

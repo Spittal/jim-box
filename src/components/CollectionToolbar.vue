@@ -341,7 +341,7 @@ const buttonClass =
         v-if="fetchable.length"
         class="shrink-0 rounded bg-accent px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
         :disabled="fetchingAll"
-        title="Fetch every missing track whose match is sure and that isn't being fetched. New ones are fetched by themselves; this is for ones you cancelled."
+        title="Fetch every missing track whose match is sure and that isn't being fetched. The others are left for you to check."
         @click="fetchAll"
       >
         {{ fetchingAll ? 'Queuing…' : `Get lossless for ${fetchable.length} missing` }}
@@ -353,13 +353,6 @@ const buttonClass =
         @click="run(playlistStore.refresh)"
       >
         {{ playlistStore.importing ? 'Reading…' : 'Sync now' }}
-      </button>
-      <button
-        class="shrink-0 rounded px-2 py-1 text-xs text-text-muted transition-colors hover:bg-surface-2 hover:text-text-primary"
-        title="Stop following the Spotify playlist. This playlist and its tracks stay as they are."
-        @click="run(playlistStore.unlink)"
-      >
-        Stop following
       </button>
     </div>
   </header>

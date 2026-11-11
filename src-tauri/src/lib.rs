@@ -138,9 +138,10 @@ pub fn run() {
             commands::collection::track_waveform,
             commands::collection::track_audio,
             commands::collection::stop_track_audio,
-            commands::playlist::import_spotify_playlist,
+            commands::playlist::link_spotify_playlist,
             commands::playlist::linked_playlist,
-            commands::playlist::linked_playlist_ids,
+            commands::playlist::followed_playlists,
+            commands::playlist::set_playlist_settings,
             commands::playlist::unlink_playlist,
             commands::playlist::set_playlist_match,
         ])

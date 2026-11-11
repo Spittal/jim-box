@@ -34,6 +34,25 @@ export interface LinkedPlaylist {
   missing: MissingEntry[];
 }
 
+/** How a rekordbox playlist follows its Spotify playlist. */
+export interface SyncSettings {
+  /** Fetch tracks added on Spotify whose match is sure. */
+  autoFetch: boolean;
+  /**
+   * 1-to-1: keep the rekordbox playlist to exactly the Spotify playlist's
+   * tracks, taking out whatever isn't on Spotify.
+   */
+  mirror: boolean;
+}
+
+/** A rekordbox playlist's link to Spotify. */
+export interface Followed {
+  spotifyId: string;
+  /** The Spotify playlist's name. */
+  name: string;
+  settings: SyncSettings;
+}
+
 export interface PlaylistProgress {
   done: number;
   total: number;

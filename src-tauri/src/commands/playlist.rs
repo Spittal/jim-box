@@ -1,21 +1,36 @@
 use tauri::{AppHandle, State};
 
 use crate::error::AppResult;
-use crate::playlist::{self, LinkedPlaylist, PlaylistStore};
+use std::collections::HashMap;
+
+use crate::playlist::{self, Followed, LinkedPlaylist, PlaylistStore, SyncSettings};
 use crate::state::TrackRequest;
 
-/// Links a public Spotify playlist to a rekordbox playlist, made under
-/// `parent_id` if this one isn't linked yet (rekordbox must be closed for
-/// that), and brings the two in step.
+/// Makes a rekordbox playlist follow a public Spotify playlist, and brings
+/// it in step. For one that follows it already, reads Spotify again.
 #[tauri::command]
-pub async fn import_spotify_playlist(app: AppHandle, url: String, parent_id: Option<String>) -> AppResult<LinkedPlaylist> {
-    playlist::import(&app, &url, parent_id).await
+pub async fn link_spotify_playlist(app: AppHandle, url: String, playlist_id: String) -> AppResult<LinkedPlaylist> {
+    playlist::link(&app, &url, playlist_id).await
 }
 
-/// The rekordbox playlists that follow a Spotify playlist.
+/// The rekordbox playlists that follow a Spotify playlist, by id.
 #[tauri::command]
-pub fn linked_playlist_ids(store: State<'_, PlaylistStore>) -> Vec<String> {
-    store.linked_ids()
+pub fn followed_playlists(store: State<'_, PlaylistStore>) -> HashMap<String, Followed> {
+    store.followed()
+}
+
+/// Changes how a rekordbox playlist follows its Spotify playlist, and brings
+/// it in step under the new settings.
+#[tauri::command]
+pub fn set_playlist_settings(
+    app: AppHandle,
+    store: State<'_, PlaylistStore>,
+    playlist_id: String,
+    settings: SyncSettings,
+) -> AppResult<()> {
+    store.set_settings(&app, &playlist_id, settings)?;
+    tauri::async_runtime::spawn(playlist::sync_linked(app.clone(), playlist_id));
+    Ok(())
 }
 
 /// Stops keeping a rekordbox playlist in step with Spotify. The playlist stays.

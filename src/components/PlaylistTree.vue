@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { dragging, dropTree, endDrag, startDrag } from '@/composables/useDrag';
 import { useBrowseStore } from '@/stores/browse';
@@ -7,11 +7,12 @@ import { useCollectionStore } from '@/stores/collection';
 import { useJobsStore } from '@/stores/jobs';
 import { isPlaylistLink, usePlaylistStore } from '@/stores/playlist';
 import type { PlaylistNode } from '@/types/collection';
+import type { SyncSettings } from '@/types/playlist';
 
 /**
  * The playlist tree: picking a list, and making, naming, moving and filling
- * playlists. A Spotify playlist link pasted as a new playlist's name makes
- * a playlist that follows the Spotify one.
+ * playlists. Each playlist has a button for linking it to a Spotify
+ * playlist, which it then follows.
  */
 const store = useCollectionStore();
 const { status, playlists } = storeToRefs(store);
@@ -79,9 +80,7 @@ async function commitName() {
   naming.value = null;
   const name = pending.name.trim();
   if (!name) return;
-  if (!pending.id && !pending.folder && isPlaylistLink(name)) {
-    await followSpotify(name, pending.parentId);
-  } else if (pending.id) {
+  if (pending.id) {
     if (playlists.value.find((p) => p.id === pending.id)?.name !== name) {
       await store.edit({ kind: 'renamePlaylist', id: pending.id, name });
     }
@@ -96,18 +95,69 @@ async function commitName() {
   }
 }
 
-/** Makes a playlist that follows the Spotify playlist at `url`, and shows it. */
-async function followSpotify(url: string, parentId: string | null) {
+// A playlist's settings, in a dialog: linking it to a Spotify playlist.
+
+/** The playlist whose settings are open. */
+const settingsOf = ref<string | null>(null);
+const settingsNode = computed(() => playlists.value.find((p) => p.id === settingsOf.value) ?? null);
+/** Its link to Spotify, if it has one. */
+const followed = computed(() => (settingsOf.value ? watched.value.get(settingsOf.value) ?? null : null));
+const linkUrl = ref('');
+/** Set while 1-to-1 sync waits for the user to confirm what it removes. */
+const confirmingMirror = ref(false);
+watch(settingsOf, () => {
+  linkUrl.value = '';
+  confirmingMirror.value = false;
+});
+// Deleted while its settings were open.
+watch(settingsNode, (node) => !node && (settingsOf.value = null));
+
+async function act(action: () => Promise<unknown>) {
   store.error = null;
   try {
-    const linked = await playlistStore.importLink(url, parentId);
-    // Show the playlist once the tree has it.
-    await store.changed(store.waiting);
-    browse.select(linked.playlistId);
+    await action();
   } catch (e) {
     store.error = String(e);
   }
 }
+
+function linkSpotify() {
+  const id = settingsOf.value;
+  const url = linkUrl.value.trim();
+  if (!id || !isPlaylistLink(url)) return;
+  act(async () => {
+    await playlistStore.link(url, id);
+    linkUrl.value = '';
+  });
+}
+
+function setSetting(change: Partial<SyncSettings>) {
+  const id = settingsOf.value;
+  const current = followed.value?.settings;
+  confirmingMirror.value = false;
+  if (id && current) act(() => playlistStore.setSettings(id, { ...current, ...change }));
+}
+
+/** Turning 1-to-1 sync on asks first; turning it off doesn't. */
+function toggleMirror(event: Event) {
+  const box = event.target as HTMLInputElement;
+  if (box.checked) {
+    box.checked = false;
+    confirmingMirror.value = true;
+  } else {
+    setSetting({ mirror: false });
+  }
+}
+
+function unlinkSpotify() {
+  const id = settingsOf.value;
+  confirmingMirror.value = false;
+  if (id) act(() => playlistStore.unlink(id));
+}
+
+const closeOnEscape = (event: KeyboardEvent) => event.key === 'Escape' && (settingsOf.value = null);
+onMounted(() => window.addEventListener('keydown', closeOnEscape));
+onUnmounted(() => window.removeEventListener('keydown', closeOnEscape));
 
 async function deletePlaylist(id: string) {
   confirmingDelete.value = null;
@@ -191,6 +241,8 @@ async function dropOnTree(node: PlaylistNode) {
 const treeButtonClass = 'rounded px-1.5 py-0.5 text-[11px] text-text-muted hover:bg-surface-2 hover:text-text-primary';
 const iconButtonClass =
   'shrink-0 rounded p-1 text-text-muted hover:bg-surface-2 hover:text-text-primary disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-text-muted';
+const GEAR_ICON =
+  'M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z';
 const TRASH_ICON = 'M2.5 4.5h11M6 4.5V3h4v1.5M4 4.5l.5 9h7l.5-9M6.5 7v4M9.5 7v4';
 const nameInputClass =
   'min-w-0 flex-1 rounded border border-border-active bg-surface-1 px-1 py-0 text-xs outline-none';
@@ -209,7 +261,7 @@ const nameInputClass =
       </li>
       <li class="section-label px-4 pt-3 pb-1 text-[10px]">Playlists</li>
       <li v-if="naming && !naming.id && newRowAfter === null" class="flex items-center py-0.5 pr-2 pl-4">
-        <input ref="nameInput" v-model="naming.name" :class="nameInputClass" spellcheck="false" :placeholder="naming.folder ? '' : 'Name or Spotify link'" :title="naming.folder ? undefined : 'Type a name, or paste a Spotify playlist link to follow that playlist'" @keydown.enter="commitName" @keydown.esc="naming = null" @blur="commitName" />
+        <input ref="nameInput" v-model="naming.name" :class="nameInputClass" spellcheck="false" @keydown.enter="commitName" @keydown.esc="naming = null" @blur="commitName" />
       </li>
       <template v-for="node in treeRows" :key="node.id">
         <li
@@ -251,13 +303,20 @@ const nameInputClass =
             <span class="min-w-0 flex-1 truncate" :class="{ 'font-medium': node.kind === 'folder' }" :title="node.name">
               {{ node.name }}
             </span>
-            <span
-              v-if="watched.has(node.id)"
-              class="shrink-0 text-[10px] text-accent"
-              title="Follows a Spotify playlist: tracks added there are fetched, and tracks removed there leave this playlist"
+            <button
+              v-if="node.kind === 'playlist'"
+              class="shrink-0 rounded p-0.5 hover:bg-surface-3"
+              :class="watched.has(node.id) ? 'text-accent' : 'text-text-muted opacity-0 group-hover:opacity-100 focus:opacity-100'"
+              :title="watched.has(node.id) ? `Playlist settings. Follows “${watched.get(node.id)!.name}” on Spotify.` : 'Playlist settings'"
+              aria-label="Playlist settings"
+              @click.stop="settingsOf = node.id"
+              @dblclick.stop
             >
-              ↻
-            </span>
+              <svg viewBox="0 0 24 24" class="size-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path :d="GEAR_ICON" />
+                <circle cx="12" cy="12" r="3" />
+              </svg>
+            </button>
             <span v-if="node.kind === 'smart'" class="shrink-0 text-[10px] text-text-muted" title="Intelligent playlist">auto</span>
             <span v-else-if="node.count !== null" class="shrink-0 font-mono text-[10px] text-text-muted">{{ node.count }}</span>
           </template>
@@ -267,21 +326,129 @@ const nameInputClass =
           class="flex items-center py-0.5 pr-2"
           :style="{ paddingLeft: `${newRowDepth * 12 + 16}px` }"
         >
-          <input ref="nameInput" v-model="naming.name" :class="nameInputClass" spellcheck="false" :placeholder="naming.folder ? '' : 'Name or Spotify link'" :title="naming.folder ? undefined : 'Type a name, or paste a Spotify playlist link to follow that playlist'" @keydown.enter="commitName" @keydown.esc="naming = null" @blur="commitName" />
+          <input ref="nameInput" v-model="naming.name" :class="nameInputClass" spellcheck="false" @keydown.enter="commitName" @keydown.esc="naming = null" @blur="commitName" />
         </li>
       </template>
       <li v-if="!playlists.length && !naming" class="px-4 py-2 text-text-muted">No playlists yet.</li>
     </ul>
+    <!-- A playlist's settings, over the whole window. -->
+    <Teleport to="body">
+      <div
+        v-if="settingsNode"
+        class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-6"
+        @click.self="settingsOf = null"
+      >
+        <div
+          role="dialog"
+          aria-modal="true"
+          :aria-label="`Settings for ${settingsNode.name}`"
+          class="flex max-h-full w-full max-w-md flex-col gap-4 overflow-y-auto rounded-lg border border-border bg-surface-1 p-5 text-sm shadow-xl"
+        >
+          <div class="flex items-start justify-between gap-4">
+            <div class="min-w-0">
+              <h2 class="truncate font-medium">{{ settingsNode.name }}</h2>
+              <p class="text-xs text-text-muted">Playlist settings</p>
+            </div>
+            <button :class="iconButtonClass" title="Close" aria-label="Close" @click="settingsOf = null">
+              <svg viewBox="0 0 16 16" class="size-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+                <path d="M4 4l8 8M12 4l-8 8" />
+              </svg>
+            </button>
+          </div>
+
+          <section class="flex flex-col gap-3">
+            <h3 class="section-label text-[10px]">Spotify sync</h3>
+
+            <!-- Not linked yet. -->
+            <template v-if="!followed">
+              <p class="text-xs text-text-secondary">
+                Link this playlist to a public Spotify playlist. Tracks on it that you have are added here, the rest
+                are fetched, and tracks added on Spotify later follow.
+              </p>
+              <form class="flex gap-2" @submit.prevent="linkSpotify">
+                <input
+                  v-model="linkUrl"
+                  type="text"
+                  spellcheck="false"
+                  placeholder="Paste a Spotify playlist link"
+                  class="min-w-0 flex-1 rounded border border-border bg-surface-0 px-3 py-1.5 text-sm outline-none placeholder:text-text-muted focus:border-accent"
+                />
+                <button
+                  type="submit"
+                  class="shrink-0 rounded bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
+                  :disabled="!isPlaylistLink(linkUrl) || playlistStore.importing"
+                >
+                  {{ playlistStore.importing ? 'Reading…' : 'Link' }}
+                </button>
+              </form>
+              <p v-if="playlistStore.importing && playlistStore.progress?.total" class="text-xs text-text-muted">
+                Matching tracks… {{ playlistStore.progress.done }} of {{ playlistStore.progress.total }}
+              </p>
+            </template>
+
+            <!-- Linked: how it follows. -->
+            <template v-else>
+              <p class="truncate text-xs text-text-secondary" :title="followed.name">
+                Linked to “{{ followed.name }}”, read every minute while jim-box is open.
+              </p>
+              <label class="flex cursor-pointer items-start gap-2">
+                <input
+                  type="checkbox"
+                  class="mt-0.5 size-4 accent-accent"
+                  :checked="followed.settings.autoFetch"
+                  @change="setSetting({ autoFetch: ($event.target as HTMLInputElement).checked })"
+                />
+                <span>
+                  Fetch tracks you don't have
+                  <span class="block text-xs text-text-muted">Only when the match is sure. Others are listed for you to check.</span>
+                </span>
+              </label>
+              <label class="flex cursor-pointer items-start gap-2">
+                <input type="checkbox" class="mt-0.5 size-4 accent-accent" :checked="followed.settings.mirror" @change="toggleMirror" />
+                <span>
+                  1-to-1 sync
+                  <span class="block text-xs" :class="followed.settings.mirror ? 'text-status-error' : 'text-text-muted'">
+                    {{ followed.settings.mirror
+                      ? 'On: tracks that aren’t on the Spotify playlist are removed from this playlist.'
+                      : 'Keep only what is on the Spotify playlist. Off, nothing is ever removed.' }}
+                  </span>
+                </span>
+              </label>
+              <div v-if="confirmingMirror" class="flex flex-col gap-2 rounded border border-status-error/40 bg-status-error/10 p-3 text-xs">
+                <p class="text-status-error">
+                  <strong>This removes tracks from this playlist.</strong> Every track that isn't on the Spotify
+                  playlist is taken out now, including ones you added yourself, and tracks later removed on Spotify
+                  are taken out too. They stay in your collection.
+                </p>
+                <div class="flex gap-2">
+                  <button class="rounded bg-status-error/20 px-2 py-1 text-status-error hover:bg-status-error/30" @click="setSetting({ mirror: true })">
+                    Turn on 1-to-1 sync
+                  </button>
+                  <button class="rounded bg-surface-2 px-2 py-1 hover:bg-surface-3" @click="confirmingMirror = false">Cancel</button>
+                </div>
+              </div>
+              <button
+                class="self-start rounded bg-surface-2 px-3 py-1.5 text-xs transition-colors hover:bg-surface-3"
+                title="Stop following the Spotify playlist. This playlist and its tracks stay as they are."
+                @click="unlinkSpotify"
+              >
+                Unlink from Spotify
+              </button>
+            </template>
+
+            <ul class="list-disc space-y-0.5 border-t border-border pt-3 pl-4 text-xs text-text-muted">
+              <li>A Spotify playlist can be linked to one playlist at a time.</li>
+              <li>Track order isn't synced, only which tracks are in the playlist.</li>
+              <li>Only a playlist's first 100 tracks can be read.</li>
+              <li>Changes to this playlist wait while rekordbox is open.</li>
+            </ul>
+          </section>
+        </div>
+      </div>
+    </Teleport>
     <!-- Icons that are always there, so picking a playlist or asking to delete one moves nothing. -->
     <div class="flex shrink-0 items-center gap-1 border-t border-border p-1.5">
-      <button
-        :class="treeButtonClass"
-        class="whitespace-nowrap"
-        title="New playlist. Paste a Spotify playlist link as its name to follow that playlist."
-        @click="startCreate(false)"
-      >
-        + Playlist
-      </button>
+      <button :class="treeButtonClass" class="whitespace-nowrap" title="New playlist" @click="startCreate(false)">+ Playlist</button>
       <button :class="treeButtonClass" class="whitespace-nowrap" title="New folder" @click="startCreate(true)">+ Folder</button>
       <span class="flex-1" />
       <template v-if="selectedNode && confirmingDelete === selectedNode.id">

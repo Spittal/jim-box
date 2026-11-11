@@ -1,20 +1,21 @@
-//! Spotify playlists kept in step with rekordbox playlists: a public
-//! playlist becomes a rekordbox playlist holding the tracks the collection
-//! already has. Each other entry is matched to a search result (see
-//! [`autotag::find_track`]) and, when the match is sure, fetched;
-//! medium-confidence matches are left for the user to check.
+//! rekordbox playlists that follow a public Spotify playlist. Any playlist
+//! can be linked to one: it is given the tracks of the Spotify playlist
+//! that the collection has, and each other track is matched to a search
+//! result (see [`autotag::find_track`]) and, when the match is sure,
+//! fetched; medium-confidence matches are left for the user to check.
 //!
 //! While the window is open, every linked playlist is read again every
-//! [`SYNC_EVERY`]: tracks added on Spotify are matched and fetched, and
-//! tracks taken off it leave the rekordbox playlist (they stay in the
-//! collection). rekordbox's library can only be changed while rekordbox is
-//! closed, so those changes wait until it is.
+//! [`SYNC_EVERY`], and tracks added on Spotify are matched and fetched.
+//! Nothing is taken out of the rekordbox playlist unless it is set to
+//! mirror the Spotify one: then whatever isn't on Spotify leaves it (and
+//! stays in the collection). rekordbox's library can only be changed while
+//! rekordbox is closed, so those changes wait until it is.
 //!
 //! The link between the two playlists, and the matches (including ones the
 //! user picked by hand), are saved.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
@@ -26,7 +27,7 @@ use crate::jobs::{self, JobStore};
 use crate::persistence;
 use crate::rekordbox::{Collection, Edit, PlaylistKind};
 use crate::sources::{Sources, SpotifyTrack};
-use crate::state::{now_ms, Confidence, Job, JobStatus, TrackRequest};
+use crate::state::{now_ms, Confidence, Job, TrackRequest};
 
 /// Unlinked playlists remembered, most recently read first. Linked ones are
 /// always kept.
@@ -45,6 +46,33 @@ pub struct PlaylistEntry {
     pub confidence: Option<Confidence>,
 }
 
+/// How one rekordbox playlist follows its Spotify playlist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SyncSettings {
+    /// Fetch tracks added on Spotify whose match is sure.
+    pub auto_fetch: bool,
+    /// Keep the rekordbox playlist to exactly the Spotify playlist's
+    /// tracks: whatever isn't on Spotify is taken out of it.
+    pub mirror: bool,
+}
+
+impl Default for SyncSettings {
+    fn default() -> Self {
+        Self { auto_fetch: true, mirror: false }
+    }
+}
+
+/// A rekordbox playlist's link to Spotify, for the playlist tree.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Followed {
+    pub spotify_id: String,
+    /// The Spotify playlist's name.
+    pub name: String,
+    pub settings: SyncSettings,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlaylistMatch {
@@ -59,10 +87,8 @@ pub struct PlaylistMatch {
     /// The rekordbox playlist this one is kept in step with.
     #[serde(default)]
     pub rekordbox_id: Option<String>,
-    /// Tracks taken off the Spotify playlist that have yet to leave the
-    /// rekordbox one: rekordbox was open, or their download hasn't landed.
     #[serde(default)]
-    pub removed: Vec<PlaylistEntry>,
+    pub settings: SyncSettings,
 }
 
 /// Saved Spotify playlists, persisted on every change.
@@ -96,9 +122,46 @@ impl PlaylistStore {
         self.lock().iter().filter(|p| p.rekordbox_id.is_some()).cloned().collect()
     }
 
-    /// The rekordbox playlists that follow a Spotify playlist.
-    pub fn linked_ids(&self) -> Vec<String> {
-        self.lock().iter().filter_map(|p| p.rekordbox_id.clone()).collect()
+    /// The rekordbox playlists that follow a Spotify playlist, by id.
+    pub fn followed(&self) -> HashMap<String, Followed> {
+        self.lock()
+            .iter()
+            .filter_map(|p| {
+                let followed = Followed { spotify_id: p.id.clone(), name: p.name.clone(), settings: p.settings };
+                Some((p.rekordbox_id.clone()?, followed))
+            })
+            .collect()
+    }
+
+    /// Changes how a rekordbox playlist follows its Spotify playlist.
+    pub fn set_settings(&self, app: &AppHandle, rekordbox_id: &str, settings: SyncSettings) -> AppResult<()> {
+        let mut playlists = self.lock();
+        let playlist = playlists
+            .iter_mut()
+            .find(|p| p.rekordbox_id.as_deref() == Some(rekordbox_id))
+            .ok_or_else(|| AppError::Validation("That playlist doesn't follow a Spotify playlist".into()))?;
+        playlist.settings = settings;
+        persistence::save_playlists(app, &playlists);
+        Ok(())
+    }
+
+    /// Makes a rekordbox playlist follow a saved Spotify playlist, in place
+    /// of any it followed before. A new link starts with the default
+    /// settings, so nothing is removed until that is asked for.
+    fn link(&self, app: &AppHandle, id: &str, rekordbox_id: &str) {
+        let mut playlists = self.lock();
+        for playlist in playlists.iter_mut() {
+            let linked_here = playlist.rekordbox_id.as_deref() == Some(rekordbox_id);
+            if playlist.id == id {
+                if !linked_here {
+                    playlist.rekordbox_id = Some(rekordbox_id.to_owned());
+                    playlist.settings = SyncSettings::default();
+                }
+            } else if linked_here {
+                playlist.rekordbox_id = None;
+            }
+        }
+        persistence::save_playlists(app, &playlists);
     }
 
     /// Saves a playlist as the most recent.
@@ -130,18 +193,8 @@ impl PlaylistStore {
         let mut playlists = self.lock();
         for playlist in playlists.iter_mut().filter(|p| p.rekordbox_id.as_deref() == Some(rekordbox_id)) {
             playlist.rekordbox_id = None;
-            playlist.removed.clear();
         }
         persistence::save_playlists(app, &playlists);
-    }
-
-    /// Replaces the tracks still to be taken out of the rekordbox playlist.
-    fn set_removed(&self, app: &AppHandle, id: &str, removed: Vec<PlaylistEntry>) {
-        let mut playlists = self.lock();
-        if let Some(playlist) = playlists.iter_mut().find(|p| p.id == id) {
-            playlist.removed = removed;
-            persistence::save_playlists(app, &playlists);
-        }
     }
 
     /// Records a match the user picked for one track.
@@ -169,8 +222,7 @@ struct PlaylistProgress {
 /// Reads a public playlist and matches the tracks that are new to it,
 /// keeping saved matches. Tracks that found no match before are searched
 /// for again only with `rematch`, so the timer doesn't repeat failed
-/// searches every minute. Tracks that have gone are noted in `removed`.
-/// Emits `playlist-progress` while matching.
+/// searches every minute. Emits `playlist-progress` while matching.
 async fn read(app: &AppHandle, input: &str, rematch: bool) -> AppResult<PlaylistMatch> {
     let sources = app.state::<Sources>();
     let store = app.state::<PlaylistStore>();
@@ -206,14 +258,10 @@ async fn read(app: &AppHandle, input: &str, rematch: bool) -> AppResult<Playlist
     }
     let _ = app.emit("playlist-progress", PlaylistProgress { done: total, total });
 
-    let removed = gone(saved.as_ref().map(|p| p.removed.as_slice()).unwrap_or_default(), known, &entries, playlist.truncated);
-
+    // Matching takes a while: the link and settings may have changed since.
+    let current = store.get(&playlist.id);
     let matched = entries.iter().filter(|e| e.request.is_some()).count();
-    info!(
-        "Playlist '{}': matched {matched} of {total} tracks ({reused} from before), {} gone",
-        playlist.name,
-        removed.len()
-    );
+    info!("Playlist '{}': matched {matched} of {total} tracks ({reused} from before)", playlist.name);
     let result = PlaylistMatch {
         id: playlist.id,
         name: playlist.name,
@@ -221,28 +269,11 @@ async fn read(app: &AppHandle, input: &str, rematch: bool) -> AppResult<Playlist
         truncated: playlist.truncated,
         entries,
         loaded_at: now_ms(),
-        rekordbox_id: saved.and_then(|p| p.rekordbox_id),
-        removed,
+        settings: current.as_ref().map(|p| p.settings).unwrap_or_default(),
+        rekordbox_id: current.and_then(|p| p.rekordbox_id),
     };
     store.put(app, result.clone());
     Ok(result)
-}
-
-/// The tracks still to be taken out of the rekordbox playlist: what has
-/// gone since the last read (`known` is what was there then), with what
-/// was waiting already, less anything that is back. A list cut off at
-/// Spotify's limit may have pushed tracks out of sight, and an empty one is
-/// more likely a bad read than an emptied playlist: neither removes anything.
-fn gone(waiting: &[PlaylistEntry], known: &[PlaylistEntry], entries: &[PlaylistEntry], truncated: bool) -> Vec<PlaylistEntry> {
-    let lost = if truncated || entries.is_empty() { &[] } else { known };
-    let mut removed: Vec<PlaylistEntry> = Vec::new();
-    for entry in waiting.iter().chain(lost) {
-        let back = entries.iter().any(|e| e.track == entry.track);
-        if !back && !removed.iter().any(|e| e.track == entry.track) {
-            removed.push(entry.clone());
-        }
-    }
-    removed
 }
 
 /// A Spotify track that isn't in the collection yet.
@@ -272,43 +303,46 @@ pub struct LinkedPlaylist {
     pub missing: Vec<MissingEntry>,
 }
 
-/// Links a public Spotify playlist to a rekordbox playlist and brings the
-/// two in step (see [`reconcile`]). One that isn't linked yet gets a new
-/// rekordbox playlist of the same name under `parent_id` (the top level
-/// when None), which needs rekordbox closed. One that is linked is read
-/// again, and tracks with no match are searched for again.
-pub async fn import(app: &AppHandle, input: &str, parent_id: Option<String>) -> AppResult<LinkedPlaylist> {
+/// Makes a rekordbox playlist follow a public Spotify playlist, and brings
+/// it in step (see [`reconcile`]). A playlist that follows it already is
+/// read again, and tracks with no match are searched for again.
+pub async fn link(app: &AppHandle, input: &str, rekordbox_id: String) -> AppResult<LinkedPlaylist> {
     let store = app.state::<PlaylistStore>();
     let _one_at_a_time = store.syncing.lock().await;
     let mut playlist = read(app, input, true).await?;
 
-    let (work_app, work) = (app.clone(), playlist.clone());
-    let rekordbox_id = crate::library::blocking(move || {
+    let (work_app, target, other) = (app.clone(), rekordbox_id.clone(), playlist.rekordbox_id.clone());
+    crate::library::blocking(move || {
         let collection = work_app.state::<Collection>();
         // Read first, so tracks added in rekordbox are found.
         collection.reload()?;
-        if let Some(id) = work.rekordbox_id.filter(|id| is_playlist(&collection, id) == Some(true)) {
-            return Ok(id);
+        if is_playlist(&collection, &target) != Some(true) {
+            return Err(AppError::Validation("Only a plain playlist can follow a Spotify playlist".into()));
         }
-        if rbl_db::is_rekordbox_running() {
-            return Err(AppError::Rekordbox(
-                "rekordbox is running. Quit it before bringing in a playlist, so the playlist can be made.".into(),
-            ));
+        // One rekordbox playlist per Spotify playlist: fetched tracks have one place to land.
+        let taken = other.filter(|id| *id != target).and_then(|id| {
+            let nodes = collection.playlists().ok()?;
+            nodes.into_iter().find(|n| n.id == id && n.kind == PlaylistKind::Playlist)
+        });
+        match taken {
+            Some(node) => Err(AppError::Validation(format!(
+                "That Spotify playlist is already linked to \"{}\". Unlink it there first.",
+                node.name
+            ))),
+            None => Ok(()),
         }
-        collection
-            .edit(Edit::CreatePlaylist { name: work.name, parent_id, folder: false })?
-            .created_id
-            .ok_or_else(|| AppError::Rekordbox("The playlist couldn't be made".into()))
     })
     .await?;
 
+    store.link(app, &playlist.id, &rekordbox_id);
+    let saved = store.get(&playlist.id);
     playlist.rekordbox_id = Some(rekordbox_id.clone());
-    store.put(app, playlist.clone());
+    playlist.settings = saved.map(|p| p.settings).unwrap_or_default();
     reconcile(app, playlist).await?;
     let _ = app.emit("collection-changed", app.state::<crate::ingest::ArrivalQueue>().waiting());
     linked(app, rekordbox_id)
         .await?
-        .ok_or_else(|| AppError::Validation("The playlist couldn't be saved".into()))
+        .ok_or_else(|| AppError::Validation("The playlist couldn't be linked".into()))
 }
 
 /// Reads every linked playlist again and brings rekordbox in step, every
@@ -325,6 +359,14 @@ pub async fn watch(app: AppHandle) {
             }
         }
         tokio::time::sleep(SYNC_EVERY).await;
+    }
+}
+
+/// Reads one linked playlist again now, after its settings changed.
+pub async fn sync_linked(app: AppHandle, rekordbox_id: String) {
+    let Some(playlist) = app.state::<PlaylistStore>().linked_to(&rekordbox_id) else { return };
+    if let Err(e) = sync(&app, &playlist).await {
+        warn!("Couldn't sync playlist '{}' with Spotify: {e}", playlist.name);
     }
 }
 
@@ -354,35 +396,21 @@ fn is_playlist(collection: &Collection, id: &str) -> Option<bool> {
 struct Plan {
     /// Collection tracks on the Spotify playlist that the rekordbox one lacks.
     add: Vec<String>,
-    /// Tracks in the rekordbox playlist that were taken off the Spotify one.
+    /// Tracks in a mirrored rekordbox playlist that aren't on the Spotify one.
     remove: Vec<String>,
-    /// Removed entries whose download may yet land in the playlist.
-    awaiting: Vec<PlaylistEntry>,
     /// Sure matches that aren't in the collection and were never fetched.
     fetch: Vec<TrackRequest>,
 }
 
 /// Brings a linked rekordbox playlist in step with what was read from
-/// Spotify: adds the tracks the collection has, takes out the ones that
-/// left the Spotify playlist, and starts fetching sure matches the
-/// collection lacks. Changes to rekordbox wait while it is running. A
-/// playlist deleted in rekordbox is unlinked. Returns whether the
-/// collection changed.
+/// Spotify: adds the tracks the collection has, starts fetching sure
+/// matches it lacks, and, for a mirrored playlist, takes out what isn't on
+/// Spotify. Changes to rekordbox wait while it is running. A playlist
+/// deleted in rekordbox is unlinked. Returns whether the collection changed.
 async fn reconcile(app: &AppHandle, playlist: PlaylistMatch) -> AppResult<bool> {
     let Some(rekordbox_id) = playlist.rekordbox_id.clone() else { return Ok(false) };
     let store = app.state::<PlaylistStore>();
     let job_store = app.state::<JobStore>();
-
-    // A download under way for a track that has left Spotify still lands
-    // in the collection, but no longer in the playlist.
-    for job in job_store.list() {
-        let left = job.playlist_id.as_deref() == Some(rekordbox_id.as_str())
-            && fetches(&job, &playlist.removed)
-            && !fetches(&job, &playlist.entries);
-        if left {
-            let _ = job_store.update(app, job.id, |j| j.playlist_id = None);
-        }
-    }
 
     let jobs = job_store.list();
     let (work_app, work, list_id) = (app.clone(), playlist.clone(), rekordbox_id.clone());
@@ -393,38 +421,31 @@ async fn reconcile(app: &AppHandle, playlist: PlaylistMatch) -> AppResult<bool> 
             Some(false) => return Ok(None),
             None => return Err(AppError::Rekordbox("The rekordbox library isn't open".into())),
         }
-        let mut plan = plan(&collection, &jobs, &work, &list_id)?;
+        let members = collection.playlist_members(&list_id)?;
+        let found = locate(&collection, &jobs, &work.entries);
+        let plan = plan(&work, &members, &found, &jobs);
         let mut changed = false;
         if !(plan.add.is_empty() && plan.remove.is_empty()) && !rbl_db::is_rekordbox_running() {
             if !plan.remove.is_empty() {
-                collection.edit(Edit::RemoveTracks { playlist_id: list_id.clone(), track_ids: std::mem::take(&mut plan.remove) })?;
+                info!("Playlist '{}': taking out {} tracks that aren't on Spotify", work.name, plan.remove.len());
+                collection.edit(Edit::RemoveTracks { playlist_id: list_id.clone(), track_ids: plan.remove })?;
             }
             if !plan.add.is_empty() {
-                collection.edit(Edit::AddTracks { playlist_id: list_id.clone(), track_ids: std::mem::take(&mut plan.add) })?;
+                collection.edit(Edit::AddTracks { playlist_id: list_id.clone(), track_ids: plan.add })?;
             }
             changed = true;
         }
-        Ok(Some((plan, changed)))
+        Ok(Some((plan.fetch, changed)))
     })
     .await?;
 
-    let Some((plan, changed)) = outcome else {
+    let Some((fetch, changed)) = outcome else {
         info!("Playlist '{}' was deleted in rekordbox; no longer syncing it", playlist.name);
         store.unlink(app, &rekordbox_id);
         return Ok(false);
     };
 
-    // Keep only what is still to leave the playlist.
-    let pending: Vec<PlaylistEntry> = if plan.remove.is_empty() {
-        plan.awaiting
-    } else {
-        playlist.removed.clone()
-    };
-    if pending.len() != playlist.removed.len() {
-        store.set_removed(app, &playlist.id, pending);
-    }
-
-    for request in plan.fetch {
+    for request in fetch {
         info!("Playlist '{}': fetching {} - {}", playlist.name, request.artist, request.title);
         let mut job = Job::new(request, None);
         job.playlist_id = Some(rekordbox_id.clone());
@@ -434,16 +455,13 @@ async fn reconcile(app: &AppHandle, playlist: PlaylistMatch) -> AppResult<bool> 
             warn!("Couldn't start a fetch for playlist '{}': {e}", playlist.name);
         }
     }
-    if changed {
-        info!("Playlist '{}': rekordbox playlist brought in step with Spotify", playlist.name);
-    }
     Ok(changed)
 }
 
 /// Works out what a rekordbox playlist needs to match its Spotify one.
-fn plan(collection: &Collection, jobs: &[Job], playlist: &PlaylistMatch, rekordbox_id: &str) -> AppResult<Plan> {
-    let members: HashSet<String> = collection.playlist_members(rekordbox_id)?.into_iter().collect();
-    let found = locate(collection, jobs, &playlist.entries);
+/// `members` are the tracks in it, and `found` the collection track each
+/// Spotify entry is, where the collection has it.
+fn plan(playlist: &PlaylistMatch, members: &[String], found: &[Option<String>], jobs: &[Job]) -> Plan {
     let wanted: HashSet<&String> = found.iter().flatten().collect();
 
     let mut add: Vec<String> = Vec::new();
@@ -453,46 +471,31 @@ fn plan(collection: &Collection, jobs: &[Job], playlist: &PlaylistMatch, rekordb
         }
     }
 
-    let (mut remove, mut awaiting) = (Vec::new(), Vec::new());
-    for (entry, at) in playlist.removed.iter().zip(locate(collection, jobs, &playlist.removed)) {
-        match at {
-            // Unless the same track is on the playlist under another entry.
-            Some(id) if members.contains(&id) && !wanted.contains(&id) => remove.push(id),
-            Some(_) => {}
-            // Not in the collection: only a download can still bring it in.
-            None => {
-                let may_land = jobs
-                    .iter()
-                    .any(|job| fetches(job, std::slice::from_ref(entry)) && (!job.status.is_finished() || job.status == JobStatus::Completed));
-                if may_land {
-                    awaiting.push(entry.clone());
-                }
+    // A list cut off at Spotify's limit doesn't say what is past it, and an
+    // empty one is more likely a bad read than an emptied playlist: neither
+    // takes anything out.
+    let whole = !playlist.truncated && !playlist.entries.is_empty();
+    let remove = if playlist.settings.mirror && whole {
+        members.iter().filter(|id| !wanted.contains(id)).cloned().collect()
+    } else {
+        Vec::new()
+    };
+
+    let mut fetch: Vec<TrackRequest> = Vec::new();
+    if playlist.settings.auto_fetch {
+        for (entry, found) in playlist.entries.iter().zip(found) {
+            let Some(request) = entry.request.as_ref() else { continue };
+            // One that was fetched before, even if it failed or was
+            // cancelled, is the user's to retry.
+            let fetched = jobs.iter().any(|job| same_track(&job.request, request));
+            let queued = fetch.iter().any(|other| same_track(other, request));
+            if found.is_none() && entry.confidence == Some(Confidence::High) && !fetched && !queued {
+                fetch.push(request.clone());
             }
         }
     }
 
-    let fetch = playlist
-        .entries
-        .iter()
-        .zip(&found)
-        .filter(|(entry, found)| found.is_none() && entry.confidence == Some(Confidence::High))
-        .filter_map(|(entry, _)| entry.request.clone())
-        // One that was fetched before, even if it failed or was cancelled,
-        // is the user's to retry.
-        .filter(|request| !jobs.iter().any(|job| same_track(&job.request, request)))
-        .fold(Vec::<TrackRequest>::new(), |mut all, request| {
-            if !all.iter().any(|other| same_track(other, &request)) {
-                all.push(request);
-            }
-            all
-        });
-
-    Ok(Plan { add, remove, awaiting, fetch })
-}
-
-/// Whether a job downloads one of these entries' matches.
-fn fetches(job: &Job, entries: &[PlaylistEntry]) -> bool {
-    entries.iter().filter_map(|e| e.request.as_ref()).any(|request| same_track(&job.request, request))
+    Plan { add, remove, fetch }
 }
 
 /// The Spotify playlist behind a rekordbox playlist, if it follows one,
@@ -572,28 +575,67 @@ fn hint(track: &SpotifyTrack) -> TrackHint {
 mod tests {
     use super::*;
 
-    fn entry(title: &str) -> PlaylistEntry {
-        let track = SpotifyTrack { title: title.into(), artists: vec!["Artist".into()], duration_secs: 200 };
-        PlaylistEntry { track, request: None, confidence: None }
+    fn request(deezer_id: u64) -> TrackRequest {
+        serde_json::from_value(serde_json::json!({
+            "deezerId": deezer_id, "title": "t", "artist": "a", "album": "", "durationSecs": 200
+        }))
+        .unwrap()
     }
 
-    fn titles(entries: &[PlaylistEntry]) -> Vec<&str> {
-        entries.iter().map(|e| e.track.title.as_str()).collect()
+    fn playlist(sure: &[u64], settings: SyncSettings) -> PlaylistMatch {
+        let entries = sure
+            .iter()
+            .map(|&id| PlaylistEntry {
+                track: SpotifyTrack { title: id.to_string(), artists: vec!["a".into()], duration_secs: 200 },
+                request: Some(request(id)),
+                confidence: Some(Confidence::High),
+            })
+            .collect();
+        PlaylistMatch {
+            id: "spotify".into(),
+            name: "Mix".into(),
+            cover_url: None,
+            truncated: false,
+            entries,
+            loaded_at: 0,
+            rekordbox_id: Some("1".into()),
+            settings,
+        }
+    }
+
+    fn ids(ids: &[&str]) -> Vec<String> {
+        ids.iter().map(|id| id.to_string()).collect()
     }
 
     #[test]
-    fn tracks_taken_off_spotify_are_noted() {
-        let known = [entry("a"), entry("b"), entry("c")];
-        // "b" went; "x" was waiting to be taken out already.
-        let now = [entry("a"), entry("c"), entry("d")];
-        assert_eq!(titles(&gone(&[entry("x")], &known, &now, false)), ["x", "b"]);
-        // One that is back is no longer to be taken out.
-        assert_eq!(titles(&gone(&[entry("c"), entry("x")], &known, &now, false)), ["x", "b"]);
-        // Nothing new is taken out on a cut-off or empty read.
-        assert_eq!(titles(&gone(&[entry("x")], &known, &now, true)), ["x"]);
-        assert_eq!(titles(&gone(&[entry("x")], &known, &[], false)), ["x"]);
-        // A first read removes nothing.
-        assert!(gone(&[], &[], &now, false).is_empty());
+    fn a_followed_playlist_gains_tracks_and_keeps_its_own() {
+        // Entries 1 and 2 are in the collection as tracks A and B; 3 isn't.
+        let list = playlist(&[1, 2, 3], SyncSettings::default());
+        let found = [Some("A".to_string()), Some("B".to_string()), None];
+        let plan = plan(&list, &ids(&["A", "mine"]), &found, &[]);
+        assert_eq!(plan.add, ids(&["B"]));
+        assert!(plan.remove.is_empty(), "nothing leaves unless mirrored");
+        assert_eq!(plan.fetch.iter().map(|r| r.deezer_id).collect::<Vec<_>>(), [Some(3)]);
+
+        // Fetched before: not started again. And not at all with fetching off.
+        let job = Job::new(request(3), None);
+        assert!(super::plan(&list, &[], &found, &[job]).fetch.is_empty());
+        let manual = playlist(&[1, 2, 3], SyncSettings { auto_fetch: false, mirror: false });
+        assert!(super::plan(&manual, &[], &found, &[]).fetch.is_empty());
+    }
+
+    #[test]
+    fn a_mirrored_playlist_loses_what_is_not_on_spotify() {
+        let mirror = SyncSettings { auto_fetch: true, mirror: true };
+        let found = [Some("A".to_string()), None];
+        let members = ids(&["A", "mine", "gone"]);
+        assert_eq!(plan(&playlist(&[1, 2], mirror), &members, &found, &[]).remove, ids(&["mine", "gone"]));
+
+        // Not when the read was cut off or came back empty.
+        let mut cut_off = playlist(&[1, 2], mirror);
+        cut_off.truncated = true;
+        assert!(plan(&cut_off, &members, &found, &[]).remove.is_empty());
+        assert!(plan(&playlist(&[], mirror), &members, &[], &[]).remove.is_empty());
     }
 
     /// Hits Spotify and Deezer. Run with `cargo test -- --ignored live_playlist --nocapture`.
