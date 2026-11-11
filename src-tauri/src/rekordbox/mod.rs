@@ -205,6 +205,8 @@ pub struct Collection {
     loaded: RwLock<Option<Arc<Loaded>>>,
     /// The last list opened, so scrolling it doesn't sort it again per page.
     view: Mutex<Option<(TrackQuery, Arc<View>)>>,
+    /// The `master.db` to read; None for the one rekordbox is set to use.
+    master_db: Option<PathBuf>,
     /// Where `master.db` is copied before the first change of a session.
     backup_dir: PathBuf,
     backed_up: AtomicBool,
@@ -221,15 +223,27 @@ impl Collection {
         Self {
             loaded: RwLock::new(None),
             view: Mutex::new(None),
+            master_db: None,
             backup_dir,
             backed_up: AtomicBool::new(false),
             editing: Mutex::new(()),
         }
     }
 
-    /// Reads the installed library afresh. Blocking.
+    /// The collection in the library at `master_db`.
+    pub fn at(backup_dir: PathBuf, master_db: PathBuf) -> Self {
+        Self { master_db: Some(master_db), ..Self::new(backup_dir) }
+    }
+
+    /// Reads the library afresh. Blocking.
     pub fn reload(&self) -> AppResult<CollectionStatus> {
-        self.load_from(rbl_db::detect().map_err(rekordbox_err)?)
+        let location = match &self.master_db {
+            Some(master_db) => rbl_db::locate::Sources::installed()
+                .and_then(|rekordbox| rekordbox.location_of(master_db))
+                .map_err(rekordbox_err)?,
+            None => rbl_db::detect().map_err(rekordbox_err)?,
+        };
+        self.load_from(location)
     }
 
     /// Reads the library at `location`. Blocking.
@@ -301,6 +315,18 @@ impl Collection {
     pub fn track_files(&self) -> Vec<PathBuf> {
         let Ok(loaded) = self.loaded_or_read() else { return Vec::new() };
         loaded.by_path.keys().map(PathBuf::from).filter(|path| path.is_absolute()).collect()
+    }
+
+    /// The tracks in a playlist, in its order.
+    pub fn playlist_members(&self, playlist_id: &str) -> AppResult<Vec<String>> {
+        let loaded = self.loaded()?;
+        let playlists = loaded.index.playlists();
+        let at = playlist_id
+            .parse()
+            .ok()
+            .and_then(|id| playlists.index_of(id))
+            .ok_or_else(|| AppError::Rekordbox("That playlist no longer exists".into()))?;
+        Ok(playlists.members[at].iter().map(|&row| loaded.index.ids[row as usize].to_string()).collect())
     }
 
     fn loaded(&self) -> AppResult<Arc<Loaded>> {

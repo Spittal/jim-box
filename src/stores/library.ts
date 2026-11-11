@@ -12,6 +12,8 @@ import type {
 
 /** Artwork kept in memory at once; older images are released. */
 const MAX_COVERS = 150;
+/** Track list thumbnails kept in memory at once; they're a few kilobytes each. */
+const MAX_THUMBS = 1000;
 
 /** Collection tracks being tidied: what identifying them found, to review and apply. */
 export const useLibraryStore = defineStore('library', () => {
@@ -59,28 +61,41 @@ export const useLibraryStore = defineStore('library', () => {
   /** Fixes waiting to be reviewed. */
   const fixes = computed(() => items.value.filter((i) => i.status === 'matched'));
 
-  // Object URLs for artwork, by file path, oldest first.
-  const covers = new Map<string, Promise<string | null>>();
-
-  /** A file's artwork as an object URL, or null when it has none. */
-  function coverArt(path: string): Promise<string | null> {
-    const cached = covers.get(path);
-    if (cached) {
-      covers.delete(path);
-      covers.set(path, cached);
-      return cached;
+  /**
+   * Loads artwork as object URLs by file path, keeping the `max` most
+   * recently used and releasing the rest.
+   */
+  function artLoader(command: string, max: number) {
+    const urls = new Map<string, Promise<string | null>>();
+    function load(path: string): Promise<string | null> {
+      const cached = urls.get(path);
+      if (cached) {
+        urls.delete(path);
+        urls.set(path, cached);
+        return cached;
+      }
+      const loading = invoke<ArrayBuffer>(command, { path })
+        .then((bytes) => (bytes.byteLength ? URL.createObjectURL(new Blob([bytes])) : null))
+        .catch(() => null);
+      urls.set(path, loading);
+      while (urls.size > max) {
+        const [oldest, url] = urls.entries().next().value!;
+        urls.delete(oldest);
+        url.then((u) => u && URL.revokeObjectURL(u));
+      }
+      return loading;
     }
-    const loading = invoke<ArrayBuffer>('library_cover_art', { path })
-      .then((bytes) => (bytes.byteLength ? URL.createObjectURL(new Blob([bytes])) : null))
-      .catch(() => null);
-    covers.set(path, loading);
-    while (covers.size > MAX_COVERS) {
-      const [oldest, url] = covers.entries().next().value!;
-      covers.delete(oldest);
-      url.then((u) => u && URL.revokeObjectURL(u));
-    }
-    return loading;
+    return { load, has: (path: string) => urls.has(path) };
   }
+
+  const covers = artLoader('library_cover_art', MAX_COVERS);
+  const thumbs = artLoader('library_cover_thumb', MAX_THUMBS);
+  /** A file's artwork as an object URL, or null when it has none. */
+  const coverArt = covers.load;
+  /** A file's artwork shrunk for the track list, as an object URL, or null when it has none. */
+  const coverThumb = thumbs.load;
+  /** Whether a file's thumbnail is loaded, or on its way. */
+  const hasCoverThumb = thumbs.has;
 
   return {
     items,
@@ -101,6 +116,8 @@ export const useLibraryStore = defineStore('library', () => {
     consolidate,
     redownload,
     coverArt,
+    coverThumb,
+    hasCoverThumb,
   };
 });
 

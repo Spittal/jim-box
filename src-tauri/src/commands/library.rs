@@ -59,6 +59,12 @@ pub async fn library_cover_art(app: AppHandle, path: PathBuf) -> AppResult<Respo
     Ok(Response::new(import::cover_art(&app, path).await?))
 }
 
+/// A file's artwork as a small JPEG for the track list; empty when it has none.
+#[tauri::command]
+pub async fn library_cover_thumb(app: AppHandle, path: PathBuf) -> AppResult<Response> {
+    Ok(Response::new(import::cover_thumb(&app, path).await?))
+}
+
 /// Downloads a collection track again; the track moves to the new file once
 /// the download succeeds.
 #[tauri::command]

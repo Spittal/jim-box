@@ -36,6 +36,7 @@ export function useEvents() {
     listen<PlaylistProgress>('playlist-progress', (e) => {
       playlist.progress = e.payload;
     }),
+    listen<string>('playlist-synced', (e) => playlist.synced(e.payload)),
   ];
 
   onUnmounted(() => {

@@ -31,6 +31,72 @@ pub struct Cue {
     /// Where a loop ends; None for a plain cue.
     pub end_ms: Option<u32>,
     pub comment: String,
+    /// The colour rekordbox draws a hot cue in, as `#RRGGBB`: its own, or
+    /// its pad's default. None for a memory cue.
+    pub color: Option<String>,
+}
+
+/// rekordbox's View › Color › HOT CUE color: the colours hot cues without one
+/// of their own are drawn in, by pad.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HotCueColors {
+    Cdj,
+    Cold1,
+    Cold2,
+    Colorful,
+}
+
+impl HotCueColors {
+    /// What rekordbox is set to (`HotCueColorType` in `rekordbox3.settings`);
+    /// COLORFUL, its default, when that can't be read.
+    fn installed() -> Self {
+        rbl_db::locate::Sources::installed()
+            .ok()
+            .and_then(|sources| std::fs::read_to_string(sources.rekordbox_settings?).ok())
+            .map_or(Self::Colorful, |settings| Self::from_settings(&settings))
+    }
+
+    fn from_settings(settings: &str) -> Self {
+        let value = settings
+            .split_once("name=\"HotCueColorType\"")
+            .and_then(|(_, rest)| rest.split_once("val=\"")?.1.split_once('"'))
+            .map(|(value, _)| value);
+        match value {
+            Some("1") => Self::Cdj,
+            Some("2") => Self::Cold1,
+            Some("3") => Self::Cold2,
+            _ => Self::Colorful,
+        }
+    }
+
+    /// The `ColorTableIndex` of each of the first eight pads; the next eight
+    /// repeat them. rbxport read these tables from rekordbox 7.
+    fn pads(self) -> [u8; 8] {
+        match self {
+            Self::Cdj => [22; 8],
+            Self::Cold1 => [4, 18, 58, 8, 12, 60, 14, 1],
+            Self::Cold2 => [14, 11, 8, 5, 3, 1, 61, 59],
+            Self::Colorful => [43, 8, 23, 60, 19, 38, 1, 32],
+        }
+    }
+
+    /// The colour of the hot cue on pad `slot` (0 for A) whose
+    /// `djmdCue.ColorTableIndex` is `index`. One given a colour keeps it; one
+    /// without (0, NULL or off the palette) takes its pad's, or if it's a
+    /// loop, orange in every mode.
+    fn color_of(self, index: i64, slot: u8, is_loop: bool) -> String {
+        /// Every table's entry for a loop.
+        const LOOP: u8 = 36;
+        let own = u8::try_from(index).ok().filter(|index| (1..=64).contains(index));
+        let index = own.unwrap_or_else(|| match (is_loop, self) {
+            (true, _) => LOOP,
+            // The CDJ table's second eight pads are a lighter green.
+            (false, Self::Cdj) if slot >= 8 => 26,
+            (false, _) => self.pads()[usize::from(slot % 8)],
+        });
+        let [r, g, b] = rbl_anlz::cue_colour_drawn(index).unwrap_or([0x3c, 0xeb, 0x50]);
+        format!("#{r:02x}{g:02x}{b:02x}")
+    }
 }
 
 /// A track as the player needs it.
@@ -100,27 +166,32 @@ fn cues_of(db: &rbl_db::Library, track_id: &str) -> AppResult<Vec<Cue>> {
     let mut statement = db
         .connection()
         .prepare(
-            "SELECT ID, COALESCE(Kind, 0), COALESCE(InMsec, 0), COALESCE(OutMsec, -1), COALESCE(Comment, '')
+            "SELECT ID, COALESCE(Kind, 0), COALESCE(InMsec, 0), COALESCE(OutMsec, -1), COALESCE(Comment, ''),
+                    COALESCE(ColorTableIndex, 0)
              FROM djmdCue WHERE ContentID = ?1 AND rb_local_deleted = 0",
         )
         .map_err(rekordbox_err)?;
     let rows = statement
         .query_map([track_id], |r| {
             let (id, kind, start, end): (String, i64, i64, i64) = (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?);
-            let comment: String = r.get(4)?;
-            Ok((id, kind, start, end, comment))
+            let (comment, color): (String, i64) = (r.get(4)?, r.get(5)?);
+            Ok((id, kind, start, end, comment, color))
         })
         .map_err(rekordbox_err)?;
+    let colors = HotCueColors::installed();
     let mut cues = Vec::new();
     for row in rows {
-        let (id, kind, start, end, comment) = row.map_err(rekordbox_err)?;
+        let (id, kind, start, end, comment, color) = row.map_err(rekordbox_err)?;
         let position_ms = u32::try_from(start).unwrap_or(0);
+        let slot = slot_of(kind);
+        let end_ms = u32::try_from(end).ok().filter(|&end| end > position_ms);
         cues.push(Cue {
             id,
-            slot: slot_of(kind),
+            slot,
             position_ms,
-            end_ms: u32::try_from(end).ok().filter(|&end| end > position_ms),
+            end_ms,
             comment,
+            color: slot.map(|slot| colors.color_of(color, slot, end_ms.is_some())),
         });
     }
     cues.sort_by_key(|cue| (cue.position_ms, cue.slot));
@@ -407,6 +478,27 @@ mod tests {
         collection
             .edit(Edit::AddCue { track_id: id.to_owned(), slot, position_ms, end_ms })
             .unwrap();
+    }
+
+    #[test]
+    fn hot_cues_take_their_own_colour_or_their_pads() {
+        use super::HotCueColors::{Cdj, Cold1, Colorful};
+        // A cue given a colour keeps it in every mode.
+        assert_eq!(Colorful.color_of(21, 0, false), "#3ceb50");
+        assert_eq!(Cdj.color_of(42, 3, true), "#e62828");
+        // One without takes its pad's: A to H, then the same again.
+        assert_eq!(Colorful.color_of(0, 0, false), "#ff376f");
+        assert_eq!(Colorful.color_of(0, 9, false), "#45acdb");
+        assert_eq!(Colorful.color_of(-1, 2, false), "#7dc13d");
+        assert_eq!(Cold1.color_of(0, 0, false), "#50a0ff");
+        assert_eq!(Cdj.color_of(0, 0, false), "#28e214");
+        assert_eq!(Cdj.color_of(0, 8, false), "#a5e116");
+        // A loop without one is orange whatever the mode.
+        assert_eq!(Cold1.color_of(0, 5, true), "#ff8c00");
+
+        let settings = r#"<VALUE name="HotCueQuantizeBeat" val="4"/><VALUE name="HotCueColorType" val="2"/>"#;
+        assert_eq!(super::HotCueColors::from_settings(settings), Cold1);
+        assert_eq!(super::HotCueColors::from_settings("<PROPERTIES/>"), Colorful);
     }
 
     #[test]

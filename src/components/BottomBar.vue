@@ -2,23 +2,21 @@
 import { computed, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useBrowseStore } from '@/stores/browse';
-import { useCollectionStore } from '@/stores/collection';
 import { useDaemonStore } from '@/stores/daemon';
 import { useJobsStore } from '@/stores/jobs';
 import { useLibraryStore } from '@/stores/library';
-import { isPlaylistLink, usePlaylistStore } from '@/stores/playlist';
+import { usePlaylistStore } from '@/stores/playlist';
 import { useSearchStore } from '@/stores/search';
 import { useUiStore } from '@/stores/ui';
 import { shortcut } from '@/platform';
 
 /**
  * The bar under the collection. Its box filters the list as you type. On
- * Return it looks for the text online instead, and the list is whole again
- * (or it brings in a pasted Spotify playlist). The rest says what is going on in the background.
+ * Return it looks for the text online instead, and the list is whole again.
+ * The rest says what is going on in the background.
  */
 const browse = useBrowseStore();
 const { search, selectedNode, targetPlaylist, pendingOnly } = storeToRefs(browse);
-const collection = useCollectionStore();
 const searchStore = useSearchStore();
 const playlistStore = usePlaylistStore();
 const jobs = useJobsStore();
@@ -28,24 +26,9 @@ const { status: daemon } = storeToRefs(useDaemonStore());
 
 const input = ref<HTMLInputElement | null>(null);
 const text = computed(() => search.value.trim());
-const isLink = computed(() => isPlaylistLink(text.value));
 
-async function submit() {
-  if (!text.value) return;
-  if (!isLink.value) {
-    searchStore.run(text.value);
-    return;
-  }
-  searchStore.close();
-  try {
-    const linked = await playlistStore.importLink(text.value);
-    search.value = '';
-    // Show the playlist once the tree has it.
-    await collection.changed(collection.waiting);
-    browse.select(linked.playlistId);
-  } catch (e) {
-    searchStore.fail(String(e));
-  }
+function submit() {
+  if (text.value) searchStore.run(text.value);
 }
 
 function escape() {
@@ -55,7 +38,7 @@ function escape() {
 }
 
 const placeholder = computed(
-  () => `Filter ${selectedNode.value?.name ?? 'your collection'}, press Return to find tracks online, or paste a Spotify playlist link`,
+  () => `Filter ${selectedNode.value?.name ?? 'your collection'}, or press Return to find tracks online`,
 );
 
 // --- What's going on --------------------------------------------------------
@@ -136,13 +119,11 @@ const chipClass =
       />
       <button
         type="submit"
-        :disabled="!text || searchStore.loading || playlistStore.importing"
+        :disabled="!text || searchStore.loading"
         class="shrink-0 rounded bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
-        :title="isLink
-          ? 'Make a rekordbox playlist of this Spotify playlist, with the tracks you have, and list the rest to fetch'
-          : 'Look for this on Deezer and MusicBrainz, to add to your collection'"
+        title="Look for this on Deezer and MusicBrainz, to add to your collection"
       >
-        {{ isLink ? 'Bring in playlist' : 'Find online' }}
+        Find online
       </button>
     </form>
 

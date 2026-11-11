@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
+import CoverArt from '@/components/CoverArt.vue';
 import JobStatusBadge from '@/components/JobStatusBadge.vue';
+import LibraryCover from '@/components/LibraryCover.vue';
 import ProgressBar from '@/components/ProgressBar.vue';
 import { dragging, dropRow, endDrag, startDrag } from '@/composables/useDrag';
 import { formatDuration } from '@/composables/useFormat';
@@ -184,8 +186,11 @@ async function dropOnRow(index: number) {
 
 // --- Display ----------------------------------------------------------------
 
+/** A column: something the list can be sorted by, or the artwork. */
+type ColumnId = TrackSort | 'art';
+
 interface Column {
-  id: TrackSort;
+  id: ColumnId;
   label: string;
   /** Its name in the columns menu, where the header's is too short to say. */
   name?: string;
@@ -196,6 +201,7 @@ interface Column {
 }
 
 const COLUMNS: Column[] = [
+  { id: 'art', label: '', name: 'Artwork', class: 'w-5 shrink-0' },
   { id: 'trackNo', label: '#', name: 'Number', class: 'w-10 shrink-0 text-right' },
   { id: 'title', label: 'Title', class: 'min-w-0 flex-[3]' },
   { id: 'artist', label: 'Artist', class: 'min-w-0 flex-[2]' },
@@ -212,11 +218,11 @@ const COLUMNS: Column[] = [
 
 /** The columns' order and which are hidden, kept between runs. */
 const COLUMNS_KEY = 'tracks.columns';
-function savedColumns(): { order: TrackSort[]; hidden: TrackSort[] } {
+function savedColumns(): { order: ColumnId[]; hidden: ColumnId[] } {
   try {
     const saved = JSON.parse(localStorage.getItem(COLUMNS_KEY) ?? '{}');
     const known = (ids: unknown) =>
-      Array.isArray(ids) ? ids.filter((id): id is TrackSort => COLUMNS.some((c) => c.id === id)) : [];
+      Array.isArray(ids) ? ids.filter((id): id is ColumnId => COLUMNS.some((c) => c.id === id)) : [];
     const order = known(saved.order);
     // A column added since the order was saved goes where it is in the list above.
     COLUMNS.forEach((column, at) => {
@@ -243,7 +249,7 @@ const columns = computed(() => available.value.filter((column) => !hiddenColumns
 
 const columnsMenu = ref(false);
 
-function toggleColumn(id: TrackSort) {
+function toggleColumn(id: ColumnId) {
   const hidden = new Set(hiddenColumns.value);
   if (!hidden.delete(id)) hidden.add(id);
   hiddenColumns.value = hidden;
@@ -255,10 +261,10 @@ function resetColumns() {
 }
 
 /** The column header being dragged to a new place, and the one it is over. */
-const movingColumn = ref<TrackSort | null>(null);
-const columnTarget = ref<TrackSort | null>(null);
+const movingColumn = ref<ColumnId | null>(null);
+const columnTarget = ref<ColumnId | null>(null);
 
-function dragColumn(event: DragEvent, id: TrackSort) {
+function dragColumn(event: DragEvent, id: ColumnId) {
   movingColumn.value = id;
   if (event.dataTransfer) {
     event.dataTransfer.effectAllowed = 'move';
@@ -266,14 +272,14 @@ function dragColumn(event: DragEvent, id: TrackSort) {
   }
 }
 
-function overColumn(event: DragEvent, id: TrackSort) {
+function overColumn(event: DragEvent, id: ColumnId) {
   if (!movingColumn.value) return;
   event.preventDefault();
   columnTarget.value = id;
 }
 
 /** Puts the dragged column where `id` is, which moves along. */
-function dropColumn(id: TrackSort) {
+function dropColumn(id: ColumnId) {
   const moving = movingColumn.value;
   endColumnDrag();
   if (!moving || moving === id) return;
@@ -310,9 +316,9 @@ const smallButtonClass =
           { 'text-text-primary': sort === column.id, 'opacity-40': movingColumn === column.id },
           columnTarget === column.id && movingColumn !== column.id ? 'text-accent' : '',
         ]"
-        title="Click to sort by this. Drag to move the column."
+        :title="column.id === 'art' ? 'Artwork. Drag to move the column.' : 'Click to sort by this. Drag to move the column.'"
         draggable="true"
-        @click="browse.sortBy(column.id)"
+        @click="column.id !== 'art' && browse.sortBy(column.id)"
         @dragstart="dragColumn($event, column.id)"
         @dragover="overColumn($event, column.id)"
         @drop.prevent="dropColumn(column.id)"
@@ -375,8 +381,13 @@ const smallButtonClass =
       >
         <span class="w-1.5 shrink-0" />
         <template v-for="column in columns" :key="column.id">
+          <CoverArt
+            v-if="column.id === 'art'"
+            :src="row.job?.request.coverUrl ?? row.entry?.request?.coverUrl ?? null"
+            class="size-5"
+          />
           <span
-            v-if="column.id === 'trackNo'"
+            v-else-if="column.id === 'trackNo'"
             class="font-mono text-text-muted"
             :class="column.class"
             title="Not in the collection yet"
@@ -460,7 +471,8 @@ const smallButtonClass =
               :style="{ backgroundColor: TRACK_COLORS[row.track.color]?.hex || 'transparent' }"
             />
             <template v-for="column in columns" :key="column.id">
-            <span v-if="column.id === 'trackNo'" class="font-mono text-text-muted" :class="column.class">{{ row.track.position }}</span>
+            <LibraryCover v-if="column.id === 'art'" :path="row.track.path" thumb class="size-5" />
+            <span v-else-if="column.id === 'trackNo'" class="font-mono text-text-muted" :class="column.class">{{ row.track.position }}</span>
             <span v-else-if="column.id === 'title'" class="flex items-center gap-1.5" :class="column.class">
               <span class="truncate" :title="row.track.path">{{ row.track.title }}</span>
               <span

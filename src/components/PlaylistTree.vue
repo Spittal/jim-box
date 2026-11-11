@@ -5,14 +5,21 @@ import { dragging, dropTree, endDrag, startDrag } from '@/composables/useDrag';
 import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
 import { useJobsStore } from '@/stores/jobs';
+import { isPlaylistLink, usePlaylistStore } from '@/stores/playlist';
 import type { PlaylistNode } from '@/types/collection';
 
-/** The playlist tree: picking a list, and making, naming, moving and filling playlists. */
+/**
+ * The playlist tree: picking a list, and making, naming, moving and filling
+ * playlists. A Spotify playlist link pasted as a new playlist's name makes
+ * a playlist that follows the Spotify one.
+ */
 const store = useCollectionStore();
 const { status, playlists } = storeToRefs(store);
 const browse = useBrowseStore();
 const { selected, selectedNode } = storeToRefs(browse);
 const jobs = useJobsStore();
+const playlistStore = usePlaylistStore();
+const { watched } = storeToRefs(playlistStore);
 
 const collapsed = ref(new Set<string>());
 
@@ -72,7 +79,9 @@ async function commitName() {
   naming.value = null;
   const name = pending.name.trim();
   if (!name) return;
-  if (pending.id) {
+  if (!pending.id && !pending.folder && isPlaylistLink(name)) {
+    await followSpotify(name, pending.parentId);
+  } else if (pending.id) {
     if (playlists.value.find((p) => p.id === pending.id)?.name !== name) {
       await store.edit({ kind: 'renamePlaylist', id: pending.id, name });
     }
@@ -84,6 +93,19 @@ async function commitName() {
       folder: pending.folder,
     });
     if (id) browse.select(id);
+  }
+}
+
+/** Makes a playlist that follows the Spotify playlist at `url`, and shows it. */
+async function followSpotify(url: string, parentId: string | null) {
+  store.error = null;
+  try {
+    const linked = await playlistStore.importLink(url, parentId);
+    // Show the playlist once the tree has it.
+    await store.changed(store.waiting);
+    browse.select(linked.playlistId);
+  } catch (e) {
+    store.error = String(e);
   }
 }
 
@@ -187,7 +209,7 @@ const nameInputClass =
       </li>
       <li class="section-label px-4 pt-3 pb-1 text-[10px]">Playlists</li>
       <li v-if="naming && !naming.id && newRowAfter === null" class="flex items-center py-0.5 pr-2 pl-4">
-        <input ref="nameInput" v-model="naming.name" :class="nameInputClass" spellcheck="false" @keydown.enter="commitName" @keydown.esc="naming = null" @blur="commitName" />
+        <input ref="nameInput" v-model="naming.name" :class="nameInputClass" spellcheck="false" :placeholder="naming.folder ? '' : 'Name or Spotify link'" :title="naming.folder ? undefined : 'Type a name, or paste a Spotify playlist link to follow that playlist'" @keydown.enter="commitName" @keydown.esc="naming = null" @blur="commitName" />
       </li>
       <template v-for="node in treeRows" :key="node.id">
         <li
@@ -229,6 +251,13 @@ const nameInputClass =
             <span class="min-w-0 flex-1 truncate" :class="{ 'font-medium': node.kind === 'folder' }" :title="node.name">
               {{ node.name }}
             </span>
+            <span
+              v-if="watched.has(node.id)"
+              class="shrink-0 text-[10px] text-accent"
+              title="Follows a Spotify playlist: tracks added there are fetched, and tracks removed there leave this playlist"
+            >
+              ↻
+            </span>
             <span v-if="node.kind === 'smart'" class="shrink-0 text-[10px] text-text-muted" title="Intelligent playlist">auto</span>
             <span v-else-if="node.count !== null" class="shrink-0 font-mono text-[10px] text-text-muted">{{ node.count }}</span>
           </template>
@@ -238,14 +267,21 @@ const nameInputClass =
           class="flex items-center py-0.5 pr-2"
           :style="{ paddingLeft: `${newRowDepth * 12 + 16}px` }"
         >
-          <input ref="nameInput" v-model="naming.name" :class="nameInputClass" spellcheck="false" @keydown.enter="commitName" @keydown.esc="naming = null" @blur="commitName" />
+          <input ref="nameInput" v-model="naming.name" :class="nameInputClass" spellcheck="false" :placeholder="naming.folder ? '' : 'Name or Spotify link'" :title="naming.folder ? undefined : 'Type a name, or paste a Spotify playlist link to follow that playlist'" @keydown.enter="commitName" @keydown.esc="naming = null" @blur="commitName" />
         </li>
       </template>
       <li v-if="!playlists.length && !naming" class="px-4 py-2 text-text-muted">No playlists yet.</li>
     </ul>
     <!-- Icons that are always there, so picking a playlist or asking to delete one moves nothing. -->
     <div class="flex shrink-0 items-center gap-1 border-t border-border p-1.5">
-      <button :class="treeButtonClass" class="whitespace-nowrap" title="New playlist" @click="startCreate(false)">+ Playlist</button>
+      <button
+        :class="treeButtonClass"
+        class="whitespace-nowrap"
+        title="New playlist. Paste a Spotify playlist link as its name to follow that playlist."
+        @click="startCreate(false)"
+      >
+        + Playlist
+      </button>
       <button :class="treeButtonClass" class="whitespace-nowrap" title="New folder" @click="startCreate(true)">+ Folder</button>
       <span class="flex-1" />
       <template v-if="selectedNode && confirmingDelete === selectedNode.id">

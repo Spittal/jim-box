@@ -5,6 +5,7 @@ mod autotag;
 mod import;
 mod ingest;
 mod jobs;
+mod libraries;
 mod library;
 mod menu;
 mod persistence;
@@ -25,14 +26,11 @@ use std::path::Path;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
 use tauri_plugin_window_state::StateFlags;
-use tracing::{error, info};
+use tracing::info;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-use import::LibraryStore;
-use jobs::JobStore;
 use slskd::Daemon;
 use sources::Sources;
-use state::SettingsState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -73,16 +71,8 @@ pub fn run() {
         })
         .setup(|app| {
             init_logging(app.handle());
-            let settings = persistence::load_settings(app.handle())?;
-            app.manage(SettingsState(std::sync::Mutex::new(settings)));
-            app.manage(JobStore::load(app.handle()));
-            app.manage(LibraryStore::new());
-            app.manage(ingest::ArrivalQueue::load(app.handle()));
             app.manage(analysis::AnalysisQueue::default());
             app.manage(commands::collection::AudioStream::default());
-            app.manage(playlist::PlaylistStore::load(app.handle()));
-            let backups = app.path().app_data_dir()?.join("rekordbox-backups");
-            app.manage(rekordbox::Collection::new(backups));
             app.manage(Sources::new());
             app.manage(Daemon::new());
 
@@ -92,17 +82,16 @@ pub fn run() {
                 tracing::warn!("Couldn't add the tray icon: {e}");
             }
 
-            tauri::async_runtime::spawn(ingest::retry_when_rekordbox_closes(app.handle().clone()));
-
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = handle.state::<Daemon>().start(&handle).await {
-                    error!("Failed to start slskd: {e}");
-                }
-            });
+            // With no library to open, the window asks for one, and the
+            // rest is set up when it's chosen (see `libraries::open`).
+            libraries::open_at_launch(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::libraries::library_choices,
+            commands::libraries::open_library,
+            commands::libraries::set_default_library,
+            commands::libraries::forget_library,
             commands::settings::get_settings,
             commands::settings::update_settings,
             commands::settings::add_library_dir,
@@ -127,6 +116,7 @@ pub fn run() {
             commands::library::get_library,
             commands::library::identify_tracks,
             commands::library::library_cover_art,
+            commands::library::library_cover_thumb,
             commands::library::redownload_track,
             commands::library::apply_library_matches,
             commands::library::cancel_library_task,
@@ -150,6 +140,8 @@ pub fn run() {
             commands::collection::stop_track_audio,
             commands::playlist::import_spotify_playlist,
             commands::playlist::linked_playlist,
+            commands::playlist::linked_playlist_ids,
+            commands::playlist::unlink_playlist,
             commands::playlist::set_playlist_match,
         ])
         .build(context)

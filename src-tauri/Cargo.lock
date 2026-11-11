@@ -2297,6 +2297,7 @@ name = "jim-box"
 version = "0.1.0"
 dependencies = [
  "deunicode",
+ "image",
  "keyring",
  "lofty 0.25.4",
  "rbl-analysis",

@@ -113,6 +113,7 @@ impl Collection {
     /// Adds tracks to the top-level playlist called `name`, making it if
     /// there isn't one. Tracks already in it stay where they are; the rest
     /// go on the end in the order given. Returns the playlist's id. Blocking.
+    #[cfg(test)]
     pub fn add_to_named_playlist(&self, name: &str, track_ids: &[String]) -> AppResult<String> {
         self.write(|writer, _| {
             let playlist = named_playlist(writer, name, &mut HashMap::new())?;

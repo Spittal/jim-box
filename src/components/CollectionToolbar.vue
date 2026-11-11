@@ -327,20 +327,21 @@ const buttonClass =
       </div>
     </div>
 
-    <!-- A playlist brought in from Spotify: what it still lacks. -->
+    <!-- A playlist that follows a Spotify playlist: what it still lacks. -->
     <div v-if="link" class="flex items-center gap-3 text-xs text-text-secondary">
       <span class="min-w-0 flex-1 truncate">
-        From Spotify · {{ link.total - link.missing.length }} of {{ link.total }} tracks in your collection ·
-        read {{ formatAgo(link.loadedAt) }}
+        Follows Spotify · {{ link.total - link.missing.length }} of {{ link.total }} tracks in your collection ·
+        synced {{ formatAgo(link.loadedAt) }}
+        <template v-if="status?.rekordboxRunning"> · changes to this playlist wait for rekordbox to close</template>
         <template v-if="link.truncated">
-          · Spotify only shares the first 100 tracks of a playlist without signing in
+          · Spotify only shares the first 100 tracks of a playlist without signing in, so tracks past that aren't followed
         </template>
       </span>
       <button
         v-if="fetchable.length"
         class="shrink-0 rounded bg-accent px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
         :disabled="fetchingAll"
-        title="Fetch every missing track whose match is sure. The others are left for you to check."
+        title="Fetch every missing track whose match is sure and that isn't being fetched. New ones are fetched by themselves; this is for ones you cancelled."
         @click="fetchAll"
       >
         {{ fetchingAll ? 'Queuing…' : `Get lossless for ${fetchable.length} missing` }}
@@ -348,10 +349,17 @@ const buttonClass =
       <button
         class="shrink-0 rounded bg-surface-2 px-3 py-1 text-xs transition-colors hover:bg-surface-3 disabled:opacity-50"
         :disabled="playlistStore.importing"
-        title="Read the playlist from Spotify again to pick up added tracks, and add the ones you have. rekordbox must be closed."
+        title="Spotify is read every minute while jim-box is open. This reads it now, and looks again for tracks that found no match."
         @click="run(playlistStore.refresh)"
       >
-        {{ playlistStore.importing ? 'Reading…' : 'Refresh from Spotify' }}
+        {{ playlistStore.importing ? 'Reading…' : 'Sync now' }}
+      </button>
+      <button
+        class="shrink-0 rounded px-2 py-1 text-xs text-text-muted transition-colors hover:bg-surface-2 hover:text-text-primary"
+        title="Stop following the Spotify playlist. This playlist and its tracks stay as they are."
+        @click="run(playlistStore.unlink)"
+      >
+        Stop following
       </button>
     </div>
   </header>

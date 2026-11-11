@@ -20,20 +20,77 @@ const FOLDER_ART: [&str; 6] = ["cover.jpg", "cover.png", "folder.jpg", "folder.p
 /// folder (or the album folder above a disc folder). Empty when there's
 /// none. Only for files in the collection or a library folder.
 pub async fn cover_art(app: &AppHandle, path: PathBuf) -> AppResult<Vec<u8>> {
-    let settings = app.state::<SettingsState>().snapshot();
-    let known = app.state::<Collection>().track_at(&path).is_some()
-        || (settings.library_root_of(&path).is_some()
-            && !path.components().any(|c| c == std::path::Component::ParentDir));
-    if !known {
-        return Err(AppError::Validation("Not a file in the collection".into()));
-    }
+    check_known(app, &path)?;
+    library::blocking(move || Ok(read_art(&path))).await
+}
+
+/// The longest side of a thumbnail, in pixels: a track list row's artwork at
+/// twice its size, for sharp screens.
+const THUMB_SIZE: u32 = 64;
+
+/// A track's artwork as a small JPEG for the track list; empty when there's
+/// none. Thumbnails are kept in the app's cache folder, so a file's tags are
+/// read and its artwork shrunk once, until the file changes.
+pub async fn cover_thumb(app: &AppHandle, path: PathBuf) -> AppResult<Vec<u8>> {
+    check_known(app, &path)?;
+    let cache = app.path().app_cache_dir().ok().map(|dir| dir.join("thumbs"));
     library::blocking(move || {
-        if let Ok(Some(bytes)) = library::read_cover(&path) {
+        let cached = cache.and_then(|dir| Some(dir.join(thumb_name(&path)?)));
+        if let Some(bytes) = cached.as_ref().and_then(|file| std::fs::read(file).ok()) {
             return Ok(bytes);
         }
-        Ok(folder_art(&path).unwrap_or_default())
+        let thumb = shrink(&read_art(&path)).unwrap_or_default();
+        // An empty file remembers that there's no artwork to find.
+        if let Some(file) = &cached {
+            if let Some(dir) = file.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(file, &thumb);
+        }
+        Ok(thumb)
     })
     .await
+}
+
+fn check_known(app: &AppHandle, path: &Path) -> AppResult<()> {
+    let settings = app.state::<SettingsState>().snapshot();
+    let known = app.state::<Collection>().track_at(path).is_some()
+        || (settings.library_root_of(path).is_some()
+            && !path.components().any(|c| c == std::path::Component::ParentDir));
+    if known {
+        Ok(())
+    } else {
+        Err(AppError::Validation("Not a file in the collection".into()))
+    }
+}
+
+fn read_art(path: &Path) -> Vec<u8> {
+    if let Ok(Some(bytes)) = library::read_cover(path) {
+        return bytes;
+    }
+    folder_art(path).unwrap_or_default()
+}
+
+/// A thumbnail's file name: the audio file's path, size and modified time,
+/// hashed, so a changed file gets a new thumbnail.
+fn thumb_name(path: &Path) -> Option<String> {
+    use std::hash::{Hash, Hasher};
+    let meta = std::fs::metadata(path).ok()?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (path, meta.len(), meta.modified().ok()?, THUMB_SIZE).hash(&mut hasher);
+    Some(format!("{:016x}.jpg", hasher.finish()))
+}
+
+/// Artwork as a JPEG no bigger than [`THUMB_SIZE`]; None when it isn't an
+/// image this can read.
+fn shrink(art: &[u8]) -> Option<Vec<u8>> {
+    if art.is_empty() {
+        return None;
+    }
+    let thumb = image::load_from_memory(art).ok()?.thumbnail(THUMB_SIZE, THUMB_SIZE).to_rgb8();
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 85).encode_image(&thumb).ok()?;
+    Some(out)
 }
 
 fn folder_art(path: &Path) -> Option<Vec<u8>> {
@@ -134,5 +191,19 @@ mod tests {
         assert_eq!(folder_art(&album.join("CD1/01 a.flac")), Some(b"art".to_vec()));
         assert_eq!(folder_art(&root.join("Artist/x.flac")), None);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn artwork_is_shrunk_to_a_small_jpeg() {
+        let mut png = Vec::new();
+        image::RgbImage::from_pixel(600, 300, image::Rgb([200, 40, 40]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let thumb = image::load_from_memory(&shrink(&png).unwrap()).unwrap();
+        assert_eq!((thumb.width(), thumb.height()), (THUMB_SIZE, THUMB_SIZE / 2));
+
+        // No artwork, or something that isn't an image, has no thumbnail.
+        assert!(shrink(&[]).is_none());
+        assert!(shrink(b"not an image").is_none());
     }
 }

@@ -353,7 +353,8 @@ function nameCue(cue: Cue, event: Event) {
 
 function cueColor(cue: Cue) {
   if (cue.slot === null) return COLOR.memoryCue;
-  return cue.endMs ? COLOR.loop : COLOR.hotCue;
+  // A hot cue's own colour in rekordbox, or its pad's.
+  return cue.color ?? (cue.endMs ? COLOR.loop : COLOR.hotCue);
 }
 
 function cueLabel(cue: Cue) {

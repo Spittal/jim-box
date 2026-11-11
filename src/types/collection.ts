@@ -127,6 +127,8 @@ export interface Cue {
   /** Where a loop ends; null for a plain cue. */
   endMs: number | null;
   comment: string;
+  /** The colour rekordbox draws a hot cue in, as #rrggbb; null for a memory cue. */
+  color: string | null;
 }
 
 /** A track as the player needs it. */

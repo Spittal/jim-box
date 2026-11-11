@@ -13,7 +13,7 @@ mod relocate;
 
 pub use apply::apply;
 pub use consolidate::{consolidate, consolidate_plan, ConsolidatePlan};
-pub use explore::{cover_art, redownload};
+pub use explore::{cover_art, cover_thumb, redownload};
 pub use identify::identify;
 pub use relocate::{change_music_dir, RelocateReport};
 
