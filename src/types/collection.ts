@@ -250,6 +250,8 @@ export interface AnalysisProgress {
   done: number;
   /** Ids of the tracks being analysed right now. */
   running: string[];
+  /** Ids of the tracks waiting their turn. */
+  queued: string[];
   failed: AnalysisFailure[];
   /** Why the batch ended early, when it did. */
   stopped: string | null;

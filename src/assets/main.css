@@ -30,6 +30,13 @@
   /* Typography */
   --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
   --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+
+  /* A bar sliding along a track's row while something works on it. */
+  --animate-row-busy: row-busy 1.6s ease-in-out infinite;
+  @keyframes row-busy {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(400%); }
+  }
 }
 
 /* Always dark: native controls, scrollbars and the window chrome follow. */

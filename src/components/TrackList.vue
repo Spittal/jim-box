@@ -10,7 +10,7 @@ import { dragging, dropRow, endDrag, startDrag } from '@/composables/useDrag';
 import { formatDuration } from '@/composables/useFormat';
 import { gridClass, gridLabel, gridSummary } from '@/composables/useGridReport';
 import { useKeyNotation } from '@/composables/useKeyNotation';
-import { progressPercent } from '@/composables/useJobStatus';
+import { progressPercent, statusLabel } from '@/composables/useJobStatus';
 import { TRACK_COLORS } from '@/composables/useTrackColors';
 import { PALETTES, chosenPalette } from '@/composables/useWaveform';
 import { useBrowseStore, type PendingRow } from '@/stores/browse';
@@ -168,6 +168,45 @@ async function act(row: PendingRow, action: () => Promise<unknown>) {
 /** Fetches a Spotify playlist's track into the collection and this playlist. */
 const fetchEntry = (row: PendingRow) => act(row, () => jobs.fetch(row.entry!.request!, browse.selected));
 const retry = (row: PendingRow) => act(row, () => jobs.retry(row.job!.id));
+
+// --- Work under way on a track --------------------------------------------------
+
+/** What is being done to a collection track, shown along its row. */
+interface Activity {
+  label: string;
+  /** How far along it is, where that's known; null for a bar that just moves. */
+  percent: number | null;
+  /** Waiting its turn: named, without a bar. */
+  waiting?: boolean;
+}
+
+const analysing = computed(() => new Set(analysis.value?.running));
+const awaitingAnalysis = computed(() => new Set(analysis.value?.queued));
+
+/** A fetch replacing the file, then tagging and identifying, then analysis: one at a time, the busiest first. */
+function activityOf(track: CollectionTrack): Activity | null {
+  const job = jobs.replacing.get(track.path);
+  if (job) {
+    const percent = progressPercent(job);
+    return { label: percent === null ? `New copy: ${statusLabel(job)}` : statusLabel(job), percent };
+  }
+  const item = library.forTrack(track.id);
+  if (item?.status === 'applying') return { label: 'Applying tags', percent: null };
+  if (analysing.value.has(track.id)) return { label: 'Analysing', percent: null };
+  if (item?.status === 'pending' && library.busy) return { label: 'Identifying', percent: null };
+  if (awaitingAnalysis.value.has(track.id)) return { label: 'Waiting to analyse', percent: null, waiting: true };
+  return null;
+}
+
+/** The rows in view with work under way, by track id. */
+const activities = computed(() => {
+  const found = new Map<string, Activity>();
+  for (const { track } of visibleRows.value) {
+    const activity = track && activityOf(track);
+    if (activity) found.set(track.id, activity);
+  }
+  return found;
+});
 
 // --- Reordering a playlist ---------------------------------------------------
 
@@ -675,10 +714,16 @@ const smallButtonClass =
                 title="Identifying found tags or a file name to fix. Select the track to review it."
               >fix</span>
               <span
-                v-if="jobs.replacing.has(row.track.path)"
-                class="shrink-0 font-mono text-[10px] text-text-muted"
-                title="A new copy of this track is being fetched"
-              >↓</span>
+                v-if="activities.has(row.track.id)"
+                class="flex shrink-0 items-center gap-1.5 text-[11px]"
+                :class="activities.get(row.track.id)!.waiting ? 'text-text-muted' : 'text-accent-hover'"
+              >
+                <span
+                  class="size-1.5 rounded-full"
+                  :class="activities.get(row.track.id)!.waiting ? 'bg-status-idle' : 'animate-pulse bg-accent'"
+                />
+                {{ activities.get(row.track.id)!.label }}
+              </span>
             </span>
             <span v-else-if="column.id === 'artist'" class="truncate text-text-secondary" :class="column.class" :style="cellStyle[column.id]">{{ row.track.artist }}</span>
             <span v-else-if="column.id === 'album'" class="truncate text-text-secondary" :class="column.class" :style="cellStyle[column.id]">{{ row.track.album }}</span>
@@ -729,6 +774,18 @@ const smallButtonClass =
               :title="row.track.path"
             >{{ row.track.path }}</span>
             </template>
+            <!-- Work under way on the track, along the row's bottom edge. -->
+            <span
+              v-if="activities.has(row.track.id) && !activities.get(row.track.id)!.waiting"
+              class="pointer-events-none absolute right-0 bottom-0 left-0 h-0.5 overflow-hidden bg-accent/15"
+            >
+              <span
+                v-if="activities.get(row.track.id)!.percent !== null"
+                class="block h-full bg-accent transition-[width] duration-500"
+                :style="{ width: `${activities.get(row.track.id)!.percent}%` }"
+              />
+              <span v-else class="block h-full w-1/5 animate-row-busy bg-accent motion-reduce:w-full motion-reduce:animate-none motion-reduce:opacity-50" />
+            </span>
           </template>
         </div>
       </div>

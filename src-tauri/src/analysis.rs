@@ -39,6 +39,8 @@ pub struct AnalysisProgress {
     pub done: usize,
     /// Tracks being analysed right now.
     pub running: Vec<String>,
+    /// Tracks waiting their turn, in order.
+    pub queued: Vec<String>,
     pub failed: Vec<Failure>,
     /// Why the batch ended early, when it did.
     pub stopped: Option<String>,
@@ -57,7 +59,10 @@ pub struct AnalysisQueue(Mutex<Queue>);
 
 impl AnalysisQueue {
     pub fn progress(&self) -> AnalysisProgress {
-        self.0.lock().expect("analysis lock poisoned").progress.clone()
+        let queue = self.0.lock().expect("analysis lock poisoned");
+        let mut progress = queue.progress.clone();
+        progress.queued = queue.pending.iter().map(|(id, _)| id.clone()).collect();
+        progress
     }
 }
 
