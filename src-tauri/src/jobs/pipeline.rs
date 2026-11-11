@@ -1,6 +1,7 @@
 //! A job's lifecycle: identify → search → try candidates → tag → file into library.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 use tokio::sync::OwnedSemaphorePermit;
@@ -16,12 +17,12 @@ use crate::library::{self, TagMode};
 use crate::rekordbox::Arrival;
 use crate::autotag;
 use crate::sources::Sources;
-use crate::slskd::types::TransferPhase;
-use crate::slskd::{Daemon, DaemonPaths, SlskdClient};
+use crate::soulseek::types::TransferPhase;
+use crate::soulseek::{can_save, staging_dir, Soulseek, SoulseekClient, UNSAVEABLE_NAME};
 use crate::state::{now_ms, Candidate, JobSource, JobStatus, SearchAttempt, Settings, SettingsState, TrackMetadata, TransferProgress};
 
 /// How long to wait for Soulseek to connect before failing a job.
-const DAEMON_WAIT: Duration = Duration::from_secs(60);
+const ONLINE_WAIT: Duration = Duration::from_secs(60);
 /// Give up on a peer whose queue hasn't started our transfer in this time.
 const QUEUE_TIMEOUT: Duration = Duration::from_secs(180);
 /// Give up on a transfer that has stopped making progress.
@@ -29,6 +30,8 @@ const STALL_TIMEOUT: Duration = Duration::from_secs(60);
 /// Candidates tried automatically before giving up (others can be picked manually).
 const MAX_AUTO_ATTEMPTS: usize = 5;
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// How often a queued transfer asks the peer where it stands.
+const QUEUE_PLACE_INTERVAL: Duration = Duration::from_secs(30);
 /// When no peer answers any search, Soulseek is dropping them. That can last
 /// several minutes, so search again after each of these pauses (about half
 /// an hour in all) before giving up. Waiting jobs give up their slot.
@@ -72,7 +75,7 @@ pub fn start_candidate(app: &AppHandle, id: Uuid, index: usize) -> AppResult<()>
     store.spawn(id, async move {
         let result = async {
             let _slot = task_app.state::<JobStore>().acquire_slot().await;
-            let client = task_app.state::<Daemon>().wait_until_online(DAEMON_WAIT).await?;
+            let client = task_app.state::<Soulseek>().wait_until_online(ONLINE_WAIT).await?;
             attempt(&task_app, id, &client, index).await
         }
         .await;
@@ -85,16 +88,15 @@ pub async fn cancel(app: &AppHandle, id: Uuid) -> AppResult<()> {
     let store = app.state::<JobStore>();
     store.abort(id);
     let job = store.get(id)?;
-    if let (Some(transfer_id), Some(candidate)) = (
+    if let (Some(_), Some(candidate)) = (
         &job.transfer_id,
         job.active_candidate.and_then(|i| job.candidates.get(i)),
     ) {
-        if let Ok(client) = app.state::<Daemon>().client() {
-            if let Err(e) = client.cancel(&candidate.username, transfer_id).await {
-                warn!("Failed to cancel transfer {transfer_id}: {e}");
-            }
+        if let Ok(client) = app.state::<Soulseek>().client() {
+            client.cancel(&candidate.username, &candidate.filename);
         }
     }
+    clear_staging(app, id);
     if job.source == JobSource::Youtube {
         // yt-dlp is killed with the task; its partial download stays behind.
         if let Ok(dir) = app.path().app_data_dir() {
@@ -171,6 +173,9 @@ async fn run(app: &AppHandle, id: Uuid, slot: OwnedSemaphorePermit) -> AppResult
 
     // Files that failed a check come last and are only tried by hand.
     let count = found.accepted.len();
+    // Files this computer can't save under their own name are left for the
+    // others, and don't use up an attempt.
+    let auto: Vec<usize> = (0..count).filter(|&i| can_save(&found.accepted[i].filename)).take(MAX_AUTO_ATTEMPTS).collect();
     store.update(app, id, |j| {
         j.candidates = found.accepted.into_iter().chain(found.rejected).collect();
         if count == 0 {
@@ -183,9 +188,12 @@ async fn run(app: &AppHandle, id: Uuid, slot: OwnedSemaphorePermit) -> AppResult
     })?;
 
     // Soulseek may have reconnected while the job was waiting.
-    let client = app.state::<Daemon>().wait_until_online(DAEMON_WAIT).await?;
+    let client = app.state::<Soulseek>().wait_until_online(ONLINE_WAIT).await?;
     let mut last_error = None;
-    for index in 0..count.min(MAX_AUTO_ATTEMPTS) {
+    if count > 0 && auto.is_empty() {
+        return Err(AppError::Soulseek(UNSAVEABLE_NAME.into()));
+    }
+    for &index in &auto {
         match attempt(app, id, &client, index).await {
             Ok(()) => return Ok(()),
             Err(e) => {
@@ -195,9 +203,9 @@ async fn run(app: &AppHandle, id: Uuid, slot: OwnedSemaphorePermit) -> AppResult
         }
     }
     match last_error {
-        Some(e) => Err(AppError::Slskd(format!(
+        Some(e) => Err(AppError::Soulseek(format!(
             "Tried {} sources without success. Last error: {e}",
-            count.min(MAX_AUTO_ATTEMPTS)
+            auto.len()
         ))),
         None => Ok(()), // No candidates: already marked NotFound.
     }
@@ -244,8 +252,8 @@ async fn search(
                 j.retry_at = None;
             })?;
         }
-        // Fetched each round: slskd may have restarted while the job waited.
-        let client = app.state::<Daemon>().wait_until_online(DAEMON_WAIT).await?;
+        // Fetched each round: Soulseek may have reconnected while the job waited.
+        let client = app.state::<Soulseek>().wait_until_online(ONLINE_WAIT).await?;
         let mut anyone_answered = false;
         // Peers ignore searches naming a banned artist, so when nobody answers
         // those, search without the name before deciding Soulseek is quiet.
@@ -359,9 +367,10 @@ async fn existing_copy(app: &AppHandle, id: Uuid, meta: &TrackMetadata, settings
 
 /// Downloads one candidate, then tags and files it. Marks the candidate as
 /// failed on error so the UI can show which sources were tried.
-async fn attempt(app: &AppHandle, id: Uuid, client: &SlskdClient, index: usize) -> AppResult<()> {
+async fn attempt(app: &AppHandle, id: Uuid, client: &Arc<SoulseekClient>, index: usize) -> AppResult<()> {
     let result = try_candidate(app, id, client, index).await;
     if result.is_err() {
+        clear_staging(app, id);
         let _ = app.state::<JobStore>().update(app, id, |j| {
             if let Some(c) = j.candidates.get_mut(index) {
                 c.failed = true;
@@ -373,7 +382,7 @@ async fn attempt(app: &AppHandle, id: Uuid, client: &SlskdClient, index: usize) 
     result
 }
 
-async fn try_candidate(app: &AppHandle, id: Uuid, client: &SlskdClient, index: usize) -> AppResult<()> {
+async fn try_candidate(app: &AppHandle, id: Uuid, client: &Arc<SoulseekClient>, index: usize) -> AppResult<()> {
     let store = app.state::<JobStore>();
     let job = store.get(id)?;
     let candidate = job
@@ -411,25 +420,28 @@ async fn try_candidate(app: &AppHandle, id: Uuid, client: &SlskdClient, index: u
     Ok(())
 }
 
-/// Queues the file with slskd and follows it until it's on disk.
-async fn download(app: &AppHandle, id: Uuid, client: &SlskdClient, candidate: &Candidate) -> AppResult<PathBuf> {
+/// Asks the peer for the file and follows the transfer until it's on disk.
+async fn download(app: &AppHandle, id: Uuid, client: &Arc<SoulseekClient>, candidate: &Candidate) -> AppResult<PathBuf> {
     let store = app.state::<JobStore>();
-    let destination = id.to_string();
-    let transfer = client
-        .enqueue(&candidate.username, &candidate.filename, candidate.size, &destination)
-        .await?;
-    store.update(app, id, |j| j.transfer_id = Some(transfer.id.clone()))?;
+    let staging = staging_dir(app)?.join(id.to_string());
+    // A partial file left by another peer's copy of the same name would be
+    // taken for the start of this one.
+    clear_staging(app, id);
+    let (username, filename) = (&candidate.username, &candidate.filename);
+    let transfer = client.enqueue(username, filename, candidate.size, &staging).await?;
+    store.update(app, id, |j| j.transfer_id = Some(transfer.token.to_string()))?;
 
     let queued_at = Instant::now();
+    let mut asked_place_at = Instant::now();
     let mut last_bytes = 0;
     let mut last_progress_at = Instant::now();
     loop {
         tokio::time::sleep(POLL_INTERVAL).await;
-        let t = client.transfer(&candidate.username, &transfer.id).await?;
+        let t = client.transfer(transfer.token)?;
         let progress = Some(TransferProgress {
             bytes_transferred: t.bytes_transferred,
             size: t.size,
-            speed: t.average_speed,
+            speed: t.speed,
             place_in_queue: t.place_in_queue,
         });
         // A transfer waiting in a peer's queue reads the same for minutes:
@@ -438,39 +450,52 @@ async fn download(app: &AppHandle, id: Uuid, client: &SlskdClient, candidate: &C
             store.update(app, id, |j| j.progress = progress)?;
         }
 
-        let give_up = |reason: &str| AppError::Slskd(format!("{reason} ({})", candidate.username));
-        match t.phase() {
+        let give_up = |reason: &str| AppError::Soulseek(format!("{reason} ({username})"));
+        match t.phase {
             TransferPhase::Succeeded => break,
-            TransferPhase::Failed => return Err(give_up(&format!("Transfer failed: {}", t.failure_reason()))),
+            TransferPhase::Failed(reason) => {
+                client.forget(username, filename);
+                return Err(give_up(&format!("Transfer failed: {reason}")));
+            }
             TransferPhase::Queued if queued_at.elapsed() > QUEUE_TIMEOUT => {
-                let _ = client.cancel(&candidate.username, &transfer.id).await;
+                client.cancel(username, filename);
                 return Err(give_up("Peer's upload queue is too long"));
+            }
+            TransferPhase::Queued if asked_place_at.elapsed() > QUEUE_PLACE_INTERVAL => {
+                client.request_place_in_queue(username, filename);
+                asked_place_at = Instant::now();
             }
             TransferPhase::InProgress if t.bytes_transferred > last_bytes => {
                 last_bytes = t.bytes_transferred;
                 last_progress_at = Instant::now();
             }
             TransferPhase::InProgress if last_progress_at.elapsed() > STALL_TIMEOUT => {
-                let _ = client.cancel(&candidate.username, &transfer.id).await;
+                client.cancel(username, filename);
                 return Err(give_up("Transfer stalled"));
             }
             _ => {}
         }
     }
 
-    // Clear the finished transfer from slskd's list; it's ours to track now.
-    let _ = client.cancel(&candidate.username, &transfer.id).await;
+    // Clear the finished transfer from the client's list; it's ours to track now.
+    client.forget(username, filename);
 
-    let staging = DaemonPaths::resolve(app)?.downloads.join(&destination);
-    let (_, basename) = split_path(&candidate.filename);
+    let (_, basename) = split_path(filename);
     let expected = staging.join(basename);
     if expected.is_file() {
         return Ok(expected);
     }
-    // slskd may adjust the name (e.g. for characters invalid on this OS).
+    // The name may not have survived as it was (e.g. characters invalid on this OS).
     first_file_in(&staging)?.ok_or_else(|| {
-        AppError::Slskd(format!("Download finished but no file found in {}", staging.display()))
+        AppError::Soulseek(format!("Download finished but no file found in {}", staging.display()))
     })
+}
+
+/// Empties a job's staging folder of whatever a download left there.
+fn clear_staging(app: &AppHandle, id: Uuid) {
+    if let Ok(dir) = staging_dir(app) {
+        let _ = std::fs::remove_dir_all(dir.join(id.to_string()));
+    }
 }
 
 /// Tags the downloaded file and moves it to its templated library path. The
@@ -500,8 +525,8 @@ pub(super) async fn file_into_library(
     .await?;
 
     // The per-job staging folder should now be empty.
-    if let Ok(paths) = DaemonPaths::resolve(app) {
-        let _ = std::fs::remove_dir(paths.downloads.join(id.to_string()));
+    if let Ok(dir) = staging_dir(app) {
+        let _ = std::fs::remove_dir(dir.join(id.to_string()));
     }
     Ok(dest)
 }

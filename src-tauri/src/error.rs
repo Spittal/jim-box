@@ -7,11 +7,11 @@ pub enum AppError {
     Validation(String),
 
     #[error("Soulseek is not connected yet")]
-    DaemonNotReady,
+    SoulseekNotReady,
 
-    /// slskd failed to start or died; carries why.
-    #[error("Soulseek isn't running: {0}")]
-    DaemonFailed(String),
+    /// Soulseek can't connect until something is put right; carries what.
+    #[error("Soulseek isn't connected: {0}")]
+    SoulseekFailed(String),
 
     #[error(
         "Your library folder, {}, can't be reached. If it's on an external drive, connect it, then \
@@ -20,8 +20,8 @@ pub enum AppError {
     )]
     LibraryFolderUnavailable(std::path::PathBuf),
 
-    #[error("slskd: {0}")]
-    Slskd(String),
+    #[error("Soulseek: {0}")]
+    Soulseek(String),
 
     #[error("YouTube: {0}")]
     Youtube(String),
@@ -54,6 +54,12 @@ impl Serialize for AppError {
         S: serde::ser::Serializer,
     {
         serializer.serialize_str(self.to_string().as_ref())
+    }
+}
+
+impl From<soulseek_rs::SoulseekRs> for AppError {
+    fn from(e: soulseek_rs::SoulseekRs) -> Self {
+        Self::Soulseek(e.to_string())
     }
 }
 

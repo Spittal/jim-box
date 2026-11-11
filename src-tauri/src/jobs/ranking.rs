@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 
-use crate::slskd::types::{SearchFile, SearchResponse};
+use crate::soulseek::types::{SearchFile, SearchResponse};
 use crate::state::{AudioFormat, Candidate, Settings, TrackMetadata};
 use crate::text::{normalize, primary_artist, split_version, strip_noise, tokens, version_words};
 
@@ -639,17 +639,24 @@ mod tests {
         assert_eq!(split_path("x.flac"), ("", "x.flac"));
     }
 
-    /// Runs the real searches and ranking against a running slskd. Start one
-    /// (e.g. the app's) and pass its API port and key:
-    /// `SLSKD_PORT=… SLSKD_API_KEY=… cargo test live_soulseek -- --ignored --nocapture`
-    #[tokio::test]
+    /// Runs the real searches and ranking on the Soulseek network. Quit the
+    /// app first (an account has one session), and pass the account:
+    /// `SOULSEEK_USERNAME=… SOULSEEK_PASSWORD=… cargo test live_soulseek -- --ignored --nocapture`
+    #[tokio::test(flavor = "multi_thread")]
     #[ignore]
     async fn live_soulseek_search() {
-        let (Ok(port), Ok(key)) = (std::env::var("SLSKD_PORT"), std::env::var("SLSKD_API_KEY")) else {
-            println!("Skipped: set SLSKD_PORT and SLSKD_API_KEY to run against slskd");
+        let (Ok(username), Ok(password)) = (std::env::var("SOULSEEK_USERNAME"), std::env::var("SOULSEEK_PASSWORD")) else {
+            println!("Skipped: set SOULSEEK_USERNAME and SOULSEEK_PASSWORD to search Soulseek");
             return;
         };
-        let client = crate::slskd::SlskdClient::new(port.parse().unwrap(), key);
+        let client = tokio::task::spawn_blocking(move || {
+            let mut client = soulseek_rs::Client::new(username, password);
+            client.connect().unwrap();
+            assert!(client.login().unwrap(), "Soulseek refused the login");
+            std::sync::Arc::new(crate::soulseek::SoulseekClient::new(client))
+        })
+        .await
+        .unwrap();
         let track = |title: &str, artist: &str, album: &str, secs: u32| TrackMetadata {
             title: title.into(),
             artist: artist.into(),

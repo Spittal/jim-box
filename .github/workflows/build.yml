@@ -69,8 +69,8 @@ jobs:
       - name: Build
         run: pnpm tauri build --target ${{ matrix.target }}
 
-      # After the build, which fetches slskd and builds the frontend: the app
-      # doesn't compile without them.
+      # After the build, which builds the frontend: the app doesn't compile
+      # without it.
       - name: Test
         if: matrix.test
         working-directory: src-tauri

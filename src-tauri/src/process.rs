@@ -1,4 +1,4 @@
-//! Running command-line tools (slskd, yt-dlp) from a windowed app.
+//! Running command-line tools (yt-dlp) from a windowed app.
 
 use tokio::process::Command;
 

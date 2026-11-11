@@ -14,7 +14,7 @@ mod process;
 mod rekordbox;
 mod rename;
 mod secrets;
-mod slskd;
+mod soulseek;
 mod sources;
 mod state;
 mod text;
@@ -29,7 +29,7 @@ use tauri_plugin_window_state::StateFlags;
 use tracing::info;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-use slskd::Daemon;
+use soulseek::Soulseek;
 use sources::Sources;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -42,8 +42,8 @@ pub fn run() {
     let builder = builder.menu(menu::build);
 
     let app = builder
-        // A second copy would start its own slskd and fight over the Soulseek
-        // login, so focus the existing window instead.
+        // A second copy would log in too and fight over the Soulseek
+        // session, so focus the existing window instead.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| menu::show_main(app)))
         // Remembers the window's size and position. Not its visibility: the
         // window may have been closed (hidden) when the app quit.
@@ -74,7 +74,8 @@ pub fn run() {
             app.manage(analysis::AnalysisQueue::default());
             app.manage(commands::collection::AudioStream::default());
             app.manage(Sources::new());
-            app.manage(Daemon::new());
+            soulseek::raise_open_file_limit();
+            app.manage(Soulseek::new());
 
             // Without it, closing the window quits the app instead of hiding it.
             #[cfg(not(target_os = "macos"))]
@@ -98,8 +99,8 @@ pub fn run() {
             commands::settings::remove_library_dir,
             commands::settings::set_primary_library_dir,
             commands::settings::set_soulseek_credentials,
-            commands::daemon::get_daemon_status,
-            commands::daemon::restart_daemon,
+            commands::soulseek::get_soulseek_status,
+            commands::soulseek::reconnect_soulseek,
             commands::search::search_tracks,
             commands::search::track_preview,
             commands::stores::find_buy_links,
@@ -152,7 +153,7 @@ pub fn run() {
 
     app.run(|handle, event| match event {
         RunEvent::Exit => {
-            tauri::async_runtime::block_on(handle.state::<Daemon>().stop(handle));
+            tauri::async_runtime::block_on(handle.state::<Soulseek>().stop(handle));
         }
         #[cfg(target_os = "macos")]
         RunEvent::Reopen { has_visible_windows: false, .. } => menu::show_main(handle),
@@ -181,9 +182,9 @@ const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
 
 /// Logs to the console and to `app.log` in the app's log folder
 /// (~/Library/Logs/<identifier> on macOS,
-/// %LOCALAPPDATA%\<identifier>\logs on Windows), which includes slskd's output.
+/// %LOCALAPPDATA%\<identifier>\logs on Windows).
 fn init_logging(app: &AppHandle) {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,slskd=info"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let log_dir = app.path().app_log_dir().ok();
     let file = log_dir.as_deref().and_then(|dir| open_log_file(dir).ok());
     let file_layer = file.map(|f| fmt::layer().with_ansi(false).with_writer(Mutex::new(f)));

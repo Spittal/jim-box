@@ -174,7 +174,7 @@ impl Settings {
         self.library_root_of(path).unwrap_or(&self.music_dir)
     }
 
-    /// Folders slskd should share, in order, each once, skipping any that
+    /// Folders to share on Soulseek, in order, each once, skipping any that
     /// no longer exist.
     pub fn shares(&self) -> Vec<PathBuf> {
         let library = self.library_roots().filter(|_| self.share_music_dir);
@@ -187,9 +187,9 @@ impl Settings {
         shares
     }
 
-    /// Whether changing from `self` to `other` requires restarting slskd.
-    pub fn daemon_config_differs(&self, other: &Settings) -> bool {
-        self.soulseek_username != other.soulseek_username || self.shares() != other.shares()
+    /// Whether changing from `self` to `other` changes what Soulseek shares.
+    pub fn shares_differ(&self, other: &Settings) -> bool {
+        self.shares() != other.shares()
     }
 }
 

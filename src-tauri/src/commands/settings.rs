@@ -4,7 +4,7 @@ use tracing::error;
 
 use crate::error::{AppError, AppResult};
 use crate::library::validate_template;
-use crate::slskd::Daemon;
+use crate::soulseek::Soulseek;
 use crate::sources::youtube;
 use crate::state::{Settings, SettingsState};
 use crate::{persistence, secrets};
@@ -35,8 +35,8 @@ pub async fn update_settings(app: AppHandle, settings: Settings) -> AppResult<Se
     };
     persistence::save_settings(&app, &updated);
 
-    if previous.daemon_config_differs(&updated) {
-        restart_daemon_in_background(app);
+    if previous.shares_differ(&updated) {
+        refresh_shares_in_background(app);
     }
     Ok(updated)
 }
@@ -54,8 +54,8 @@ fn change_library_dirs(app: &AppHandle, change: impl FnOnce(&mut Settings) -> Ap
         (previous, next)
     };
     persistence::save_settings(app, &updated);
-    if previous.daemon_config_differs(&updated) {
-        restart_daemon_in_background(app.clone());
+    if previous.shares_differ(&updated) {
+        refresh_shares_in_background(app.clone());
     }
     Ok(updated)
 }
@@ -130,7 +130,7 @@ pub async fn set_soulseek_credentials(app: AppHandle, username: String, password
         }
     }
 
-    app.state::<Daemon>().start(&app).await
+    app.state::<Soulseek>().start(&app).await
 }
 
 fn validate(settings: &Settings) -> AppResult<()> {
@@ -146,10 +146,10 @@ fn validate(settings: &Settings) -> AppResult<()> {
     [&paths.default, &paths.comp, &paths.singleton].into_iter().try_for_each(|t| validate_template(t))
 }
 
-fn restart_daemon_in_background(app: AppHandle) {
+fn refresh_shares_in_background(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = app.state::<Daemon>().start(&app).await {
-            error!("Failed to restart slskd: {e}");
+        if let Err(e) = app.state::<Soulseek>().refresh_shares(&app).await {
+            error!("Failed to update what Soulseek shares: {e}");
         }
     });
 }

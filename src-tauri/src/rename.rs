@@ -18,7 +18,7 @@ pub fn move_data_dirs(identifier: &str) {
         return;
     }
     let Some(library) = library_dir() else { return };
-    // Settings, slskd's state and rekordbox backups; then the webview's storage.
+    // Settings, staged downloads and rekordbox backups; then the webview's storage.
     for parent in ["Application Support", "WebKit"] {
         let (old, new) = (library.join(parent).join(OLD_IDENTIFIER), library.join(parent).join(identifier));
         if !old.is_dir() || new.exists() {

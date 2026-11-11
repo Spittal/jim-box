@@ -1,9 +1,9 @@
 pub mod collection;
-pub mod daemon;
 pub mod jobs;
 pub mod libraries;
 pub mod library;
 pub mod playlist;
 pub mod search;
 pub mod settings;
+pub mod soulseek;
 pub mod stores;

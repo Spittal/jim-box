@@ -1,6 +1,6 @@
 //! Soulseek password storage in the OS keychain (the Keychain on macOS,
 //! Credential Manager on Windows). The password never touches
-//! disk in plain text; it's handed to slskd through its environment at launch.
+//! disk in plain text; it's read when connecting to Soulseek.
 //!
 //! Dev builds are the exception: they're re-signed on every rebuild, so macOS
 //! asks for the login password each launch to read the Keychain. They keep the

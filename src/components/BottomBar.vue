@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useBrowseStore } from '@/stores/browse';
-import { useDaemonStore } from '@/stores/daemon';
+import { useSoulseekStore } from '@/stores/soulseek';
 import { useJobsStore } from '@/stores/jobs';
 import { useLibraryStore } from '@/stores/library';
 import { usePlaylistStore } from '@/stores/playlist';
@@ -22,7 +22,7 @@ const playlistStore = usePlaylistStore();
 const jobs = useJobsStore();
 const library = useLibraryStore();
 const ui = useUiStore();
-const { status: daemon } = storeToRefs(useDaemonStore());
+const { status: connection } = storeToRefs(useSoulseekStore());
 
 const input = ref<HTMLInputElement | null>(null);
 const text = computed(() => search.value.trim());
@@ -83,12 +83,10 @@ function reviewFixes() {
 }
 
 const soulseek = computed(() => {
-  const s = daemon.value;
+  const s = connection.value;
   switch (s.state) {
     case 'online':
       return { dot: 'bg-status-ok', label: `Soulseek · ${s.username}` };
-    case 'starting':
-      return { dot: 'bg-status-busy animate-pulse', label: 'Starting slskd…' };
     case 'connecting':
       return { dot: 'bg-status-busy animate-pulse', label: 'Connecting to Soulseek…' };
     case 'error':
@@ -175,7 +173,7 @@ const chipClass =
     <button
       :class="chipClass"
       class="flex items-center gap-2"
-      :title="daemon.state === 'error' ? daemon.message : 'Soulseek settings'"
+      :title="connection.state === 'error' ? connection.message : 'Soulseek settings'"
       @click="ui.settings = 'soulseek'"
     >
       <span class="size-2 shrink-0 rounded-full" :class="soulseek.dot" />

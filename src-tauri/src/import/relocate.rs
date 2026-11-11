@@ -14,7 +14,7 @@ use crate::jobs::JobStore;
 use crate::library;
 use crate::persistence;
 use crate::rekordbox::{Arrival, Collection};
-use crate::slskd::Daemon;
+use crate::soulseek::Soulseek;
 use crate::state::{LibraryPhase, SettingsState};
 
 #[derive(Debug, Clone, Serialize)]
@@ -26,7 +26,7 @@ pub struct RelocateReport {
 }
 
 /// Switches the music folder, moving the old folder's contents into the new
-/// one (never overwriting), then points settings, jobs and slskd at it.
+/// one (never overwriting), then points settings, jobs and Soulseek's shares at it.
 pub async fn change_music_dir(app: &AppHandle, new_dir: PathBuf) -> AppResult<RelocateReport> {
     if !new_dir.is_absolute() {
         return Err(AppError::Validation("Choose a music folder".into()));
@@ -95,10 +95,10 @@ pub async fn change_music_dir(app: &AppHandle, new_dir: PathBuf) -> AppResult<Re
     ingest::arrived(app, followed).await;
 
     // The shared folder changed.
-    let daemon_app = app.clone();
+    let shares_app = app.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = daemon_app.state::<Daemon>().start(&daemon_app).await {
-            warn!("Failed to restart slskd after moving the library: {e}");
+        if let Err(e) = shares_app.state::<Soulseek>().refresh_shares(&shares_app).await {
+            warn!("Failed to update what Soulseek shares after moving the library: {e}");
         }
     });
     Ok(report)

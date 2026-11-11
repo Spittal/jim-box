@@ -1,7 +1,6 @@
-/** slskd / Soulseek connection state. Mirrors `DaemonStatus` in Rust. */
-export type DaemonStatus =
+/** Soulseek connection state. Mirrors `SoulseekStatus` in Rust. */
+export type SoulseekStatus =
   | { state: 'needsCredentials' }
-  | { state: 'starting' }
   | { state: 'connecting'; detail: string | null }
   | { state: 'online'; username: string }
   | { state: 'stopped' }

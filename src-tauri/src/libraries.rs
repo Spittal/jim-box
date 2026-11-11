@@ -19,7 +19,7 @@ use uuid::Uuid;
 use crate::error::{AppError, AppResult};
 use crate::import::LibraryStore;
 use crate::jobs::JobStore;
-use crate::slskd::Daemon;
+use crate::soulseek::Soulseek;
 use crate::state::{now_ms, SettingsState};
 use crate::{ingest, library, persistence, playlist, rekordbox};
 
@@ -288,8 +288,8 @@ fn start(app: &AppHandle, mut library: KnownLibrary) -> AppResult<()> {
     tauri::async_runtime::spawn(playlist::watch(app.clone()));
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = handle.state::<Daemon>().start(&handle).await {
-            error!("Failed to start slskd: {e}");
+        if let Err(e) = handle.state::<Soulseek>().start(&handle).await {
+            error!("Failed to connect to Soulseek: {e}");
         }
     });
     Ok(())

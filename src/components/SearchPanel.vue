@@ -6,7 +6,7 @@ import TrackSummary from '@/components/TrackSummary.vue';
 import { endDrag, startDrag } from '@/composables/useDrag';
 import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
-import { useDaemonStore } from '@/stores/daemon';
+import { useSoulseekStore } from '@/stores/soulseek';
 import { useJobsStore } from '@/stores/jobs';
 import { useSearchStore } from '@/stores/search';
 import type { Job } from '@/types/job';
@@ -23,7 +23,7 @@ const browse = useBrowseStore();
 const { targetPlaylist } = storeToRefs(browse);
 const collection = useCollectionStore();
 const jobs = useJobsStore();
-const { isOnline } = storeToRefs(useDaemonStore());
+const { isOnline } = storeToRefs(useSoulseekStore());
 
 // What's in the collection changes as tracks land and are removed.
 watch(

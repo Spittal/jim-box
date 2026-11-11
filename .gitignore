@@ -9,9 +9,6 @@ dist
 dist-ssr
 *.local
 
-# slskd release fetched by scripts/fetch-slskd.mjs (~140MB, not committed)
-src-tauri/resources/slskd/
-
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

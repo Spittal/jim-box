@@ -3,7 +3,7 @@ name = "jim-box"
 version = "0.1.0"
 description = "rekordbox library management, with search that finds lossless copies of tracks for it"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.91"
 
 [lib]
 name = "jim_box_lib"
@@ -37,8 +37,9 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 deunicode = "1"
 urlencoding = "2"
 trash = "5"
-# Same version rbl-db uses, to find an slskd left running by a crash.
-sysinfo = { version = "0.32", default-features = false, features = ["system"] }
+# The Soulseek client. Young and fast-moving (a major version most months):
+# pinned exactly, and only `src/soulseek` talks to it. Upgrade deliberately.
+soulseek-rs-lib = "=20.0.0"
 # rekordbox's library: the encrypted master.db and the in-memory index over
 # it, from rbxport (GPL-2.0-or-later). Pinned; upgrade deliberately.
 rbl-db = { git = "https://github.com/chrisle/rbxport", rev = "d0ff75b378ec85be891d9f3067ada1e82bad4cae" }
@@ -50,6 +51,10 @@ rbl-audio = { git = "https://github.com/chrisle/rbxport", rev = "d0ff75b378ec85b
 # The Beat This! beat tracker: a second opinion on every grid, and the grid
 # itself where the tempo moves.
 beat-this = { path = "crates/beat-this" }
+
+[target.'cfg(unix)'.dependencies]
+# Raises the open file limit for Soulseek's peer connections.
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
@@ -64,6 +69,6 @@ opt-level = 3
 
 [profile.release]
 # Thin LTO rather than full: full re-optimised every dependency on each build,
-# which was most of CI's time, and the bundle is dominated by slskd anyway.
+# which was most of CI's time, for little saved in the bundle.
 lto = "thin"
 strip = true

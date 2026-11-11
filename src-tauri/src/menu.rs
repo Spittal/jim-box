@@ -23,7 +23,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .copyright(app.config().bundle.copyright.clone())
         .comments(Some(
             "Manages your rekordbox library, and finds lossless copies of tracks for it.\n\
-             Soulseek access by slskd."
+             Soulseek access by soulseek-rs."
                 .to_string(),
         ))
         .build();
@@ -95,7 +95,7 @@ pub fn handle_event<R: Runtime>(app: &AppHandle<R>, event: MenuEvent) {
     let id = event.id().as_ref();
     match id {
         "show-main" => show_main(app),
-        // Stops slskd on the way out (see `RunEvent::Exit`).
+        // Disconnects from Soulseek on the way out (see `RunEvent::Exit`).
         "quit" => app.exit(0),
         "show-logs" => match app.path().app_log_dir() {
             Ok(dir) => {

@@ -115,7 +115,7 @@ pub struct Job {
     #[serde(default)]
     pub searches: Vec<SearchAttempt>,
     pub active_candidate: Option<usize>,
-    /// slskd's id for the in-flight transfer, so it can be cancelled.
+    /// Set while a Soulseek transfer is in flight: the client's token for it.
     pub transfer_id: Option<String>,
     pub progress: Option<TransferProgress>,
     /// When a `Waiting` job searches again, in ms since the epoch.

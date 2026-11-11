@@ -10,7 +10,7 @@ import SettingsView from '@/views/SettingsView.vue';
 import WelcomeView from '@/views/WelcomeView.vue';
 import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
-import { useDaemonStore } from '@/stores/daemon';
+import { useSoulseekStore } from '@/stores/soulseek';
 import { useJobsStore } from '@/stores/jobs';
 import { useLibrariesStore } from '@/stores/libraries';
 import { useSettingsStore } from '@/stores/settings';
@@ -20,13 +20,13 @@ import { useUiStore } from '@/stores/ui';
 import { useEvents } from '@/composables/useEvents';
 import { commandKey, isMac } from '@/platform';
 
-const daemonStore = useDaemonStore();
+const soulseekStore = useSoulseekStore();
 const jobsStore = useJobsStore();
 const settingsStore = useSettingsStore();
 const libraryStore = useLibraryStore();
 const librariesStore = useLibrariesStore();
 const ui = useUiStore();
-const { needsCredentials } = storeToRefs(daemonStore);
+const { needsCredentials } = storeToRefs(soulseekStore);
 const { activeCount } = storeToRefs(jobsStore);
 
 /** Whether the libraries have been asked for: until then there's nothing to show. */
@@ -41,7 +41,7 @@ watch(libraryOpen, async (open) => {
   if (!open) return;
   // The library is read while the rest loads, so the list is there sooner.
   useCollectionStore().open();
-  await Promise.all([settingsStore.load(), daemonStore.load(), jobsStore.load(), libraryStore.load()]);
+  await Promise.all([settingsStore.load(), soulseekStore.load(), jobsStore.load(), libraryStore.load()]);
   loaded.value = true;
 });
 

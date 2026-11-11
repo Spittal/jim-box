@@ -19,7 +19,7 @@ use crate::jobs::JobStore;
 use crate::library;
 use crate::persistence;
 use crate::rekordbox::{Arrival, Collection};
-use crate::slskd::Daemon;
+use crate::soulseek::Soulseek;
 use crate::state::{LibraryPhase, PathTemplates, Settings, SettingsState};
 
 /// How much of a path tells one place from another when files are outside
@@ -231,11 +231,11 @@ fn forget_library_dirs(app: &AppHandle, emptied: &[PathBuf], target: &Path) {
         (previous, settings.clone())
     };
     persistence::save_settings(app, &updated);
-    if previous.daemon_config_differs(&updated) {
+    if previous.shares_differ(&updated) {
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
-            if let Err(e) = app.state::<Daemon>().start(&app).await {
-                warn!("Failed to restart slskd after consolidating: {e}");
+            if let Err(e) = app.state::<Soulseek>().refresh_shares(&app).await {
+                warn!("Failed to update what Soulseek shares after consolidating: {e}");
             }
         });
     }

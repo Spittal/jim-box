@@ -6,8 +6,8 @@
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
-    "beforeDevCommand": "pnpm fetch-slskd && pnpm dev",
-    "beforeBuildCommand": "pnpm fetch-slskd && pnpm build"
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build"
   },
   "app": {
     "windows": [
@@ -75,9 +75,6 @@
           "y": 170
         }
       }
-    },
-    "resources": {
-      "resources/slskd/": "slskd/"
     }
   }
 }

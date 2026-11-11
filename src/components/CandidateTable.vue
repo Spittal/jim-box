@@ -40,7 +40,7 @@ const rows = computed(() =>
             <span
               class="mr-1 inline-block size-1.5 rounded-full"
               :class="c.hasFreeUploadSlot ? 'bg-status-ok' : 'bg-status-busy'"
-              :title="c.hasFreeUploadSlot ? 'Free upload slot' : `${c.queueLength} queued`"
+              :title="c.hasFreeUploadSlot ? 'Free upload slot' : 'No free upload slot'"
             />
             {{ c.username }}
           </span>
