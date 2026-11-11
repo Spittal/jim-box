@@ -125,12 +125,17 @@ impl SoulseekClient {
         Ok(Transfer::from(&download))
     }
 
-    pub fn transfer(&self, token: u32) -> AppResult<Transfer> {
+    /// Where the download of a peer's file stands. It's found by peer and
+    /// file name: the token it was queued under is swapped for the peer's own
+    /// once the peer starts sending.
+    pub fn transfer(&self, username: &str, filename: &str) -> AppResult<Transfer> {
         self.check_live()?;
         self.inner()
             .get_all_downloads()
             .iter()
-            .find(|download| download.token == token)
+            .filter(|download| download.username == username && download.filename == filename)
+            // One still running counts over a finished one of the same file.
+            .min_by_key(|download| download.is_finished())
             .map(Transfer::from)
             .ok_or_else(|| AppError::Soulseek("The transfer is gone".into()))
     }

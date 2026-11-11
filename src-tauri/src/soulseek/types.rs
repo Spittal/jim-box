@@ -70,7 +70,8 @@ pub enum TransferPhase {
 /// A download's state at one moment.
 #[derive(Debug, Clone)]
 pub struct Transfer {
-    /// Identifies the download for the life of the connection.
+    /// The download's token for now: the peer's own replaces it once the
+    /// peer starts sending, so it doesn't identify the download for long.
     pub token: u32,
     pub size: u64,
     pub bytes_transferred: u64,

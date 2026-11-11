@@ -437,7 +437,7 @@ async fn download(app: &AppHandle, id: Uuid, client: &Arc<SoulseekClient>, candi
     let mut last_progress_at = Instant::now();
     loop {
         tokio::time::sleep(POLL_INTERVAL).await;
-        let t = client.transfer(transfer.token)?;
+        let t = client.transfer(username, filename)?;
         let progress = Some(TransferProgress {
             bytes_transferred: t.bytes_transferred,
             size: t.size,
