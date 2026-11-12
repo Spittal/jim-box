@@ -44,9 +44,17 @@ export function formatKey(name: string, notation: KeyNotation): string {
   return `${NAMES[key.pitch]}${key.minor ? 'm' : ''}`;
 }
 
+/** Every key, as rekordbox spells it, in the order the notation lists them: up from C, or round the Camelot wheel. */
+export function allKeys(notation: KeyNotation): string[] {
+  if (notation === 'camelot') {
+    return CAMELOT_MINOR.flatMap((pitch) => [`${NAMES[pitch]}m`, NAMES[(pitch + 3) % 12]]);
+  }
+  return NAMES.flatMap((name) => [name, `${name}m`]);
+}
+
 /** Keys as the settings say to show them, whichever way the library stores each. */
 export function useKeyNotation() {
   const store = useSettingsStore();
   const notation = computed<KeyNotation>(() => store.settings?.keyNotation ?? 'standard');
-  return { notation, formatKey: (name: string) => formatKey(name, notation.value) };
+  return { notation, allKeys: () => allKeys(notation.value), formatKey: (name: string) => formatKey(name, notation.value) };
 }

@@ -2,12 +2,13 @@
 import { computed, ref } from 'vue';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import BeatGridSection from '@/components/BeatGridSection.vue';
+import FieldInput from '@/components/FieldInput.vue';
 import FixCard from '@/components/FixCard.vue';
 import JobStatusBadge from '@/components/JobStatusBadge.vue';
 import LibraryCover from '@/components/LibraryCover.vue';
 import { TRACK_COLORS } from '@/composables/useTrackColors';
 import { formatDuration } from '@/composables/useFormat';
-import { useKeyNotation } from '@/composables/useKeyNotation';
+import { formatKey as keyIn, useKeyNotation } from '@/composables/useKeyNotation';
 import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
 import { isActive, useJobsStore } from '@/stores/jobs';
@@ -19,7 +20,7 @@ const props = defineProps<{ track: CollectionTrack }>();
 defineEmits<{ close: [] }>();
 
 const store = useCollectionStore();
-const { formatKey } = useKeyNotation();
+const { formatKey, allKeys } = useKeyNotation();
 const libraryStore = useLibraryStore();
 const jobsStore = useJobsStore();
 const browse = useBrowseStore();
@@ -60,13 +61,26 @@ const fields: { id: TrackField; label: string }[] = [
   { id: 'genre', label: 'Genre' },
 ];
 
-/** Saves a field when its box is left or Enter is pressed, if it changed. */
-function commitField(field: TrackField, event: Event) {
-  const input = event.target as HTMLInputElement;
-  const value = input.value.trim();
+/** Saves a field when its box is left or Return is pressed, if it changed. */
+function commitField(field: TrackField, value: string) {
   if (value === props.track[field as 'title' | 'artist' | 'album' | 'genre']) return;
   browse.patchTrack(props.track.id, { [field]: value });
   store.edit({ kind: 'setField', trackId: props.track.id, field, value });
+}
+
+/** The track's key as rekordbox spells it, which is how the menu's keys are named. */
+const keyName = computed(() => keyIn(props.track.key, 'standard'));
+/** The keys to choose from. One the track has that isn't a key is kept on the menu, so it shows. */
+const keyChoices = computed(() => {
+  const keys = allKeys();
+  return !keyName.value || keys.includes(keyName.value) ? keys : [keyName.value, ...keys];
+});
+
+function chooseKey(event: Event) {
+  const value = (event.target as HTMLSelectElement).value;
+  if (value === keyName.value) return;
+  browse.patchTrack(props.track.id, { key: value });
+  store.edit({ kind: 'setField', trackId: props.track.id, field: 'key', value });
 }
 
 function commitComment(event: Event) {
@@ -107,13 +121,20 @@ const inputClass =
     <!-- Keyed by track so the boxes reset when another track is picked. -->
     <label v-for="field in fields" :key="`${track.id}-${field.id}`" class="flex flex-col gap-1">
       <span class="text-[11px] text-text-muted">{{ field.label }}</span>
-      <input
+      <FieldInput
+        :field="field.id"
         :value="track[field.id as 'title']"
         :class="inputClass"
-        spellcheck="false"
-        @change="commitField(field.id, $event)"
-        @keydown.enter="($event.target as HTMLInputElement).blur()"
+        @commit="commitField(field.id, $event)"
       />
+    </label>
+
+    <label class="flex flex-col gap-1">
+      <span class="text-[11px] text-text-muted">Key</span>
+      <select :value="keyName" :class="[inputClass, 'font-mono']" @change="chooseKey">
+        <option value="">–</option>
+        <option v-for="key in keyChoices" :key="key" :value="key">{{ formatKey(key) }}</option>
+      </select>
     </label>
 
     <label class="flex flex-col gap-1">
@@ -156,8 +177,6 @@ const inputClass =
     </div>
 
     <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
-      <dt class="text-text-muted">Key</dt>
-      <dd class="font-mono">{{ formatKey(track.key) || '–' }}</dd>
       <dt class="text-text-muted">Time</dt>
       <dd class="font-mono">{{ track.durationSecs ? formatDuration(track.durationSecs) : '–' }}</dd>
       <dt class="text-text-muted">Format</dt>

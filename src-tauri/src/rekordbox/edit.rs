@@ -234,7 +234,16 @@ fn apply(writer: &mut Writer, index: &rbl_index::Library, edit: Edit) -> AppResu
         Edit::SetField { track_id, field, value } => {
             let field = TrackField::parse(&field)
                 .ok_or_else(|| AppError::Validation(format!("{field} can't be edited")))?;
-            writer.set_field(&track_id, field, value.trim()).map_err(rekordbox_err)?;
+            let mut value = value.trim().to_owned();
+            if field == TrackField::Key && !value.is_empty() {
+                // Stored as rekordbox spells it, however it was given; a key
+                // the library hasn't met yet is added to the ones it knows.
+                let key = rbl_core::musickey::parse(&value)
+                    .ok_or_else(|| AppError::Validation(format!("{value} isn't a musical key")))?;
+                value = key.name();
+                writer.ensure_detected_key(&value).map_err(rekordbox_err)?;
+            }
+            writer.set_field(&track_id, field, &value).map_err(rekordbox_err)?;
         }
         Edit::AddCue { track_id, slot, position_ms, end_ms } => {
             if end_ms.is_some_and(|end| end <= position_ms) {
@@ -399,6 +408,19 @@ mod tests {
         let row = collection.tracks(&q, 0, 10).unwrap().rows.into_iter().find(|r| r.id == id).unwrap();
         assert_eq!((row.rating, row.color, row.comment.as_str()), (4, 3, "peak time"));
         assert_eq!((row.artist.as_str(), row.genre.as_str()), ("New Artist", "Techno"));
+
+        // A key is kept as rekordbox spells it, and can be cleared.
+        let key = |value: &str| Edit::SetField { track_id: id.clone(), field: "key".into(), value: value.into() };
+        let stored = |collection: &Collection| {
+            collection.tracks(&q, 0, 10).unwrap().rows.into_iter().find(|r| r.id == id).unwrap().key
+        };
+        collection.edit(key("F#m")).unwrap();
+        assert_eq!(stored(&collection), "F#m");
+        collection.edit(key("8A")).unwrap();
+        assert_eq!(stored(&collection), "Am");
+        assert!(collection.edit(key("H sharp")).is_err());
+        collection.edit(key("")).unwrap();
+        assert_eq!(stored(&collection), "");
 
         collection.edit(Edit::SetColor { track_id: id.clone(), color: 0 }).unwrap();
         let row = collection.tracks(&q, 0, 10).unwrap().rows.into_iter().find(|r| r.id == id).unwrap();

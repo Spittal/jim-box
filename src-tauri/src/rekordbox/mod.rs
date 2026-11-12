@@ -516,6 +516,29 @@ impl Collection {
         Ok(view.window(0, view.len()).iter().map(|&row| loaded.index.ids[row as usize].to_string()).collect())
     }
 
+    /// Every artist, album or genre the collection's tracks have, the most
+    /// used first: what to offer as one is typed.
+    pub fn field_values(&self, field: &str) -> AppResult<Vec<String>> {
+        let loaded = self.loaded()?;
+        let index = &loaded.index;
+        let name: fn(&rbl_index::Library, u32) -> &str = match field {
+            "artist" => |index, row| index.artist_name(row),
+            "album" => |index, row| index.album_name(row),
+            "genre" => |index, row| index.genre_name(row),
+            _ => return Err(AppError::Validation(format!("{field} has no names to offer"))),
+        };
+        let mut uses: HashMap<&str, usize> = HashMap::new();
+        for row in 0..index.ids.len() as u32 {
+            let name = name(index, row).trim();
+            if !name.is_empty() {
+                *uses.entry(name).or_default() += 1;
+            }
+        }
+        let mut names: Vec<(&str, usize)> = uses.into_iter().collect();
+        names.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
+        Ok(names.into_iter().map(|(name, _)| name.to_owned()).collect())
+    }
+
     /// `limit` rows of a list from `offset`.
     pub fn tracks(&self, query: &TrackQuery, offset: usize, limit: usize) -> AppResult<TrackPage> {
         let loaded = self.loaded()?;
@@ -581,6 +604,26 @@ pub(crate) mod tests {
         let rows: Vec<String> = collection.tracks(&q, 0, 1000).unwrap().rows.into_iter().map(|r| r.id).collect();
         assert_eq!(ids.len(), collection.status().unwrap().tracks);
         assert_eq!(ids, rows);
+    }
+
+    #[test]
+    fn lists_the_names_in_use_most_used_first() {
+        let (_dir, collection) = fixture();
+        let rows = collection.tracks(&query(Source::Collection, Sort::Title), 0, 1000).unwrap().rows;
+        for field in ["artist", "album", "genre"] {
+            let of = |r: &TrackRow| match field {
+                "artist" => r.artist.trim().to_owned(),
+                "album" => r.album.trim().to_owned(),
+                _ => r.genre.trim().to_owned(),
+            };
+            let names = collection.field_values(field).unwrap();
+            let uses = |name: &str| rows.iter().filter(|r| of(r) == name).count();
+            let expected: std::collections::HashSet<String> = rows.iter().map(of).filter(|n| !n.is_empty()).collect();
+            assert_eq!(names.iter().cloned().collect::<std::collections::HashSet<_>>(), expected);
+            assert_eq!(names.len(), expected.len());
+            assert!(names.windows(2).all(|pair| uses(&pair[0]) >= uses(&pair[1])));
+        }
+        assert!(collection.field_values("title").is_err());
     }
 
     #[test]

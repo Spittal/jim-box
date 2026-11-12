@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import CoverArt from '@/components/CoverArt.vue';
+import FieldInput from '@/components/FieldInput.vue';
 import JobStatusBadge from '@/components/JobStatusBadge.vue';
 import LibraryCover from '@/components/LibraryCover.vue';
 import ProgressBar from '@/components/ProgressBar.vue';
@@ -117,6 +118,8 @@ onUnmounted(() => resizeObserver.disconnect());
  */
 function keepTextUnselected(event: MouseEvent) {
   if (!event.shiftKey && !commandKey(event)) return;
+  // A field open for editing selects its own text.
+  if ((event.target as HTMLElement).closest('input')) return;
   event.preventDefault();
   window.getSelection()?.removeAllRanges();
 }
@@ -324,6 +327,48 @@ function rate(track: CollectionTrack, stars: number) {
   browse.patchTrack(track.id, { rating: next });
   store.edit({ kind: 'setRating', trackId: track.id, stars: next });
 }
+
+// --- Editing in place ---------------------------------------------------------
+
+/** The fields a row can be edited in. */
+type CellField = 'title' | 'artist' | 'album' | 'genre';
+
+/** The field being edited in its row. */
+const editing = ref<{ id: string; field: CellField } | null>(null);
+
+/**
+ * A double-click opens a track in the player. On the track already there, it
+ * opens the field under it for editing instead.
+ */
+function doubleClickRow(event: MouseEvent, track: CollectionTrack) {
+  // By where the click was across the row: an empty field has no text to land on.
+  const cells = (event.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('[data-field]');
+  const cell = [...cells].find((el) => {
+    const { left, right } = el.getBoundingClientRect();
+    return event.clientX >= left && event.clientX <= right;
+  });
+  const field = cell?.dataset.field as CellField | undefined;
+  if (field && track.id === props.playingId) editing.value = { id: track.id, field };
+  else emit('open', track);
+}
+
+/** Saves what was typed into the open field, if it changed. */
+function commitCell(value: string) {
+  const cell = editing.value;
+  editing.value = null;
+  if (!cell) return;
+  const track = browse.loadedTrack(cell.id);
+  if (!track || value === track[cell.field]) return;
+  // Shown at once: saving takes a moment.
+  browse.patchTrack(cell.id, { [cell.field]: value });
+  store.edit({ kind: 'setField', trackId: cell.id, field: cell.field, value });
+}
+
+// A different list has nothing of the field that was open.
+watch(
+  () => browse.resets,
+  () => (editing.value = null),
+);
 
 // --- Tracks on their way ----------------------------------------------------
 
@@ -678,6 +723,10 @@ watch(
 );
 onUnmounted(() => clearTimeout(previewTimer));
 
+/** A field open in its row: the row's own text, on a ground that spreads past it without moving anything. */
+const editClass =
+  'min-w-0 rounded-sm bg-surface-0 text-text-primary outline-none select-text shadow-[0_0_0_3px_var(--color-surface-0),0_0_0_4px_var(--color-accent)]';
+
 const smallButtonClass =
   'shrink-0 rounded bg-surface-2 px-2 py-0.5 text-[11px] text-text-primary transition-colors hover:bg-surface-3';
 </script>
@@ -863,9 +912,9 @@ const smallButtonClass =
             dropRow === row.index ? 'border-t border-accent' : '',
           ]"
           :style="{ top: `${row.index * ROW_HEIGHT}px`, height: `${ROW_HEIGHT}px` }"
-          :draggable="!!row.track"
+          :draggable="!!row.track && editing?.id !== row.track.id"
           @click="row.track && clickRow(row.index, row.track, $event)"
-          @dblclick="row.track && emit('open', row.track)"
+          @dblclick="row.track && doubleClickRow($event, row.track)"
           @contextmenu.prevent="row.track && rowMenu(row.index, row.track)"
           @dragstart="row.track && dragTrack($event, row.track)"
           @dragend="endDrag"
@@ -880,14 +929,29 @@ const smallButtonClass =
               :style="{ backgroundColor: TRACK_COLORS[row.track.color].hex }"
             />
             <template v-for="column in columns" :key="column.id">
-            <LibraryCover v-if="column.id === 'art'" :path="row.track.path" thumb :style="cellStyle.art" />
+            <!-- The field double-clicked, open for editing in place of its text. -->
+            <FieldInput
+              v-if="editing?.id === row.track.id && editing.field === column.id"
+              :field="editing.field"
+              :value="row.track[editing.field]"
+              autofocus
+              commit-on-remove
+              :class="[editClass, column.class]"
+              :style="cellStyle[column.id]"
+              @commit="commitCell"
+              @cancel="editing = null"
+              @click.stop
+              @dblclick.stop
+              @contextmenu.stop
+            />
+            <LibraryCover v-else-if="column.id === 'art'" :path="row.track.path" thumb :style="cellStyle.art" />
             <span v-else-if="column.id === 'trackNo'" class="truncate font-mono text-text-muted" :class="column.class" :style="cellStyle[column.id]">{{ row.track.position }}</span>
             <TrackPreview
               v-else-if="column.id === 'preview'"
               :preview="previews.get(row.track.id) ?? null"
               :class="column.class" :style="cellStyle[column.id]"
             />
-            <span v-else-if="column.id === 'title'" class="flex items-center gap-1.5 overflow-hidden" :class="column.class" :style="cellStyle[column.id]">
+            <span v-else-if="column.id === 'title'" data-field="title" class="flex items-center gap-1.5 overflow-hidden" :class="column.class" :style="cellStyle[column.id]">
               <span
                 class="truncate"
                 :class="row.track.id === playingId ? 'font-medium text-accent-hover' : ''"
@@ -910,9 +974,9 @@ const smallButtonClass =
                 {{ activities.get(row.track.id)!.label }}
               </span>
             </span>
-            <span v-else-if="column.id === 'artist'" class="truncate text-text-secondary" :class="column.class" :style="cellStyle[column.id]">{{ row.track.artist }}</span>
-            <span v-else-if="column.id === 'album'" class="truncate text-text-secondary" :class="column.class" :style="cellStyle[column.id]">{{ row.track.album }}</span>
-            <span v-else-if="column.id === 'genre'" class="truncate text-text-muted" :class="column.class" :style="cellStyle[column.id]">{{ row.track.genre }}</span>
+            <span v-else-if="column.id === 'artist'" data-field="artist" class="truncate text-text-secondary" :class="column.class" :style="cellStyle[column.id]">{{ row.track.artist }}</span>
+            <span v-else-if="column.id === 'album'" data-field="album" class="truncate text-text-secondary" :class="column.class" :style="cellStyle[column.id]">{{ row.track.album }}</span>
+            <span v-else-if="column.id === 'genre'" data-field="genre" class="truncate text-text-muted" :class="column.class" :style="cellStyle[column.id]">{{ row.track.genre }}</span>
             <span
               v-else-if="column.id === 'playlists'"
               class="truncate text-text-muted"

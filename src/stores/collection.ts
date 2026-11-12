@@ -71,6 +71,24 @@ export const useCollectionStore = defineStore('collection', () => {
   /** The id of every track in a list, in its order. */
   const trackIds = (query: TrackQuery) => invoke<string[]>('collection_track_ids', { query });
 
+  /** The names in use, as read from each state of the collection. */
+  const fieldValues = new Map<string, { generation: number; names: Promise<string[]> }>();
+
+  /**
+   * Every artist, album or genre the collection's tracks have, the most used
+   * first: what to offer as one is typed. Empty if they can't be read.
+   */
+  function namesOf(field: 'artist' | 'album' | 'genre'): Promise<string[]> {
+    const held = fieldValues.get(field);
+    if (held?.generation === generation.value) return held.names;
+    const names = invoke<string[]>('collection_field_values', { field }).catch(() => {
+      fieldValues.delete(field);
+      return [];
+    });
+    fieldValues.set(field, { generation: generation.value, names });
+    return names;
+  }
+
   /**
    * Makes one change to rekordbox's library. Returns the id of what it
    * created, if anything; on failure sets `error` and returns undefined.
@@ -184,6 +202,7 @@ export const useCollectionStore = defineStore('collection', () => {
     changed,
     tracks,
     trackIds,
+    namesOf,
     edit,
     importPaths,
     analyse,

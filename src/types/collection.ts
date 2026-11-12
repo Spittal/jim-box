@@ -130,7 +130,7 @@ export interface TrackPage {
 }
 
 /** A text field of a track that can be edited. */
-export type TrackField = 'title' | 'artist' | 'album' | 'genre' | 'label' | 'year';
+export type TrackField = 'title' | 'artist' | 'album' | 'genre' | 'label' | 'year' | 'key';
 
 /** One change to the library; see `Edit` in src-tauri/src/rekordbox/edit.rs. */
 export type CollectionEdit =

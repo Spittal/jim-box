@@ -65,6 +65,13 @@ pub fn collection_track_ids(collection: tauri::State<'_, Collection>, query: Tra
     collection.track_ids(&query)
 }
 
+/// The artists, albums or genres already in the collection, the most used
+/// first, to offer as one is typed.
+#[tauri::command]
+pub fn collection_field_values(collection: tauri::State<'_, Collection>, field: String) -> AppResult<Vec<String>> {
+    collection.field_values(&field)
+}
+
 /// A track to look for in the collection by name.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct TrackName {
