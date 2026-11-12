@@ -171,16 +171,18 @@ impl Follow {
     }
 }
 
-/// Whose grid a track has.
+/// Whose grid a track has. The names shown for them are "Blend", "rbxport"
+/// and "Beat This"; these are the ones saved, so they stay as they were.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Source {
-    /// The one the analysis chose from the two detectors.
+    /// The one the analysis made of the two detectors.
     #[default]
     Chosen,
-    /// The signal detector's alone: one tempo.
+    /// The signal detector's (rbxport's) alone: one tempo.
     Signal,
-    /// The model's alone: its beats, followed.
+    /// The model's (Beat This's) alone: its beats, followed. A newly
+    /// analysed track has it where there is one: see [`Decided::given`].
     Model,
     /// One changed by hand since.
     Hand,
@@ -315,8 +317,9 @@ impl States {
         self.save();
     }
 
-    /// A track was analysed: its grid is the chosen one, not yet looked at.
-    pub fn analysed(&self, track_id: &str, decided: &Decided, hint: Hint) {
+    /// A track was analysed: its grid is `using`'s (see [`Decided::given`]),
+    /// not yet looked at.
+    pub fn analysed(&self, track_id: &str, decided: &Decided, using: Source, hint: Hint) {
         let mut grids = vec![(Source::Chosen, Grid::new(&decided.beats, decided.bpm, decided.report.dynamic))];
         grids.extend(decided.others.iter().cloned());
         let choices = if grids.len() > 1 {
@@ -337,7 +340,7 @@ impl States {
                 tracing::warn!("Couldn't save the grids to choose from to {}: {e}", file.display());
             }
         }
-        self.change(track_id, |state| *state = State { report: Some(decided.report.clone()), reviewed: false, using: Source::Chosen, choices, hint });
+        self.change(track_id, |state| *state = State { report: Some(decided.report.clone()), reviewed: false, using, choices, hint });
     }
 
     /// One of the grids the analysis made for a track.
@@ -394,6 +397,18 @@ pub struct Decided {
 }
 
 impl Decided {
+    /// The grid a track is given, and whose it is: the model's own where
+    /// it made one apart from the grid decided on, as it is the one more
+    /// often right when the two differ. One that changes tempo is passed
+    /// over when grids may not.
+    pub fn given(&self, following: Follow) -> (Source, Grid) {
+        self.others
+            .iter()
+            .find(|(source, grid)| *source == Source::Model && (following != Follow::Never || !grid.dynamic))
+            .cloned()
+            .unwrap_or_else(|| (Source::Chosen, Grid::new(&self.beats, self.bpm, self.report.dynamic)))
+    }
+
     /// Carries the grid on at its last tempo to `end_secs`, for a file
     /// longer than the part that was analysed.
     pub fn extend_to(&mut self, end_secs: f64) {
@@ -1383,6 +1398,11 @@ mod tests {
         let mut kept = decided(&signal, &heard(&truth, 0), &truth, 120.0, false);
         let [(Source::Model, other)] = &kept.others[..] else { panic!("{:?}", kept.others.iter().map(|o| o.0).collect::<Vec<_>>()) };
         assert!(other.dynamic);
+        // The model's own is the grid a track is given, unless it changes
+        // tempo and grids may not.
+        assert_eq!(kept.given(Follow::Auto), (Source::Model, other.clone()));
+        assert_eq!(kept.given(Follow::Never).0, Source::Chosen);
+        assert_eq!(followed.given(Follow::Auto).0, Source::Chosen);
         let before = other.beats.len();
         kept.extend_to(150.0);
         assert!(kept.others[0].1.beats.len() > before + 50);
@@ -1399,7 +1419,7 @@ mod tests {
 
         let states = States::open(file.clone());
         assert_eq!(states.get("7"), None);
-        states.analysed("7", &followed, Hint { bpm: Some(124.0), varies: None });
+        states.analysed("7", &followed, Source::Chosen, Hint { bpm: Some(124.0), varies: None });
         let state = States::open(file.clone()).get("7").unwrap();
         assert_eq!(state.report.as_ref(), Some(&followed.report));
         assert!(!state.reviewed && state.using == Source::Chosen);
@@ -1430,7 +1450,7 @@ mod tests {
 
         // Analysing again starts over, and a grid both agree on has no others.
         let truth = comb(0.5, 0.25, 60.0);
-        states.analysed("7", &decided(&one_tempo(0.5, 0.25, 60.0), &heard(&truth, 0), &truth, 60.0, true), Hint::default());
+        states.analysed("7", &decided(&one_tempo(0.5, 0.25, 60.0), &heard(&truth, 0), &truth, 60.0, true), Source::Chosen, Hint::default());
         let state = states.get("7").unwrap();
         assert!(!state.reviewed && state.choices.is_empty());
         assert_eq!(states.choice("7", Source::Chosen), None);

@@ -53,6 +53,8 @@ struct Computed {
     length_secs: u32,
     /// The grid as decided, with each detector's own beside it.
     decided: grid::Decided,
+    /// Whose grid `beats` is.
+    using: grid::Source,
 }
 
 /// How far either side of a hinted tempo the signal detector looks.
@@ -102,12 +104,14 @@ fn compute(path: &Path, follow: grid::Follow, hint: &grid::Hint) -> AppResult<Co
         decided.extend_to(duration);
     }
 
+    let (using, given) = decided.given(follow);
+
     let w = waves.finish();
     Ok(Computed {
-        beats: decided
+        beats: given
             .beats
             .iter()
-            .map(|b| rbl_anlz::Beat { beat_number: b.number, tempo_x100: b.tempo_x100, time_ms: b.time_ms })
+            .map(|&(time_ms, number, tempo_x100)| rbl_anlz::Beat { beat_number: u16::from(number), tempo_x100, time_ms })
             .collect(),
         waves: rbl_anlz::RekordboxWaves {
             pwav: w.pwav,
@@ -119,10 +123,11 @@ fn compute(path: &Path, follow: grid::Follow, hint: &grid::Hint) -> AppResult<Co
             pwv6: w.pwv6,
             pwv7: w.pwv7,
         },
-        bpm_x100: (decided.bpm * 100.0).round().clamp(0.0, 100_000.0) as u32,
+        bpm_x100: (given.bpm * 100.0).round().clamp(0.0, 100_000.0) as u32,
         key: analysis.key.map(|k| k.name),
         length_secs: duration.round() as u32,
         decided,
+        using,
     })
 }
 
@@ -184,7 +189,7 @@ impl Collection {
 
         let computed = compute(&path, grid::Follow::from(follow_tempo, hint), hint)?;
         self.write(|writer, index| save(writer, index, track_id, &path, &computed))?;
-        self.grids.analysed(track_id, &computed.decided, *hint);
+        self.grids.analysed(track_id, &computed.decided, computed.using, *hint);
         Ok(Analysed {
             track_id: track_id.to_owned(),
             bpm: f64::from(computed.bpm_x100) / 100.0,
@@ -462,7 +467,7 @@ pub(super) mod tests {
         let beats = chosen.iter().map(|&(time_ms, number, tempo_x100)| grid::Beat { number: u16::from(number), tempo_x100, time_ms }).collect();
         let other = grid::Grid { bpm: 60.0, dynamic: false, beats: halved.clone() };
         let decided = grid::Decided { beats, bpm: 120.0, report, others: vec![(GridSource::Signal, other)] };
-        collection.grids.analysed(&id, &decided, grid::Hint::default());
+        collection.grids.analysed(&id, &decided, GridSource::Chosen, grid::Hint::default());
         let state = row(&collection, &id).grid.unwrap();
         assert_eq!(state.choices.iter().map(|c| (c.source, c.bpm)).collect::<Vec<_>>(), [(GridSource::Chosen, 120.0), (GridSource::Signal, 60.0)]);
 

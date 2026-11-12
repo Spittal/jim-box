@@ -59,7 +59,11 @@ export interface GridReport {
   modelBpm: number;
 }
 
-/** Whose grid a track has: the analysis's choice, either detector's own, or one changed by hand. */
+/**
+ * Whose grid a track has: the analysis's blend of the two detectors, rbxport's
+ * signal analysis alone, the Beat This model alone, or one changed by hand.
+ * A newly analysed track has Beat This's where it made one of its own.
+ */
 export type GridSource = 'chosen' | 'signal' | 'model' | 'hand';
 
 /** What the user knows of a track's tempo, given with an analysis of it. */
@@ -84,7 +88,7 @@ export interface GridState {
   /** The user has marked the grid as right, or set it by hand. */
   reviewed: boolean;
   using: GridSource;
-  /** The grids to try, the chosen one first; empty when the detectors made the same one. */
+  /** The grids to try, the blend first; empty when the detectors made the same one. */
   choices: GridChoice[];
   /** What the analysis was told of the track. */
   hint: GridHint;

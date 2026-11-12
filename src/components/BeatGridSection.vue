@@ -9,7 +9,7 @@
  * right, analyse again with a hint.
  */
 import { computed, ref, watch } from 'vue';
-import { GRID_SOURCES, gridChoiceTitle, gridClass, gridIssues } from '@/composables/useGridReport';
+import { GRID_SOURCES, gridChoiceTitle, gridClass, gridFollowsTempo, gridIssues } from '@/composables/useGridReport';
 import { useCollectionStore } from '@/stores/collection';
 import type { CollectionTrack, GridHint, GridSource } from '@/types/collection';
 
@@ -33,10 +33,8 @@ const analysisError = computed(
 
 /** The grid the track has now, in a few words. */
 const inUse = computed(() => {
-  const choice = grid.value?.choices.find((c) => c.source === grid.value?.using);
-  const dynamic = choice?.dynamic ?? (grid.value?.using === 'chosen' && report.value?.dynamic);
   if (grid.value?.using === 'hand') return 'set by hand';
-  return dynamic ? 'follows the tempo' : 'one tempo';
+  return grid.value && gridFollowsTempo(grid.value) ? 'follows the tempo' : 'one tempo';
 });
 
 async function attempt(action: () => Promise<unknown>) {
