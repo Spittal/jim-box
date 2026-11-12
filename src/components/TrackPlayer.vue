@@ -303,7 +303,7 @@ function onKey(event: KeyboardEvent) {
 
   if (command) {
     if (!props.track || event.shiftKey) return;
-    if (event.code === 'Comma') jumpBeats(-SMALL_JUMP_BARS * 4);
+    if (event.code === 'Comma') jumpBeats((-SMALL_JUMP_BARS * 4) + 1);
     else if (event.code === 'Period') jumpBeats(SMALL_JUMP_BARS * 4);
     else if (pad >= 0) {
       const cue = hotCues.value[pad];
@@ -313,7 +313,7 @@ function onKey(event: KeyboardEvent) {
     } else if (event.code === 'KeyB') {
       if (canEditGrid.value && !event.repeat) setDownbeat();
     } else return;
-  } else if (event.code === 'Comma') jumpBeats(event.shiftKey ? -BIG_JUMP_BARS * 4 : -1);
+  } else if (event.code === 'Comma') jumpBeats(event.shiftKey ? (-BIG_JUMP_BARS * 4) + 1 : -2);
   else if (event.code === 'Period') jumpBeats(event.shiftKey ? BIG_JUMP_BARS * 4 : 1);
   else if (!props.track || event.shiftKey) return;
   else if (pad >= 0) {
