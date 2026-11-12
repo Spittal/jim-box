@@ -43,9 +43,9 @@ const groups: { title: string; note?: string; lines: Line[] }[] = [
     note: 'Not while typing in a text field: press Esc to leave it first. Space plays and pauses from anywhere else, buttons included.',
     lines: [
       { does: 'Play or pause', keys: [['Space']] },
-      { does: 'Back or forward a beat', keys: [['←'], ['→']] },
-      { does: 'Back or forward a bar', keys: [[shift, '←'], [shift, '→']] },
-      { does: 'Back or forward 32 bars', keys: [[cmd, '←'], [cmd, '→']] },
+      { does: 'Back or forward a beat', keys: [[','], ['.']] },
+      { does: 'Back or forward 8 bars', keys: [[cmd, ','], [cmd, '.']] },
+      { does: 'Back or forward 16 bars', keys: [[shift, ','], [shift, '.']] },
       { does: 'Go to a hot cue, or set it where there is none', keys: [['1'], ['…'], ['8']] },
       { does: 'Delete a hot cue', keys: [[cmd, '1'], ['…'], [cmd, '8']] },
       { does: 'Set a memory cue', keys: [['M'], [cmd, 'M']] },

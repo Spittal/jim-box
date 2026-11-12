@@ -268,7 +268,8 @@ function tick() {
 }
 
 /** ⌘← and ⌘→ go this far: a phrase or two, to the next part of the track. */
-const JUMP_BARS = 32;
+const SMALL_JUMP_BARS = 8;
+const BIG_JUMP_BARS = 16;
 
 /** Whether a key pressed there is typed: a box of text, not a tick box or a button. */
 function typing(target: HTMLElement | null): boolean {
@@ -302,8 +303,8 @@ function onKey(event: KeyboardEvent) {
 
   if (command) {
     if (!props.track || event.shiftKey) return;
-    if (event.code === 'ArrowLeft') jumpBeats(-JUMP_BARS * 4);
-    else if (event.code === 'ArrowRight') jumpBeats(JUMP_BARS * 4);
+    if (event.code === 'Comma') jumpBeats(-SMALL_JUMP_BARS * 4);
+    else if (event.code === 'Period') jumpBeats(SMALL_JUMP_BARS * 4);
     else if (pad >= 0) {
       const cue = hotCues.value[pad];
       if (cue && !event.repeat) deleteCue(cue);
@@ -312,8 +313,8 @@ function onKey(event: KeyboardEvent) {
     } else if (event.code === 'KeyB') {
       if (canEditGrid.value && !event.repeat) setDownbeat();
     } else return;
-  } else if (event.code === 'ArrowLeft') jumpBeats(event.shiftKey ? -4 : -1);
-  else if (event.code === 'ArrowRight') jumpBeats(event.shiftKey ? 4 : 1);
+  } else if (event.code === 'Comma') jumpBeats(event.shiftKey ? -BIG_JUMP_BARS * 4 : -1);
+  else if (event.code === 'Period') jumpBeats(event.shiftKey ? BIG_JUMP_BARS * 4 : 1);
   else if (!props.track || event.shiftKey) return;
   else if (pad >= 0) {
     // As pressing the pad: to its cue, or a cue set on it where it has none.
@@ -963,8 +964,8 @@ const tabClass = 'px-2 py-0.5 text-[11px] disabled:opacity-30';
         <p v-else class="text-text-muted">No track loaded</p>
       </div>
       <template v-if="track">
-        <button :class="buttonClass" :title="`Back a beat (←, Shift for a bar, ${shortcut('←')} for 32 bars)`" @click="jumpBeats(-1)">◀ Beat</button>
-        <button :class="buttonClass" :title="`Forward a beat (→, Shift for a bar, ${shortcut('→')} for 32 bars)`" @click="jumpBeats(1)">Beat ▶</button>
+        <button :class="buttonClass" :title="`Back a beat (comma key, ${shortcut('comma')} for 8 bars, shift+comma for 16)`" @click="jumpBeats(-1)">◀ Beat</button>
+        <button :class="buttonClass" :title="`Forward a beat (period key, ${shortcut('period')} for 8 bars, shift+period for 16)`" @click="jumpBeats(1)">Beat ▶</button>
       </template>
       <div class="flex overflow-hidden rounded border border-border" title="Waveform colours, as in rekordbox">
         <button
