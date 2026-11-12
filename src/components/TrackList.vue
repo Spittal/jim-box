@@ -205,6 +205,11 @@ function rowMenu(index: number, track: CollectionTrack) {
     { text: 'Identify', enabled: !library.busy, action: () => void actions.identify() },
     { text: 'Analyse', action: () => void actions.analyse() },
     {
+      text: actions.allReviewed() ? 'Not Reviewed' : 'Reviewed',
+      enabled: actions.reviewable().length > 0,
+      action: () => void actions.review(),
+    },
+    {
       text: 'Add to Playlist',
       enabled: playlists.length > 0,
       items: playlists.map((p) => ({ text: p.name, action: () => void actions.addToPlaylist(p.id) })),

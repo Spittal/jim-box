@@ -250,10 +250,10 @@ impl Collection {
         Self { grids: grid::States::open(file), ..self }
     }
 
-    /// Marks a track's grid as looked over and right, or takes that back.
+    /// Marks tracks' grids as looked over and right, or takes that back.
     /// Nothing of rekordbox's changes.
-    pub fn review_grid(&self, track_id: &str, reviewed: bool) {
-        self.grids.review(track_id, reviewed);
+    pub fn review_grids(&self, track_ids: &[String], reviewed: bool) {
+        self.grids.review(track_ids, reviewed);
     }
 
     /// Of `track_ids`, those whose grid has been reviewed.

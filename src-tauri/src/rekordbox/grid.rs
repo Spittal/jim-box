@@ -365,8 +365,15 @@ impl States {
         });
     }
 
-    pub fn review(&self, track_id: &str, reviewed: bool) {
-        self.change(track_id, |state| state.reviewed = reviewed);
+    /// Marks tracks' grids as reviewed, or takes that back; saved once.
+    pub fn review(&self, track_ids: &[String], reviewed: bool) {
+        {
+            let mut by_track = self.by_track.write().expect("grids lock poisoned");
+            for track_id in track_ids {
+                by_track.entry(track_id.clone()).or_default().reviewed = reviewed;
+            }
+        }
+        self.save();
     }
 
     /// `<library>.grids.json` keeps the states; `<library>.grids/` the grids.
@@ -1435,7 +1442,7 @@ mod tests {
         assert_eq!(states.choice("7", Source::Model), None);
 
         states.switched("7", Source::Signal);
-        states.review("7", true);
+        states.review(&["7".to_owned()], true);
         let state = States::open(file.clone()).get("7").unwrap();
         assert!(state.reviewed && state.using == Source::Signal);
         assert_eq!(states.ranks()["7"], u8::MAX);

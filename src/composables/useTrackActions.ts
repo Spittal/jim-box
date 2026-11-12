@@ -42,6 +42,29 @@ export function useTrackActions() {
     if (yes) await collection.analyse(trackIds, true);
   }
 
+  /** The selected tracks that have a grid to review: all but those seen to have no analysis. */
+  function reviewable(): string[] {
+    return browse.selectedIds.filter((id) => browse.loadedTrack(id)?.analysed !== false);
+  }
+
+  /** Whether every selected track with a grid has had it reviewed, so that reviewing them would take it back. */
+  function allReviewed(): boolean {
+    const trackIds = reviewable();
+    return trackIds.length > 0 && trackIds.every((id) => browse.loadedTrack(id)?.grid?.reviewed);
+  }
+
+  /** Marks the selected tracks' beat grids as reviewed; or, when they all are, takes that back. */
+  async function review() {
+    const trackIds = reviewable();
+    if (!trackIds.length) return;
+    collection.error = null;
+    try {
+      await collection.reviewGrids(trackIds, !allReviewed());
+    } catch (e) {
+      collection.error = String(e);
+    }
+  }
+
   async function addToPlaylist(playlistId: string) {
     const trackIds = browse.selectedIds;
     if (trackIds.length) await collection.edit({ kind: 'addTracks', playlistId, trackIds });
@@ -82,5 +105,5 @@ export function useTrackActions() {
     await collection.edit({ kind: 'deleteTracks', trackIds, trashFiles: answer.option });
   }
 
-  return { identify, analyse, addToPlaylist, removeFromPlaylist, remove };
+  return { identify, analyse, review, reviewable, allReviewed, addToPlaylist, removeFromPlaylist, remove };
 }

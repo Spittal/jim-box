@@ -93,9 +93,9 @@ export const useCollectionStore = defineStore('collection', () => {
     }
   }
 
-  /** Marks a track's beat grid as reviewed, or takes that back. */
-  async function reviewGrid(trackId: string, reviewed: boolean) {
-    await invoke('review_grid', { trackId, reviewed });
+  /** Marks tracks' beat grids as reviewed, or takes that back. */
+  async function reviewGrids(trackIds: string[], reviewed: boolean) {
+    await invoke('review_grids', { trackIds, reviewed });
     generation.value++;
   }
 
@@ -170,7 +170,7 @@ export const useCollectionStore = defineStore('collection', () => {
 
   return {
     preparation,
-    reviewGrid,
+    reviewGrids,
     waveform,
     previews,
     status,

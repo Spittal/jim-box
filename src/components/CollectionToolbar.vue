@@ -182,6 +182,18 @@ const buttonClass =
           >
             Analyse
           </button>
+          <button
+            :class="buttonClass"
+            :disabled="!actions.reviewable().length"
+            :title="
+              actions.allReviewed()
+                ? 'Take the review back: the Grid column shows how sure the analysis was again'
+                : 'You\'ve checked the selected tracks\' beat grids against the music and they\'re right. Analysing a batch of tracks again leaves reviewed grids alone.'
+            "
+            @click="actions.review()"
+          >
+            {{ actions.allReviewed() ? 'Not reviewed' : 'Reviewed' }}
+          </button>
           <select
             v-if="targetPlaylists.length"
             class="max-w-40 rounded border border-border bg-surface-1 px-2 py-1 text-xs outline-none"

@@ -89,11 +89,11 @@ pub async fn edit_collection(app: AppHandle, edit: Edit) -> AppResult<EditOutcom
     library::blocking(move || app.state::<Collection>().edit(edit)).await
 }
 
-/// Marks a track's beat grid as reviewed, or takes that back. Only the
+/// Marks tracks' beat grids as reviewed, or takes that back. Only the
 /// app's own note of it changes, so rekordbox may be open.
 #[tauri::command]
-pub fn review_grid(app: AppHandle, track_id: String, reviewed: bool) {
-    app.state::<Collection>().review_grid(&track_id, reviewed);
+pub fn review_grids(app: AppHandle, track_ids: Vec<String>, reviewed: bool) {
+    app.state::<Collection>().review_grids(&track_ids, reviewed);
 }
 
 /// Adds files, and the music in folders, to the collection; and to a

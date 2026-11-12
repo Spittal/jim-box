@@ -55,7 +55,7 @@ function use(source: GridSource) {
 }
 
 function review(reviewed: boolean) {
-  attempt(() => store.reviewGrid(props.track.id, reviewed));
+  attempt(() => store.reviewGrids([props.track.id], reviewed));
 }
 
 // --- Analysing again, with a hint --------------------------------------------

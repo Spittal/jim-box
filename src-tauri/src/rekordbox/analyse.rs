@@ -478,7 +478,7 @@ pub(super) mod tests {
         assert_eq!(row(&collection, &id).grid.unwrap().using, GridSource::Signal);
 
         // Reviewing is the app's own note; trying another grid takes it back.
-        collection.review_grid(&id, true);
+        collection.review_grids(std::slice::from_ref(&id), true);
         assert!(row(&collection, &id).grid.unwrap().reviewed);
         assert_eq!(collection.reviewed(&[id.clone(), "no such track".into()]), [id.clone()]);
         using(GridSource::Chosen).unwrap();
