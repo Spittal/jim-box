@@ -5,7 +5,7 @@ import { useSoulseekStore } from '@/stores/soulseek';
 import { useJobsStore } from '@/stores/jobs';
 import { useLibraryStore } from '@/stores/library';
 import { usePlaylistStore } from '@/stores/playlist';
-import type { AnalysisProgress, Waiting } from '@/types/collection';
+import type { AnalysisEvent, Waiting } from '@/types/collection';
 import type { SoulseekStatus } from '@/types/soulseek';
 import type { Job } from '@/types/job';
 import type { LibraryItem, LibraryProgress, LibrarySnapshot } from '@/types/library';
@@ -23,6 +23,7 @@ export function useEvents() {
       soulseek.status = e.payload;
     }),
     listen<Job>('job-updated', (e) => jobs.upsert(e.payload)),
+    listen<{ id: string; progress: Job['progress'] }>('job-progress', (e) => jobs.progressed(e.payload.id, e.payload.progress)),
     listen<string>('job-removed', (e) => jobs.drop(e.payload)),
     listen<LibrarySnapshot>('library-reset', (e) => library.applySnapshot(e.payload)),
     listen<LibraryItem>('library-item', (e) => library.upsert(e.payload)),
@@ -30,9 +31,7 @@ export function useEvents() {
       library.progress = e.payload;
     }),
     listen<Waiting>('collection-changed', (e) => collection.changed(e.payload)),
-    listen<AnalysisProgress>('analysis-progress', (e) => {
-      collection.analysis = e.payload;
-    }),
+    listen<AnalysisEvent>('analysis-progress', (e) => collection.analysisMoved(e.payload)),
     listen<PlaylistProgress>('playlist-progress', (e) => {
       playlist.progress = e.payload;
     }),

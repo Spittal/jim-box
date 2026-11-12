@@ -22,6 +22,10 @@ pub struct Deezer {
 struct SearchResponse {
     #[serde(default)]
     data: Vec<Track>,
+    /// Deezer answers 200 to a request it refuses (too many, most often),
+    /// with this in place of results.
+    #[serde(default)]
+    error: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -80,6 +84,10 @@ impl Deezer {
             .error_for_status()?
             .json()
             .await?;
+        if let Some(error) = res.error {
+            let message = error.get("message").and_then(|m| m.as_str()).map_or_else(|| error.to_string(), str::to_owned);
+            return Err(crate::error::AppError::Validation(format!("Deezer refused the search: {message}")));
+        }
         Ok(res.data.into_iter().map(Track::into_request).collect())
     }
 

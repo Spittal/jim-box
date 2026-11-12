@@ -125,6 +125,20 @@ pub struct Preparation {
 /// How many columns a track list preview has: enough for the column's width
 /// on a dense screen.
 const PREVIEW_COLUMNS: usize = 400;
+/// Previews held at once, about a kilobyte each; past it they're made afresh.
+const MAX_HELD_PREVIEWS: usize = 8000;
+
+/// A track's small waveform as made from its analysis files, kept while
+/// those files stay as they were.
+#[derive(Clone)]
+pub(super) struct WavePreview {
+    /// When the two files it could come from were last written.
+    stamp: [Option<std::time::SystemTime>; 2],
+    /// 7, 5 or 3; 0 when the files hold no waveform.
+    kind: u8,
+    columns: std::sync::Arc<Vec<u8>>,
+    duration_ms: Option<u32>,
+}
 
 /// What the track list shows of a track: its whole waveform, small, and its cues.
 #[derive(Debug, Clone, Serialize)]
@@ -365,16 +379,38 @@ impl Collection {
             let relative = index.analysis_path.get(row);
             if !relative.is_empty() {
                 let [_, ext, two_ex] = analysis_files(&loaded.location.share_root, relative);
-                let preferred = FORMS.iter().filter(|(kind, _)| *kind == prefer);
-                for &(kind, tag) in preferred.chain(FORMS.iter().filter(|(kind, _)| *kind != prefer)) {
-                    let Ok(anlz) = rbl_anlz::Anlz::read(if kind == 7 { &two_ex } else { &ext }) else { continue };
-                    let Some((_, data)) = anlz.waveform(tag).filter(|(_, data)| !data.is_empty()) else { continue };
-                    preview.kind = kind;
-                    preview.columns = shrink(kind, data, PREVIEW_COLUMNS);
-                    // 150 columns a second: the waveform's own length, to the millisecond.
-                    let ms = (data.len() / stride_of(kind)) as u64 * 1000 / 150;
-                    preview.duration_ms = u32::try_from(ms).unwrap_or(u32::MAX);
-                    break;
+                // Shrinking a waveform means reading the whole of its file: done
+                // once for each state of the files, not each time a row is shown.
+                let stamp = [&ext, &two_ex].map(|file| std::fs::metadata(file).and_then(|m| m.modified()).ok());
+                let key = (relative.to_owned(), prefer);
+                let held = self.wave_previews.lock().expect("previews lock poisoned").get(&key).filter(|held| held.stamp == stamp).cloned();
+                let wave = held.unwrap_or_else(|| {
+                    let mut wave = WavePreview { stamp, kind: 0, columns: std::sync::Arc::default(), duration_ms: None };
+                    let preferred = FORMS.iter().filter(|(kind, _)| *kind == prefer);
+                    let mut read: [Option<Option<rbl_anlz::Anlz>>; 2] = [None, None];
+                    for &(kind, tag) in preferred.chain(FORMS.iter().filter(|(kind, _)| *kind != prefer)) {
+                        // Each file is read once, whichever of its forms are looked for.
+                        let (at, file) = if kind == 7 { (1, &two_ex) } else { (0, &ext) };
+                        let Some(anlz) = read[at].get_or_insert_with(|| rbl_anlz::Anlz::read(file).ok()) else { continue };
+                        let Some((_, data)) = anlz.waveform(tag).filter(|(_, data)| !data.is_empty()) else { continue };
+                        wave.kind = kind;
+                        wave.columns = std::sync::Arc::new(shrink(kind, data, PREVIEW_COLUMNS));
+                        // 150 columns a second: the waveform's own length, to the millisecond.
+                        let ms = (data.len() / stride_of(kind)) as u64 * 1000 / 150;
+                        wave.duration_ms = Some(u32::try_from(ms).unwrap_or(u32::MAX));
+                        break;
+                    }
+                    let mut previews = self.wave_previews.lock().expect("previews lock poisoned");
+                    if previews.len() >= MAX_HELD_PREVIEWS {
+                        previews.clear();
+                    }
+                    previews.insert(key, wave.clone());
+                    wave
+                });
+                preview.kind = wave.kind;
+                preview.columns = wave.columns.to_vec();
+                if let Some(ms) = wave.duration_ms {
+                    preview.duration_ms = ms;
                 }
             }
             previews.push(preview);
@@ -509,7 +545,8 @@ pub(super) fn change_grid(
 
     let next = match change {
         GridChange::Restore { beats: restored } => {
-            if restored.is_empty() || restored.windows(2).any(|pair| pair[1].0 <= pair[0].0) {
+            let ordered = restored.windows(2).all(|pair| pair[1].0 > pair[0].0);
+            if restored.is_empty() || !ordered || restored.iter().any(|&(_, bar, _)| !(1..=4).contains(&bar)) {
                 return Err(AppError::Validation("That isn't a beat grid".into()));
             }
             restored

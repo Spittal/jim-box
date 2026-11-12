@@ -88,6 +88,10 @@ impl Soulseek {
     pub async fn wait_until_online(&self, timeout: Duration) -> AppResult<Arc<SoulseekClient>> {
         let deadline = Instant::now() + timeout;
         loop {
+            // No account to log in with: waiting won't bring one.
+            if self.status() == SoulseekStatus::NeedsCredentials {
+                return Err(AppError::SoulseekFailed("Sign in to Soulseek in Settings to fetch tracks".into()));
+            }
             match self.client() {
                 Ok(client) => return Ok(client),
                 // It won't come online until whatever stopped it is put right.

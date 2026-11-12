@@ -278,12 +278,29 @@ enum Saved {
 pub struct States {
     file: Option<PathBuf>,
     by_track: RwLock<HashMap<String, State>>,
+    /// Held from reading the states to writing them, so the file always ends
+    /// up with the latest: analysis workers save at the same time.
+    saving: std::sync::Mutex<()>,
 }
 
 impl States {
-    /// What is saved in `file`; nothing when it isn't there or can't be read.
+    /// What is saved in `file`; nothing when it isn't there. A file that
+    /// can't be read is kept under another name instead of being written over.
     pub fn open(file: PathBuf) -> Self {
-        let saved: HashMap<String, Saved> = std::fs::read(&file).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+        let saved: HashMap<String, Saved> = match std::fs::read(&file) {
+            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+                let aside = file.with_extension("corrupt.json");
+                tracing::error!("{} is unreadable ({e}); keeping it as {}", file.display(), aside.display());
+                let _ = std::fs::rename(&file, &aside);
+                HashMap::new()
+            }),
+            Err(e) => {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    tracing::error!("Couldn't read {}: {e}", file.display());
+                }
+                HashMap::new()
+            }
+        };
         let by_track = saved
             .into_iter()
             .map(|(id, saved)| match saved {
@@ -291,7 +308,7 @@ impl States {
                 Saved::Report(report) => (id, State { report: Some(report), ..State::default() }),
             })
             .collect();
-        Self { file: Some(file), by_track: RwLock::new(by_track) }
+        Self { file: Some(file), by_track: RwLock::new(by_track), saving: std::sync::Mutex::default() }
     }
 
     pub fn get(&self, track_id: &str) -> Option<State> {
@@ -369,10 +386,31 @@ impl States {
         {
             let mut by_track = self.by_track.write().expect("grids lock poisoned");
             for track_id in track_ids {
-                by_track.entry(track_id.clone()).or_default().reviewed = reviewed;
+                // Taking back a review that was never given makes nothing to keep.
+                if reviewed {
+                    by_track.entry(track_id.clone()).or_default().reviewed = true;
+                } else if let Some(state) = by_track.get_mut(track_id) {
+                    state.reviewed = false;
+                }
             }
         }
         self.save();
+    }
+
+    /// Forgets tracks that have left the collection, and their grids to choose from.
+    pub fn forget(&self, track_ids: &[String]) {
+        let known = {
+            let mut by_track = self.by_track.write().expect("grids lock poisoned");
+            track_ids.iter().filter(|id| by_track.remove(*id).is_some()).count()
+        };
+        for track_id in track_ids {
+            if let Some(file) = self.choices_file(track_id) {
+                let _ = std::fs::remove_file(file);
+            }
+        }
+        if known > 0 {
+            self.save();
+        }
     }
 
     /// `<library>.grids.json` keeps the states; `<library>.grids/` the grids.
@@ -383,6 +421,7 @@ impl States {
 
     fn save(&self) {
         let Some(file) = &self.file else { return };
+        let _saving = self.saving.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let saved = serde_json::to_vec(&*self.by_track.read().expect("grids lock poisoned"))
             .map_err(std::io::Error::other)
             .and_then(|bytes| super::analyse::replace_file(file, &bytes));

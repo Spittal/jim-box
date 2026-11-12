@@ -119,6 +119,7 @@ impl Collection {
                 let change = prepare::GridChange::Restore { beats: grid.beats };
                 self.write(|writer, index| prepare::change_grid(writer, index, &track_id, change, None))?;
                 self.grids.switched(&track_id, source);
+                self.forget_view();
                 None
             }
             edit => {
@@ -134,10 +135,16 @@ impl Collection {
                     }
                     _ => Vec::new(),
                 };
+                let deleted = match &edit {
+                    Edit::DeleteTracks { track_ids, .. } => track_ids.clone(),
+                    _ => Vec::new(),
+                };
                 let created_id = self.write(|writer, index| apply(writer, index, edit))?;
                 warning = trash_files(&doomed);
+                self.grids.forget(&deleted);
                 if let Some(track_id) = regridded {
                     self.grids.edited(&track_id);
+                    self.forget_view();
                 }
                 created_id
             }
@@ -152,7 +159,30 @@ impl Collection {
         &self,
         work: impl FnOnce(&mut Writer, &rbl_index::Library) -> AppResult<T>,
     ) -> AppResult<T> {
+        self.write_then(true, work)
+    }
+
+    /// [`Self::write`] without reading the library again afterwards: for a
+    /// run of changes that don't build on each other, as analysing tracks one
+    /// after another is. What was read stays as it was until `refresh`, or
+    /// the next `write`, which reads it first.
+    pub(super) fn write_deferred<T>(
+        &self,
+        work: impl FnOnce(&mut Writer, &rbl_index::Library) -> AppResult<T>,
+    ) -> AppResult<T> {
+        self.write_then(false, work)
+    }
+
+    fn write_then<T>(
+        &self,
+        read_again: bool,
+        work: impl FnOnce(&mut Writer, &rbl_index::Library) -> AppResult<T>,
+    ) -> AppResult<T> {
         let _one_at_a_time = self.editing.lock().expect("edit lock poisoned");
+        if read_again {
+            // A change that may build on the ones not yet read.
+            self.refresh()?;
+        }
         let loaded = self.loaded_or_read()?;
         let location = loaded.location.clone();
 
@@ -160,13 +190,17 @@ impl Collection {
         if self.backed_up.load(Ordering::Acquire) {
             writer.mark_backed_up();
         }
-        let result = work(&mut writer, &loaded.index);
+        let result = work(&mut writer, &loaded.index).map_err(|e| damage_report(&writer, e));
         if writer.backed_up() && !self.backed_up.swap(true, Ordering::AcqRel) {
             self.prune_backups();
         }
         drop(writer);
 
-        self.load_from(location)?;
+        if read_again {
+            self.load_from(location)?;
+        } else {
+            self.stale.store(true, Ordering::Release);
+        }
         result
     }
 
@@ -442,4 +476,37 @@ mod tests {
         create(&collection, "Two", None, false);
         assert_eq!(backups_in(&backups).len(), 1);
     }
+}
+
+/// What SQLite says of a database with a page or index it can't make sense of.
+const MALFORMED: &str = "database disk image is malformed";
+
+/// A change refused because the library file is damaged says so, and says
+/// where: SQLite's own message names neither the step that met the damage
+/// nor the table it is in. The copy made before a session's first change
+/// reads every page of the file, so damage anywhere, however old and however
+/// far from what is being changed, stops that first; rekordbox, reading only
+/// what it needs, may never have met it. What a check of the file finds goes
+/// in the log, as it is what says how to mend it.
+fn damage_report(writer: &Writer, error: AppError) -> AppError {
+    let said = error.to_string();
+    if !said.contains(MALFORMED) {
+        return error;
+    }
+    let step = if writer.backed_up() { "making the change" } else { "copying the library before changing it" };
+    let found: Vec<String> = writer
+        .library()
+        .connection()
+        .prepare("PRAGMA quick_check(20)")
+        .and_then(|mut check| check.query_map([], |row| row.get::<_, String>(0))?.collect())
+        .unwrap_or_else(|e| vec![format!("the check itself failed: {e}")]);
+    tracing::error!(
+        "The rekordbox library at {} is damaged; met while {step}. quick_check: {}",
+        writer.library().location().master_db.display(),
+        found.join(" | ")
+    );
+    let first = found.first().filter(|line| line.as_str() != "ok").map(|line| format!(" ({line})")).unwrap_or_default();
+    AppError::Rekordbox(format!(
+        "rekordbox's library file is damaged{first}, which stopped {step}. Nothing was changed. The details are in the log."
+    ))
 }

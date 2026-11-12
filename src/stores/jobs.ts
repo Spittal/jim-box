@@ -59,6 +59,12 @@ export const useJobsStore = defineStore('jobs', () => {
     else jobs.value[idx] = job;
   }
 
+  /** Applies a `job-progress` event: how far a transfer has got, and nothing else of its job. */
+  function progressed(id: string, progress: Job['progress']) {
+    const job = byId(id);
+    if (job) job.progress = progress;
+  }
+
   /** Applies a `job-removed` event. */
   function drop(id: string) {
     jobs.value = jobs.value.filter((j) => j.id !== id);
@@ -112,11 +118,11 @@ export const useJobsStore = defineStore('jobs', () => {
     pending,
     notFoundCount,
     replacing,
-    jobByTrack,
     jobFor,
     byId,
     load,
     upsert,
+    progressed,
     drop,
     start,
     fetch,

@@ -273,3 +273,6 @@ export interface AnalysisProgress {
   /** Why the batch ended early, when it did. */
   stopped: string | null;
 }
+
+/** `AnalysisProgress` as an event carries it: `queued` is null when only the tracks under way changed. */
+export type AnalysisEvent = Omit<AnalysisProgress, 'queued'> & { queued: string[] | null };

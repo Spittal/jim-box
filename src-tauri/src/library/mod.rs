@@ -5,7 +5,7 @@ mod files;
 mod organizer;
 mod tagger;
 
-pub use files::{extension, AUDIO_EXTENSIONS, move_file, remove_empty_dirs, remove_if_empty, walk_files};
+pub use files::{extension, AUDIO_EXTENSIONS, move_file, remove_empty_dirs, remove_if_empty, walk_files, write_atomic};
 pub use organizer::{convert_legacy_template, library_path, render, validate_template};
 pub use tagger::{read_cover, read_file, write_tags, TagMode};
 

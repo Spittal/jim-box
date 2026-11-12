@@ -3,6 +3,7 @@
 //! collection's tracks follow their files.
 
 use serde::Serialize;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 use tracing::{info, warn};
@@ -48,15 +49,11 @@ pub async fn change_music_dir(app: &AppHandle, new_dir: PathBuf) -> AppResult<Re
     }
     let jobs = app.state::<JobStore>();
     let library = app.state::<LibraryStore>();
-    if jobs.has_running() || library.is_busy() {
-        return Err(AppError::Validation(
-            "Wait for downloads and library work to finish before moving the library".into(),
-        ));
-    }
+    let _moving = super::Moving::begin(app)?;
     // Tracks in rekordbox's collection have to follow their files.
     let (lookup_app, dir) = (app.clone(), old_dir.clone());
     let tracks = library::blocking(move || Ok(lookup_app.state::<Collection>().tracks_under(&dir))).await?;
-    if !tracks.is_empty() && rbl_db::is_rekordbox_running() {
+    if !tracks.is_empty() && crate::rekordbox::is_running() {
         return Err(AppError::Validation(format!(
             "Quit rekordbox first (and its agent in the menu bar): {} tracks in its collection are in this folder and need to be told where they went",
             tracks.len()
@@ -65,7 +62,8 @@ pub async fn change_music_dir(app: &AppHandle, new_dir: PathBuf) -> AppResult<Re
 
     let move_app = app.clone();
     let (from, to) = (old_dir.clone(), new_dir.clone());
-    let report = library::blocking(move || relocate(&move_app, &from, &to)).await?;
+    let known: HashSet<PathBuf> = tracks.into_iter().map(|(_, path)| path).collect();
+    let (report, moved) = library::blocking(move || relocate(&move_app, &from, &to, &known)).await?;
     info!(
         "Moved library {} → {}: {} files, {} failed",
         old_dir.display(),
@@ -81,18 +79,13 @@ pub async fn change_music_dir(app: &AppHandle, new_dir: PathBuf) -> AppResult<Re
         settings.clone()
     };
     persistence::save_settings(app, &updated);
-    jobs.rebase_output_paths(app, &old_dir, &new_dir);
+    // By where each file went, which isn't always where it was headed: a
+    // name already taken in the new folder gives it another.
+    jobs.paths_moved(app, &moved);
     library.clear(app);
     library.set_progress(app, LibraryPhase::Idle, 0, 0);
-
-    let followed: Vec<Arrival> = tracks
-        .into_iter()
-        .filter_map(|(_, old)| {
-            let new = new_dir.join(old.strip_prefix(&old_dir).ok()?);
-            new.is_file().then_some(Arrival { path: new, replaces: Some(old), ..Default::default() })
-        })
-        .collect();
-    ingest::arrived(app, followed).await;
+    // The collection's tracks were queued to follow as each file moved.
+    ingest::flush(app).await;
 
     // The shared folder changed.
     let shares_app = app.clone();
@@ -104,11 +97,20 @@ pub async fn change_music_dir(app: &AppHandle, new_dir: PathBuf) -> AppResult<Re
     Ok(report)
 }
 
-fn relocate(app: &AppHandle, old: &Path, new: &Path) -> AppResult<RelocateReport> {
+/// Moves every file, returning where each went. `tracks` are the files the
+/// collection has: each is queued to follow its file as soon as it has
+/// moved, so stopping part-way loses track of none.
+fn relocate(
+    app: &AppHandle,
+    old: &Path,
+    new: &Path,
+    tracks: &HashSet<PathBuf>,
+) -> AppResult<(RelocateReport, Vec<(PathBuf, PathBuf)>)> {
     std::fs::create_dir_all(new)?;
     let mut report = RelocateReport { moved: 0, failed: Vec::new() };
+    let mut moved = Vec::new();
     if !old.is_dir() {
-        return Ok(report);
+        return Ok((report, moved));
     }
 
     let store = app.state::<LibraryStore>();
@@ -118,12 +120,19 @@ fn relocate(app: &AppHandle, old: &Path, new: &Path) -> AppResult<RelocateReport
         store.set_progress(app, LibraryPhase::Moving, done, total);
         let relative = file.strip_prefix(old).unwrap_or(&file).to_path_buf();
         match library::move_file(&file, new.join(&relative)) {
-            Ok(_) => report.moved += 1,
+            Ok(dest) => {
+                report.moved += 1;
+                if tracks.contains(&file) {
+                    let arrival = Arrival { path: dest.clone(), replaces: Some(file.clone()), moved_only: true, ..Default::default() };
+                    ingest::queue(app, vec![arrival]);
+                }
+                moved.push((file, dest));
+            }
             Err(e) => report.failed.push(format!("{}: {e}", relative.display())),
         }
     }
     prune_empty_tree(old);
-    Ok(report)
+    Ok((report, moved))
 }
 
 /// Removes every empty folder under `dir` (post-order), then `dir` itself if empty.

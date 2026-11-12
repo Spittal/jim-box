@@ -2,11 +2,14 @@
 //! waveforms to be worked out, a few at a time in the background.
 //!
 //! Emits `analysis-progress` as the queue moves, and `collection-changed`
-//! after each track so lists show its BPM and key.
+//! as tracks finish so lists show their BPM and key: every few seconds
+//! through a batch, not after each track, as reading the library again and
+//! having every list fetched again is the slow part.
 
 use serde::Serialize;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 use tracing::{info, warn};
 
@@ -20,6 +23,9 @@ use crate::state::SettingsState;
 fn workers() -> usize {
     std::thread::available_parallelism().map_or(2, |n| n.get() / 2).clamp(1, 4)
 }
+
+/// The least time between two readings of the library while a batch runs.
+const REFRESH_EVERY: Duration = Duration::from_secs(4);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,8 +45,10 @@ pub struct AnalysisProgress {
     pub done: usize,
     /// Tracks being analysed right now.
     pub running: Vec<String>,
-    /// Tracks waiting their turn, in order.
-    pub queued: Vec<String>,
+    /// Tracks waiting their turn, in order. None in an event that only says
+    /// the queue moved on: what waits is then what waited, less `running`.
+    /// A long queue isn't sent again for every track.
+    pub queued: Option<Vec<String>>,
     pub failed: Vec<Failure>,
     /// Why the batch ended early, when it did.
     pub stopped: Option<String>,
@@ -52,6 +60,8 @@ struct Queue {
     pending: VecDeque<(String, GridHint)>,
     workers: usize,
     progress: AnalysisProgress,
+    /// When the library was last read again for the lists.
+    refreshed: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -61,13 +71,24 @@ impl AnalysisQueue {
     pub fn progress(&self) -> AnalysisProgress {
         let queue = self.0.lock().expect("analysis lock poisoned");
         let mut progress = queue.progress.clone();
-        progress.queued = queue.pending.iter().map(|(id, _)| id.clone()).collect();
+        progress.queued = Some(queue.pending.iter().map(|(id, _)| id.clone()).collect());
         progress
+    }
+
+    /// The same, without what waits.
+    fn moved(&self) -> AnalysisProgress {
+        self.0.lock().expect("analysis lock poisoned").progress.clone()
     }
 }
 
+/// Says the queue changed: tracks were added to it or dropped from it.
 fn emit(app: &AppHandle) {
     let _ = app.emit("analysis-progress", app.state::<AnalysisQueue>().progress());
+}
+
+/// Says the queue moved on: a track was started or finished.
+fn emit_moved(app: &AppHandle) {
+    let _ = app.emit("analysis-progress", app.state::<AnalysisQueue>().moved());
 }
 
 /// Queues tracks for analysis and starts on them. With `again` false, tracks
@@ -77,6 +98,12 @@ fn emit(app: &AppHandle) {
 /// asked for on its own: a batch leaves it be.
 pub async fn enqueue(app: &AppHandle, track_ids: Vec<String>, again: bool) -> usize {
     enqueue_with(app, track_ids, again, GridHint::default()).await
+}
+
+/// Queues tracks whose audio is no longer the audio their analysis was made
+/// from, reviewed or not: the grid that was reviewed was another file's.
+pub async fn enqueue_replaced(app: &AppHandle, track_ids: Vec<String>) -> usize {
+    queue(app, track_ids, GridHint::default()).await
 }
 
 /// [`enqueue`], with what the user knows of the tracks' tempo.
@@ -90,6 +117,10 @@ pub async fn enqueue_with(app: &AppHandle, track_ids: Vec<String>, again: bool, 
             .await
             .unwrap_or_default()
     };
+    queue(app, track_ids, hint).await
+}
+
+async fn queue(app: &AppHandle, track_ids: Vec<String>, hint: GridHint) -> usize {
     let (queued, start) = {
         let state = app.state::<AnalysisQueue>();
         let mut queue = state.0.lock().expect("analysis lock poisoned");
@@ -97,8 +128,10 @@ pub async fn enqueue_with(app: &AppHandle, track_ids: Vec<String>, again: bool, 
             queue.progress = AnalysisProgress::default();
         }
         let mut queued = 0;
+        let mut known: HashSet<String> =
+            queue.pending.iter().map(|(id, _)| id.clone()).chain(queue.progress.running.iter().cloned()).collect();
         for id in track_ids {
-            if !queue.pending.iter().any(|(waiting, _)| *waiting == id) && !queue.progress.running.contains(&id) {
+            if known.insert(id.clone()) {
                 queue.pending.push_back((id, hint));
                 queued += 1;
             }
@@ -137,7 +170,7 @@ fn stop(app: &AppHandle, why: Option<String>) {
 async fn work(app: AppHandle) {
     loop {
         // rekordbox being opened ends the batch: every track would be refused.
-        if rbl_db::is_rekordbox_running() {
+        if crate::rekordbox::is_running() {
             stop(&app, Some("rekordbox was opened. Quit it and analyse again.".into()));
         }
         let next = {
@@ -159,12 +192,12 @@ async fn work(app: AppHandle) {
             emit(&app);
             return;
         };
-        emit(&app);
+        emit_moved(&app);
 
         let follow = app.state::<SettingsState>().snapshot().dynamic_grids;
         let (worker, id) = (app.clone(), track_id.clone());
         let result = library::blocking(move || worker.state::<Collection>().analyse_with(&id, follow, &hint)).await;
-        {
+        let read_again = {
             let state = app.state::<AnalysisQueue>();
             let mut queue = state.0.lock().expect("analysis lock poisoned");
             queue.progress.running.retain(|id| id != &track_id);
@@ -184,8 +217,21 @@ async fn work(app: AppHandle) {
                     queue.progress.failed.push(Failure { track_id: track_id.clone(), title, error: e.to_string() });
                 }
             }
+            // At the end of a batch, and every so often through it.
+            let last = queue.pending.is_empty() && queue.progress.running.is_empty();
+            let due = last || queue.refreshed.is_none_or(|at| at.elapsed() >= REFRESH_EVERY);
+            if due {
+                queue.refreshed = Some(Instant::now());
+            }
+            due
+        };
+        emit_moved(&app);
+        if read_again {
+            let reader = app.clone();
+            let read = library::blocking(move || reader.state::<Collection>().refresh()).await;
+            if matches!(read, Ok(true)) {
+                let _ = app.emit("collection-changed", app.state::<ArrivalQueue>().waiting());
+            }
         }
-        emit(&app);
-        let _ = app.emit("collection-changed", app.state::<ArrivalQueue>().waiting());
     }
 }

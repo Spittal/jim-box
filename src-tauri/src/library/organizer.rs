@@ -122,10 +122,12 @@ pub fn render(paths: &PathTemplates, meta: &TrackMetadata) -> PathBuf {
         sanitize(&raw)
     };
 
-    paths
-        .for_track(meta)
+    let template = paths.for_track(meta);
+    let last = template.split('/').count() - 1;
+    template
         .split('/')
-        .map(|segment| {
+        .enumerate()
+        .map(|(at, segment)| {
             let rendered: String = parse(segment)
                 .unwrap_or_default()
                 .into_iter()
@@ -134,7 +136,11 @@ pub fn render(paths: &PathTemplates, meta: &TrackMetadata) -> PathBuf {
                     Piece::Field(name) => value(name),
                 })
                 .collect();
-            clean_component(&rendered)
+            let cleaned = clean_component(&rendered);
+            // The file's own name can't be nothing: a title of only
+            // punctuation ("?", "...") cleans away to that, and the file
+            // would take its folder's name, beside the folder.
+            if cleaned.is_empty() && at == last { "Unknown Title".to_owned() } else { cleaned }
         })
         .filter(|segment| !segment.is_empty())
         .collect()

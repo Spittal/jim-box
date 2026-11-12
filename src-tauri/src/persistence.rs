@@ -7,9 +7,11 @@
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
 use tauri::{AppHandle, Manager};
-use tauri_plugin_store::StoreExt;
 use tracing::error;
 use uuid::Uuid;
 
@@ -52,9 +54,64 @@ fn open_file(app: &AppHandle) -> String {
 
 // --- Generic helpers ---
 
+/// Each file's keys, as last read or written. A file is a JSON object.
+static STORES: LazyLock<Mutex<HashMap<PathBuf, Map<String, Value>>>> = LazyLock::new(Mutex::default);
+
+fn store_path(app: &AppHandle, file: &str) -> Option<PathBuf> {
+    match app.path().app_data_dir() {
+        Ok(dir) => Some(dir.join(file)),
+        Err(e) => {
+            error!("No folder to keep {file} in: {e}");
+            None
+        }
+    }
+}
+
+/// Reads a file's keys. One that can't be read as JSON is moved aside, not
+/// written over: what it held may yet be recovered by hand.
+fn read_store(path: &Path) -> Map<String, Value> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                error!("Couldn't read {}: {e}", path.display());
+            }
+            return Map::new();
+        }
+    };
+    match serde_json::from_slice(&bytes) {
+        Ok(Value::Object(keys)) => keys,
+        other => {
+            let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+            let aside = path.with_extension(format!("corrupt-{stamp}.json"));
+            let why = other.err().map_or_else(|| "not a JSON object".to_owned(), |e| e.to_string());
+            match std::fs::rename(path, &aside) {
+                Ok(()) => error!("{} is unreadable ({why}); kept as {}", path.display(), aside.display()),
+                Err(e) => error!("{} is unreadable ({why}) and couldn't be moved aside: {e}", path.display()),
+            }
+            Map::new()
+        }
+    }
+}
+
+/// Runs `work` on a file's keys, reading them from disk the first time.
+fn with_store<R>(app: &AppHandle, file: &str, work: impl FnOnce(&Path, &mut Map<String, Value>) -> R) -> Option<R> {
+    let path = store_path(app, file)?;
+    let mut stores = STORES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let keys = stores.entry(path.clone()).or_insert_with(|| read_store(&path));
+    Some(work(&path, keys))
+}
+
+/// Writes a file's keys: whole, or not at all (see `library::write_atomic`).
+fn write_store(path: &Path, keys: &Map<String, Value>) {
+    let written = serde_json::to_vec(keys).map_err(std::io::Error::other).and_then(|bytes| library::write_atomic(path, &bytes));
+    if let Err(e) = written {
+        error!("Failed to save {}: {e}", path.display());
+    }
+}
+
 fn store_get<T: DeserializeOwned>(app: &AppHandle, file: &str, key: &str) -> Option<T> {
-    let store = app.store(file).ok()?;
-    let value = store.get(key)?;
+    let value = with_store(app, file, |_, keys| keys.get(key).cloned())??;
     match serde_json::from_value(value) {
         Ok(v) => Some(v),
         Err(e) => {
@@ -65,23 +122,18 @@ fn store_get<T: DeserializeOwned>(app: &AppHandle, file: &str, key: &str) -> Opt
 }
 
 fn store_set<T: Serialize>(app: &AppHandle, file: &str, key: &str, value: &T) {
-    let store = match app.store(file) {
-        Ok(s) => s,
-        Err(e) => {
-            error!("Failed to open {file} for {key}: {e}");
-            return;
-        }
-    };
-    match serde_json::to_value(value) {
-        Ok(v) => store.set(key, v),
+    let value = match serde_json::to_value(value) {
+        Ok(v) => v,
         Err(e) => {
             error!("Failed to serialize {key}: {e}");
             return;
         }
-    }
-    if let Err(e) = store.save() {
-        error!("Failed to persist {key}: {e}");
-    }
+    };
+    // Written under the lock, so two saves land in the order they were made.
+    with_store(app, file, |path, keys| {
+        keys.insert(key.to_owned(), value);
+        write_store(path, keys);
+    });
 }
 
 // --- The libraries ---
@@ -118,17 +170,24 @@ pub fn take_open_next(app: &AppHandle) -> Option<Uuid> {
 /// Removes what was saved for a library. Its rekordbox library isn't touched.
 pub fn delete_library_data(app: &AppHandle, id: Uuid) {
     let Ok(dir) = app.path().app_data_dir() else { return };
-    for file in [dir.join(library_file(id)), dir.join(format!("libraries/{id}.grids.json"))] {
+    STORES.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&dir.join(library_file(id)));
+    for file in [
+        dir.join(library_file(id)),
+        dir.join(format!("libraries/{id}.jobs.json")),
+        dir.join(format!("libraries/{id}.grids.json")),
+    ] {
         if let Err(e) = std::fs::remove_file(&file) {
             if e.kind() != std::io::ErrorKind::NotFound {
                 error!("Couldn't remove {}: {e}", file.display());
             }
         }
     }
-    let grids = dir.join(format!("libraries/{id}.grids"));
-    if let Err(e) = std::fs::remove_dir_all(&grids) {
-        if e.kind() != std::io::ErrorKind::NotFound {
-            error!("Couldn't remove {}: {e}", grids.display());
+    // The grids to choose from, and the backups made of its master.db.
+    for folder in [dir.join(format!("libraries/{id}.grids")), dir.join(format!("rekordbox-backups/{id}"))] {
+        if let Err(e) = std::fs::remove_dir_all(&folder) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                error!("Couldn't remove {}: {e}", folder.display());
+            }
         }
     }
 }
@@ -144,7 +203,7 @@ pub fn peek_settings(app: &AppHandle, id: Uuid) -> Option<Settings> {
 /// True when `config.json` still holds what the app saved before it had
 /// libraries.
 pub fn has_legacy_data(app: &AppHandle) -> bool {
-    app.store(STORE_FILE).is_ok_and(|store| store.has(SETTINGS_KEY))
+    with_store(app, STORE_FILE, |_, keys| keys.contains_key(SETTINGS_KEY)).unwrap_or(false)
 }
 
 /// Gives a library the settings, downloads and playlists saved before the
@@ -152,22 +211,23 @@ pub fn has_legacy_data(app: &AppHandle) -> bool {
 pub fn adopt_legacy(app: &AppHandle, id: Uuid) {
     // The accounts stay with the machine.
     save_account(app, &load_account(app));
-    let (Ok(config), Ok(library)) = (app.store(STORE_FILE), app.store(library_file(id))) else { return };
-    for key in LIBRARY_KEYS {
-        if let Some(value) = config.get(key) {
-            library.set(key, value);
+    let moved: Vec<(&str, Value)> = with_store(app, STORE_FILE, |_, keys| {
+        LIBRARY_KEYS.iter().filter_map(|&key| keys.get(key).map(|value| (key, value.clone()))).collect()
+    })
+    .unwrap_or_default();
+    // Into the library's file first: a crash between the two leaves both with them.
+    with_store(app, &library_file(id), |path, keys| {
+        for (key, value) in moved {
+            keys.insert(key.to_owned(), value);
         }
-    }
-    if let Err(e) = library.save() {
-        error!("Failed to move the saved library into its own file: {e}");
-        return;
-    }
-    for key in LIBRARY_KEYS {
-        config.delete(key);
-    }
-    if let Err(e) = config.save() {
-        error!("Failed to persist {STORE_FILE}: {e}");
-    }
+        write_store(path, keys);
+    });
+    with_store(app, STORE_FILE, |path, keys| {
+        for key in LIBRARY_KEYS {
+            keys.remove(key);
+        }
+        write_store(path, keys);
+    });
 }
 
 // --- The accounts, shared by every library ---
@@ -223,12 +283,27 @@ pub fn save_settings(app: &AppHandle, settings: &Settings) {
     save_account(app, &Account::of(settings));
 }
 
+/// The open library's downloads have a file of their own: they are most of
+/// what a library saves, and change the most often.
+fn jobs_file(app: &AppHandle) -> String {
+    format!("libraries/{}.jobs.json", app.state::<OpenLibrary>().0.id)
+}
+
 pub fn load_jobs(app: &AppHandle) -> Vec<Job> {
-    store_get(app, &open_file(app), JOBS_KEY).unwrap_or_default()
+    store_get(app, &jobs_file(app), JOBS_KEY)
+        // From when they were kept with the library's settings.
+        .or_else(|| store_get(app, &open_file(app), JOBS_KEY))
+        .unwrap_or_default()
 }
 
 pub fn save_jobs(app: &AppHandle, jobs: &[Job]) {
-    store_set(app, &open_file(app), JOBS_KEY, &jobs);
+    store_set(app, &jobs_file(app), JOBS_KEY, &jobs);
+    // Now that they are safely in their own file.
+    with_store(app, &open_file(app), |path, keys| {
+        if keys.remove(JOBS_KEY).is_some() {
+            write_store(path, keys);
+        }
+    });
 }
 
 pub fn load_playlists(app: &AppHandle) -> Vec<PlaylistMatch> {

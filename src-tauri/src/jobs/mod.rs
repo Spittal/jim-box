@@ -25,6 +25,20 @@ const MAX_CONCURRENT_JOBS: usize = 3;
 
 /// Completed jobs kept across launches, newest first.
 const MAX_COMPLETED_JOBS: usize = 2000;
+/// The newest completed jobs keep every source found for them, to pick
+/// another from; older ones keep the one they used. A job's sources are
+/// most of what it takes to save.
+const MAX_DETAILED_JOBS: usize = 100;
+/// Changes are saved together, this long after the first of them.
+const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// What a download was asked for and where its file is: what following a
+/// playlist needs of each job.
+#[derive(Debug, Clone)]
+pub struct Fetch {
+    pub request: crate::state::TrackRequest,
+    pub output_path: Option<std::path::PathBuf>,
+}
 
 /// All download jobs, newest first. Every change is emitted to the frontend as
 /// `job-updated`; status changes are also persisted.
@@ -32,6 +46,8 @@ pub struct JobStore {
     jobs: Mutex<Vec<Job>>,
     tasks: Mutex<HashMap<Uuid, JoinHandle<()>>>,
     slots: Arc<Semaphore>,
+    /// A save is on its way.
+    saving: std::sync::atomic::AtomicBool,
 }
 
 impl JobStore {
@@ -51,6 +67,12 @@ impl JobStore {
             }
             _ => true,
         });
+        for job in jobs.iter_mut().filter(|j| j.status == JobStatus::Completed).skip(MAX_DETAILED_JOBS) {
+            let used = job.active_candidate.filter(|&i| i < job.candidates.len()).map(|i| job.candidates.swap_remove(i));
+            job.active_candidate = used.as_ref().map(|_| 0);
+            job.candidates = used.into_iter().collect();
+            job.searches.clear();
+        }
         for job in jobs.iter_mut().filter(|j| !j.status.is_finished()) {
             job.status = JobStatus::Failed;
             job.error = Some("Interrupted when the app closed".into());
@@ -62,11 +84,36 @@ impl JobStore {
             jobs: Mutex::new(jobs),
             tasks: Mutex::new(HashMap::new()),
             slots: Arc::new(Semaphore::new(MAX_CONCURRENT_JOBS)),
+            saving: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
     pub fn list(&self) -> Vec<Job> {
         self.jobs.lock().expect("jobs lock poisoned").clone()
+    }
+
+    /// Looks at the jobs where they are: `list` copies every one, with all its sources.
+    pub fn read<R>(&self, look: impl FnOnce(&[Job]) -> R) -> R {
+        look(&self.jobs.lock().expect("jobs lock poisoned"))
+    }
+
+    pub fn fetches(&self) -> Vec<Fetch> {
+        self.read(|jobs| jobs.iter().map(|j| Fetch { request: j.request.clone(), output_path: j.output_path.clone() }).collect())
+    }
+
+    /// Notes how far a transfer has got. Told to the frontend as
+    /// `job-progress`, which carries only that: these come every second.
+    pub fn set_progress(&self, app: &AppHandle, id: Uuid, progress: Option<crate::state::TransferProgress>) -> AppResult<()> {
+        {
+            let mut jobs = self.jobs.lock().expect("jobs lock poisoned");
+            let job = jobs.iter_mut().find(|j| j.id == id).ok_or(AppError::JobNotFound(id))?;
+            if job.progress == progress {
+                return Ok(());
+            }
+            job.progress = progress.clone();
+        }
+        let _ = app.emit("job-progress", serde_json::json!({ "id": id, "progress": progress }));
+        Ok(())
     }
 
     pub fn get(&self, id: Uuid) -> AppResult<Job> {
@@ -121,37 +168,41 @@ impl JobStore {
             .any(|task| !task.inner().is_finished())
     }
 
-    /// Points finished jobs' output paths at the library's new location.
-    pub fn rebase_output_paths(&self, app: &AppHandle, old_root: &Path, new_root: &Path) {
-        {
+    /// Follows downloads' files after a run of them moved, each from the
+    /// first path to the second; saved once.
+    pub fn paths_moved(&self, app: &AppHandle, moved: &[(std::path::PathBuf, std::path::PathBuf)]) {
+        let to: HashMap<&Path, &Path> = moved.iter().map(|(from, to)| (from.as_path(), to.as_path())).collect();
+        let changed: Vec<Job> = {
             let mut jobs = self.jobs.lock().expect("jobs lock poisoned");
-            for job in jobs.iter_mut() {
-                if let Some(rest) = job.output_path.as_ref().and_then(|p| p.strip_prefix(old_root).ok()) {
-                    job.output_path = Some(new_root.join(rest));
-                }
-            }
+            jobs.iter_mut()
+                .filter_map(|job| {
+                    let new = *to.get(job.output_path.as_deref()?)?;
+                    job.output_path = Some(new.to_path_buf());
+                    Some(job.clone())
+                })
+                .collect()
+        };
+        if changed.is_empty() {
+            return;
         }
-        for job in self.list() {
-            let _ = app.emit("job-updated", &job);
+        for job in &changed {
+            let _ = app.emit("job-updated", job);
         }
         self.persist(app);
     }
 
     /// The finished download that produced `path`, if any.
     pub fn find_by_output(&self, path: &Path) -> Option<Job> {
-        self.list()
-            .into_iter()
-            .find(|j| j.status == JobStatus::Completed && j.output_path.as_deref() == Some(path))
+        self.read(|jobs| jobs.iter().find(|j| j.status == JobStatus::Completed && j.output_path.as_deref() == Some(path)).cloned())
     }
 
     /// Follows a download's file after the library re-tags and moves it.
     pub fn file_moved(&self, app: &AppHandle, from: &Path, to: &Path, metadata: &TrackMetadata) {
-        let moved: Vec<Uuid> = self
-            .list()
-            .into_iter()
-            .filter(|j| j.output_path.as_deref() == Some(from))
-            .map(|j| j.id)
-            .collect();
+        let moved: Vec<Uuid> =
+            self.read(|jobs| jobs.iter().filter(|j| j.output_path.as_deref() == Some(from)).map(|j| j.id).collect());
+        if moved.is_empty() {
+            return;
+        }
         for id in moved {
             let _ = self.update(app, id, |j| {
                 j.output_path = Some(to.to_path_buf());
@@ -184,6 +235,7 @@ impl JobStore {
         if tasks.get(&id).is_some_and(|task| !task.inner().is_finished()) {
             return Err(AppError::Validation("This download is already running".into()));
         }
+        tasks.retain(|_, task| !task.inner().is_finished());
         let task = tauri::async_runtime::spawn(work);
         tasks.insert(id, task);
         Ok(())
@@ -200,7 +252,23 @@ impl JobStore {
         }
     }
 
+    /// Saves the jobs soon, off this thread: a run of changes is one save.
     fn persist(&self, app: &AppHandle) {
-        persistence::save_jobs(app, &self.list());
+        use std::sync::atomic::Ordering;
+        if self.saving.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(SAVE_DELAY).await;
+            let _ = tauri::async_runtime::spawn_blocking(move || tauri::Manager::state::<JobStore>(&app).save_now(&app)).await;
+        });
+    }
+
+    /// Saves the jobs as they are now: what `persist` comes to, and the last thing done at exit.
+    pub fn save_now(&self, app: &AppHandle) {
+        // Cleared first: a change made while this writes asks for another save.
+        self.saving.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.read(|jobs| persistence::save_jobs(app, jobs));
     }
 }

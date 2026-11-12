@@ -75,25 +75,44 @@ pub fn start_candidate(app: &AppHandle, id: Uuid, index: usize) -> AppResult<()>
     store.spawn(id, async move {
         let result = async {
             let _slot = task_app.state::<JobStore>().acquire_slot().await;
-            let client = task_app.state::<Soulseek>().wait_until_online(ONLINE_WAIT).await?;
-            attempt(&task_app, id, &client, index).await
+            attempt(&task_app, id, index).await
         }
         .await;
         finish(&task_app, id, result);
     })
 }
 
-/// Stops a job and cancels its in-flight transfer, if any.
+/// Stops a job and cancels its in-flight transfer, if any. One that has
+/// finished is left as it is, and one being filed into the library can't be
+/// stopped: its files are half moved.
 pub async fn cancel(app: &AppHandle, id: Uuid) -> AppResult<()> {
     let store = app.state::<JobStore>();
-    store.abort(id);
     let job = store.get(id)?;
-    if let (Some(_), Some(candidate)) = (
-        &job.transfer_id,
-        job.active_candidate.and_then(|i| job.candidates.get(i)),
-    ) {
-        if let Ok(client) = app.state::<Soulseek>().client() {
-            client.cancel(&candidate.username, &candidate.filename);
+    let mark = |j: &mut crate::state::Job| {
+        if j.status.is_finished() {
+            return Ok(false);
+        }
+        if j.status == JobStatus::Tagging {
+            return Err(AppError::Validation("It's being filed into the library, which can't be stopped".into()));
+        }
+        j.status = JobStatus::Cancelled;
+        j.transfer_id = None;
+        j.progress = None;
+        j.retry_at = None;
+        Ok(true)
+    };
+    // Marked before the task is stopped: `complete` won't start filing a cancelled job.
+    if !store.update(app, id, mark)?? {
+        return Ok(());
+    }
+    store.abort(id);
+    // By the source being tried, not the transfer's id: a transfer stopped
+    // while it was being asked for has none yet.
+    if let Some(candidate) = job.active_candidate.and_then(|i| job.candidates.get(i)) {
+        if job.status == JobStatus::Downloading {
+            if let Ok(client) = app.state::<Soulseek>().client() {
+                client.cancel(&candidate.username, &candidate.filename);
+            }
         }
     }
     clear_staging(app, id);
@@ -103,18 +122,19 @@ pub async fn cancel(app: &AppHandle, id: Uuid) -> AppResult<()> {
             let _ = std::fs::remove_dir_all(dir.join("youtube").join(id.to_string()));
         }
     }
-    store.update(app, id, |j| {
-        j.status = JobStatus::Cancelled;
-        j.transfer_id = None;
-        j.progress = None;
-        j.retry_at = None;
-    })
+    // The task may have set a status of its own on its way out.
+    store.update(app, id, mark)??;
+    Ok(())
 }
 
 pub(super) fn finish(app: &AppHandle, id: Uuid, result: AppResult<()>) {
     if let Err(e) = result {
-        warn!("Job {id} failed: {e}");
         let _ = app.state::<JobStore>().update(app, id, |j| {
+            // Stopped by the user: that's not a failure.
+            if j.status == JobStatus::Cancelled {
+                return;
+            }
+            warn!("Job {id} failed: {e}");
             j.status = JobStatus::Failed;
             j.error = Some(e.to_string());
             j.transfer_id = None;
@@ -187,15 +207,16 @@ async fn run(app: &AppHandle, id: Uuid, slot: OwnedSemaphorePermit) -> AppResult
         }
     })?;
 
-    // Soulseek may have reconnected while the job was waiting.
-    let client = app.state::<Soulseek>().wait_until_online(ONLINE_WAIT).await?;
     let mut last_error = None;
     if count > 0 && auto.is_empty() {
         return Err(AppError::Soulseek(UNSAVEABLE_NAME.into()));
     }
     for &index in &auto {
-        match attempt(app, id, &client, index).await {
+        match attempt(app, id, index).await {
             Ok(()) => return Ok(()),
+            // Soulseek is gone, which says nothing of this source or the
+            // rest: they're left untried for when it's back.
+            Err(e @ (AppError::SoulseekNotReady | AppError::SoulseekFailed(_))) => return Err(e),
             Err(e) => {
                 warn!("Job {id}: candidate {index} failed: {e}");
                 last_error = Some(e);
@@ -236,6 +257,11 @@ async fn search(
     let store = app.state::<JobStore>();
     let mut rejected: Vec<Candidate> = Vec::new();
     let mut lossy: Vec<Candidate> = Vec::new();
+    // A title with no words in it ("?", "…") matches every file by the
+    // artist: there's nothing to search for or to tell the right file by.
+    if crate::text::tokens(&crate::text::split_version(&meta.title).0).is_empty() {
+        return Ok((slot, Found { accepted: Vec::new(), rejected }));
+    }
     for round in 0..=QUIET_RETRY_DELAYS.len() {
         if round > 0 {
             let delay = QUIET_RETRY_DELAYS[round - 1];
@@ -253,7 +279,7 @@ async fn search(
             })?;
         }
         // Fetched each round: Soulseek may have reconnected while the job waited.
-        let client = app.state::<Soulseek>().wait_until_online(ONLINE_WAIT).await?;
+        let mut client = app.state::<Soulseek>().wait_until_online(ONLINE_WAIT).await?;
         let mut anyone_answered = false;
         // Peers ignore searches naming a banned artist, so when nobody answers
         // those, search without the name before deciding Soulseek is quiet.
@@ -262,7 +288,14 @@ async fn search(
         let mut next = 0;
         while let Some(query) = queries.get(next).cloned() {
             next += 1;
-            let responses = client.search(&query.text).await?;
+            let responses = match client.search(&query.text).await {
+                // The connection dropped: the search is run again on the next one.
+                Err(AppError::SoulseekNotReady) => {
+                    client = app.state::<Soulseek>().wait_until_online(ONLINE_WAIT).await?;
+                    client.search(&query.text).await?
+                }
+                responses => responses?,
+            };
             let ranked = rank_for(&query, &responses, meta, settings);
             info!(
                 "Search '{}': {} peers responded, {} usable candidates, {} rejected, {} lossy",
@@ -348,11 +381,13 @@ async fn existing_copy(app: &AppHandle, id: Uuid, meta: &TrackMetadata, settings
         .map(|ext| library::library_path(&settings.music_dir, &relative, ext))
         .collect();
     if let Some(recording) = meta.mb_recording_id.as_ref() {
-        paths.extend(app.state::<JobStore>().list().into_iter().filter_map(|j| {
-            let same = j.id != id
-                && j.status == JobStatus::Completed
-                && j.metadata.as_ref().and_then(|m| m.mb_recording_id.as_ref()) == Some(recording);
-            j.output_path.filter(|_| same)
+        paths.extend(app.state::<JobStore>().read(|jobs| {
+            let same = |j: &&crate::state::Job| {
+                j.id != id
+                    && j.status == JobStatus::Completed
+                    && j.metadata.as_ref().and_then(|m| m.mb_recording_id.as_ref()) == Some(recording)
+            };
+            jobs.iter().filter(same).filter_map(|j| j.output_path.clone()).collect::<Vec<_>>()
         }));
     }
     let mut lossy = None;
@@ -365,14 +400,35 @@ async fn existing_copy(app: &AppHandle, id: Uuid, meta: &TrackMetadata, settings
     lossy.map(|path| (path, false))
 }
 
+/// Times a source is tried again after Soulseek's connection dropped under it.
+const MAX_RECONNECTS: usize = 2;
+
 /// Downloads one candidate, then tags and files it. Marks the candidate as
-/// failed on error so the UI can show which sources were tried.
-async fn attempt(app: &AppHandle, id: Uuid, client: &Arc<SoulseekClient>, index: usize) -> AppResult<()> {
-    let result = try_candidate(app, id, client, index).await;
-    if result.is_err() {
+/// failed on error so the UI can show which sources were tried; not when
+/// it was Soulseek's connection that failed, which is waited for and the
+/// source tried again.
+async fn attempt(app: &AppHandle, id: Uuid, index: usize) -> AppResult<()> {
+    let mut reconnects = 0;
+    let result = loop {
+        // Asked for each time: a client whose connection dropped stays closed.
+        let result = match app.state::<Soulseek>().wait_until_online(ONLINE_WAIT).await {
+            Ok(client) => try_candidate(app, id, &client, index).await,
+            Err(e) => Err(e),
+        };
+        match result {
+            Err(AppError::SoulseekNotReady) if reconnects < MAX_RECONNECTS => {
+                reconnects += 1;
+                warn!("Job {id}: Soulseek dropped while fetching; waiting for it to reconnect");
+                clear_staging(app, id);
+            }
+            result => break result,
+        }
+    };
+    if let Err(e) = &result {
+        let offline = matches!(e, AppError::SoulseekNotReady | AppError::SoulseekFailed(_));
         clear_staging(app, id);
         let _ = app.state::<JobStore>().update(app, id, |j| {
-            if let Some(c) = j.candidates.get_mut(index) {
+            if let Some(c) = j.candidates.get_mut(index).filter(|_| !offline) {
                 c.failed = true;
             }
             j.transfer_id = None;
@@ -403,21 +459,49 @@ async fn try_candidate(app: &AppHandle, id: Uuid, client: &Arc<SoulseekClient>, 
 
     let downloaded = download(app, id, client, &candidate).await?;
 
-    store.update(app, id, |j| {
+    complete(app, id, downloaded, meta, job.replaces, |_| {}).await
+}
+
+/// Tags a download, files it into the library and hands it to the
+/// collection. Once this starts the job can't be stopped (see `cancel`), and
+/// it runs to its end even if the job's task is: a file is never left tagged
+/// but not moved, or moved but unknown to the collection.
+pub(super) async fn complete(
+    app: &AppHandle,
+    id: Uuid,
+    src: PathBuf,
+    meta: TrackMetadata,
+    replaces: Option<PathBuf>,
+    note: impl FnOnce(&mut crate::state::Job),
+) -> AppResult<()> {
+    let filing = app.state::<JobStore>().update(app, id, |j| {
+        if j.status == JobStatus::Cancelled {
+            return false;
+        }
         j.status = JobStatus::Tagging;
         j.transfer_id = None;
         j.progress = None;
+        note(j);
+        true
     })?;
-    let dest = file_into_library(app, id, downloaded, meta, job.replaces.clone()).await?;
-    info!("Job {id} completed: {}", dest.display());
-
-    store.update(app, id, |j| {
-        j.status = JobStatus::Completed;
-        j.output_path = Some(dest.clone());
-    })?;
-    let arrival = Arrival { path: dest, replaces: job.replaces, playlist_id: job.playlist_id, ..Default::default() };
-    crate::ingest::arrived(app, vec![arrival]).await;
-    Ok(())
+    if !filing {
+        return Err(AppError::Validation("The download was cancelled".into()));
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let dest = file_into_library(&app, id, src, meta, replaces.clone()).await?;
+        info!("Job {id} completed: {}", dest.display());
+        let playlist_id = app.state::<JobStore>().update(&app, id, |j| {
+            j.status = JobStatus::Completed;
+            j.output_path = Some(dest.clone());
+            j.playlist_id.clone()
+        })?;
+        let arrival = Arrival { path: dest, replaces, playlist_id, ..Default::default() };
+        crate::ingest::arrived(&app, vec![arrival]).await;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Io(std::io::Error::other(e)))?
 }
 
 /// Asks the peer for the file and follows the transfer until it's on disk.
@@ -444,11 +528,9 @@ async fn download(app: &AppHandle, id: Uuid, client: &Arc<SoulseekClient>, candi
             speed: t.speed,
             place_in_queue: t.place_in_queue,
         });
-        // A transfer waiting in a peer's queue reads the same for minutes:
-        // only tell the frontend (the whole job, each time) when it has moved.
-        if store.get(id)?.progress != progress {
-            store.update(app, id, |j| j.progress = progress)?;
-        }
+        // Told to the frontend only when it has moved: a transfer waiting in
+        // a peer's queue reads the same for minutes.
+        store.set_progress(app, id, progress)?;
 
         let give_up = |reason: &str| AppError::Soulseek(format!("{reason} ({username})"));
         match t.phase {
@@ -499,8 +581,9 @@ fn clear_staging(app: &AppHandle, id: Uuid) {
 }
 
 /// Tags the downloaded file and moves it to its templated library path. The
-/// file it `replaces` goes to the Trash first, so the new one can take its name.
-pub(super) async fn file_into_library(
+/// file it `replaces` goes to the Trash only once the new one is safely in
+/// the library, under a name of its own, and then the new one takes its name.
+async fn file_into_library(
     app: &AppHandle,
     id: Uuid,
     src: PathBuf,
@@ -514,13 +597,18 @@ pub(super) async fn file_into_library(
 
     let dest = library::blocking(move || {
         library::write_tags(&src, &meta, cover.as_deref(), TagMode::Replace)?;
-        if let Some(old) = replaces.filter(|old| old.is_file()) {
-            match trash::delete(&old) {
-                Ok(()) => info!("Moved replaced file to the Trash: {}", old.display()),
-                Err(e) => warn!("Couldn't move {} to the Trash: {e}", old.display()),
-            }
+        let dest = library::library_path(&settings.music_dir, &relative, &ext);
+        let Some(old) = replaces.filter(|old| old.is_file()) else {
+            return library::move_file(&src, dest);
+        };
+        let stem = dest.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let arrived = library::move_file(&src, dest.with_file_name(format!("{stem} (new).{ext}")))?;
+        match trash::delete(&old) {
+            Ok(()) => info!("Moved replaced file to the Trash: {}", old.display()),
+            Err(e) => warn!("Couldn't move {} to the Trash: {e}", old.display()),
         }
-        library::move_file(&src, library::library_path(&settings.music_dir, &relative, &ext))
+        // It is in the library either way; under its own name if this fails.
+        Ok(library::move_file(&arrived, dest).unwrap_or(arrived))
     })
     .await?;
 

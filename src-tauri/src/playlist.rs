@@ -23,7 +23,7 @@ use tracing::{info, warn};
 
 use crate::autotag::{self, TrackHint};
 use crate::error::{AppError, AppResult};
-use crate::jobs::{self, JobStore};
+use crate::jobs::{self, Fetch, JobStore};
 use crate::persistence;
 use crate::rekordbox::{Collection, Edit, PlaylistKind};
 use crate::sources::{Sources, SpotifyTrack};
@@ -44,6 +44,10 @@ pub struct PlaylistEntry {
     /// The matching search result; `None` when no confident match was found.
     pub request: Option<TrackRequest>,
     pub confidence: Option<Confidence>,
+    /// The search for it failed (no network, a service down), which isn't
+    /// finding no match: it's searched for again at the next sync.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unsearched: bool,
 }
 
 /// How one rekordbox playlist follows its Spotify playlist.
@@ -241,20 +245,20 @@ async fn read(app: &AppHandle, input: &str, rematch: bool) -> AppResult<Playlist
     let mut reused = 0;
     for (done, track) in playlist.tracks.into_iter().enumerate() {
         let _ = app.emit("playlist-progress", PlaylistProgress { done, total });
-        if let Some(known) = known.iter().find(|e| e.track == track && (e.request.is_some() || !rematch)) {
+        if let Some(known) = known.iter().find(|e| e.track == track && !e.unsearched && (e.request.is_some() || !rematch)) {
             entries.push(known.clone());
             reused += 1;
             continue;
         }
-        let (request, confidence) = match autotag::find_track(&sources, &hint(&track)).await {
-            Ok(Some((request, confidence))) => (Some(request), Some(confidence)),
-            Ok(None) => (None, None),
+        let (request, confidence, unsearched) = match autotag::find_track(&sources, &hint(&track)).await {
+            Ok(Some((request, confidence))) => (Some(request), Some(confidence), false),
+            Ok(None) => (None, None, false),
             Err(e) => {
                 warn!("Couldn't search for {}: {e}", track.title);
-                (None, None)
+                (None, None, true)
             }
         };
-        entries.push(PlaylistEntry { track, request, confidence });
+        entries.push(PlaylistEntry { track, request, confidence, unsearched });
     }
     let _ = app.emit("playlist-progress", PlaylistProgress { done: total, total });
 
@@ -412,7 +416,7 @@ async fn reconcile(app: &AppHandle, playlist: PlaylistMatch) -> AppResult<bool> 
     let store = app.state::<PlaylistStore>();
     let job_store = app.state::<JobStore>();
 
-    let jobs = job_store.list();
+    let jobs = job_store.fetches();
     let (work_app, work, list_id) = (app.clone(), playlist.clone(), rekordbox_id.clone());
     let outcome = crate::library::blocking(move || {
         let collection = work_app.state::<Collection>();
@@ -425,7 +429,7 @@ async fn reconcile(app: &AppHandle, playlist: PlaylistMatch) -> AppResult<bool> 
         let found = locate(&collection, &jobs, &work.entries);
         let plan = plan(&work, &members, &found, &jobs);
         let mut changed = false;
-        if !(plan.add.is_empty() && plan.remove.is_empty()) && !rbl_db::is_rekordbox_running() {
+        if !(plan.add.is_empty() && plan.remove.is_empty()) && !crate::rekordbox::is_running() {
             if !plan.remove.is_empty() {
                 info!("Playlist '{}': taking out {} tracks that aren't on Spotify", work.name, plan.remove.len());
                 collection.edit(Edit::RemoveTracks { playlist_id: list_id.clone(), track_ids: plan.remove })?;
@@ -461,7 +465,7 @@ async fn reconcile(app: &AppHandle, playlist: PlaylistMatch) -> AppResult<bool> 
 /// Works out what a rekordbox playlist needs to match its Spotify one.
 /// `members` are the tracks in it, and `found` the collection track each
 /// Spotify entry is, where the collection has it.
-fn plan(playlist: &PlaylistMatch, members: &[String], found: &[Option<String>], jobs: &[Job]) -> Plan {
+fn plan(playlist: &PlaylistMatch, members: &[String], found: &[Option<String>], jobs: &[Fetch]) -> Plan {
     let wanted: HashSet<&String> = found.iter().flatten().collect();
 
     let mut add: Vec<String> = Vec::new();
@@ -504,7 +508,7 @@ pub async fn linked(app: &AppHandle, rekordbox_id: String) -> AppResult<Option<L
     let Some(playlist) = app.state::<PlaylistStore>().linked_to(&rekordbox_id) else {
         return Ok(None);
     };
-    let jobs = app.state::<JobStore>().list();
+    let jobs = app.state::<JobStore>().fetches();
     let work_app = app.clone();
     crate::library::blocking(move || {
         let found = locate(&work_app.state::<Collection>(), &jobs, &playlist.entries);
@@ -532,7 +536,7 @@ pub async fn linked(app: &AppHandle, rekordbox_id: String) -> AppResult<Option<L
 
 /// The collection track each entry is, where it's there: found by where its
 /// download landed, else by title and artist.
-fn locate(collection: &Collection, jobs: &[Job], entries: &[PlaylistEntry]) -> Vec<Option<String>> {
+fn locate(collection: &Collection, jobs: &[Fetch], entries: &[PlaylistEntry]) -> Vec<Option<String>> {
     let names: Vec<(&str, &str)> = entries
         .iter()
         .map(|e| (e.track.title.as_str(), e.track.artists.first().map(String::as_str).unwrap_or_default()))
@@ -589,6 +593,7 @@ mod tests {
                 track: SpotifyTrack { title: id.to_string(), artists: vec!["a".into()], duration_secs: 200 },
                 request: Some(request(id)),
                 confidence: Some(Confidence::High),
+                unsearched: false,
             })
             .collect();
         PlaylistMatch {
@@ -618,7 +623,7 @@ mod tests {
         assert_eq!(plan.fetch.iter().map(|r| r.deezer_id).collect::<Vec<_>>(), [Some(3)]);
 
         // Fetched before: not started again. And not at all with fetching off.
-        let job = Job::new(request(3), None);
+        let job = Fetch { request: request(3), output_path: None };
         assert!(super::plan(&list, &[], &found, &[job]).fetch.is_empty());
         let manual = playlist(&[1, 2, 3], SyncSettings { auto_fetch: false, mirror: false });
         assert!(super::plan(&manual, &[], &found, &[]).fetch.is_empty());

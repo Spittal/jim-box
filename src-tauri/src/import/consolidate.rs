@@ -166,7 +166,7 @@ pub async fn consolidate_plan(app: &AppHandle) -> AppResult<ConsolidatePlan> {
             places: found.places.into_iter().map(|(place, _)| place).collect(),
             missing: found.missing,
             exported: found.exported,
-            rekordbox_running: rbl_db::is_rekordbox_running(),
+            rekordbox_running: crate::rekordbox::is_running(),
         })
     })
     .await
@@ -178,14 +178,10 @@ pub async fn consolidate_plan(app: &AppHandle) -> AppResult<ConsolidatePlan> {
 /// that all its tracks were moved out of stops being one.
 pub async fn consolidate(app: &AppHandle, sources: Vec<PathBuf>, target: PathBuf) -> AppResult<RelocateReport> {
     let library = app.state::<LibraryStore>();
-    if app.state::<JobStore>().has_running() || library.is_busy() || library.snapshot().progress.phase != LibraryPhase::Idle {
-        return Err(AppError::Validation(
-            "Wait for downloads and library work to finish before consolidating".into(),
-        ));
-    }
+    let _moving = super::Moving::begin(app)?;
     // A moved file would show as missing in rekordbox until its track could
     // be told where it went.
-    if rbl_db::is_rekordbox_running() {
+    if crate::rekordbox::is_running() {
         return Err(AppError::Validation(
             "Quit rekordbox first (and its agent in the menu bar): its library can't be updated while it's open".into(),
         ));
@@ -206,7 +202,9 @@ pub async fn consolidate(app: &AppHandle, sources: Vec<PathBuf>, target: PathBuf
     // Whatever moved is on the queue: tell the collection even after a failure.
     ingest::flush(app).await;
     library.set_progress(app, LibraryPhase::Idle, 0, 0);
-    let (report, emptied) = result?;
+    let (report, emptied, moved) = result?;
+    // Downloads follow their files, as the tracks do.
+    app.state::<JobStore>().paths_moved(app, &moved);
     if report.moved > 0 {
         // What was found for these tracks names their old paths.
         library.clear(app);
@@ -251,7 +249,7 @@ fn forget(settings: &mut Settings, emptied: &[PathBuf], target: &Path) {
 
 /// Moves the files, and says which library folders among the sources had
 /// every one of their tracks moved out.
-fn move_in(app: &AppHandle, settings: &Settings, sources: &[PathBuf], target: &Path) -> (RelocateReport, Vec<PathBuf>) {
+fn move_in(app: &AppHandle, settings: &Settings, sources: &[PathBuf], target: &Path) -> (RelocateReport, Vec<PathBuf>, Vec<(PathBuf, PathBuf)>) {
     let store = app.state::<LibraryStore>();
     let places: Vec<(Place, Vec<PathBuf>)> = survey(app.state::<Collection>().track_files(), settings)
         .places
@@ -265,6 +263,7 @@ fn move_in(app: &AppHandle, settings: &Settings, sources: &[PathBuf], target: &P
         .flat_map(|(place, files)| files.into_iter().map(move |file| (file, place.path.clone())))
         .collect();
     let mut report = RelocateReport { moved: 0, failed: Vec::new() };
+    let mut moved = Vec::new();
     let total = files.len();
     for (done, (file, place)) in files.into_iter().enumerate() {
         store.set_progress(app, LibraryPhase::Moving, done, total);
@@ -274,9 +273,10 @@ fn move_in(app: &AppHandle, settings: &Settings, sources: &[PathBuf], target: &P
                 // app stop part-way. The file is the same, so what rekordbox
                 // has for its title, artist and the rest stays.
                 let arrival = Arrival { path: dest, replaces: Some(file.clone()), moved_only: true, ..Default::default() };
-                ingest::queue(app, vec![arrival]);
+                ingest::queue(app, vec![arrival.clone()]);
                 tidy(&file, &place);
                 report.moved += 1;
+                moved.push((file, arrival.path));
             }
             Err(e) => {
                 // Still has a track in it: it stays a library folder.
@@ -285,7 +285,7 @@ fn move_in(app: &AppHandle, settings: &Settings, sources: &[PathBuf], target: &P
             }
         }
     }
-    (report, emptied)
+    (report, emptied, moved)
 }
 
 #[cfg(test)]

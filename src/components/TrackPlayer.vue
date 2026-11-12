@@ -877,15 +877,26 @@ watch(
   { immediate: true },
 );
 // An analysis made elsewhere (rekordbox, then Refresh) shows as a new BPM on the row.
-watch([() => props.track?.id, () => props.track?.bpm, () => props.track?.analysed], ([id], [wasId]) => {
-  // Another track has another tempo too, and is loaded as a whole above.
-  if (id === wasId) loadPreparation();
-});
-// Another of the analysis's grids tried from the track's details.
+watch(
+  [() => props.track?.id, () => props.track?.bpm, () => props.track?.analysed],
+  ([id, bpm, analysed], [wasId, , wasAnalysed]) => {
+    // Another track has another tempo too, and is loaded as a whole above.
+    if (id !== wasId) return;
+    // A first analysis brings waveforms with it.
+    if (analysed !== wasAnalysed) return void loadPreparation();
+    // A tempo set here is on the row because it was written from here: it's showing already.
+    const shown = prep.value?.bpm;
+    if (bpm != null && shown != null && Math.abs(bpm - shown) < 0.005) return;
+    // The waveforms are the same audio's, whatever its grid: only the grid is read.
+    loadPreparation(false);
+  },
+);
+// Another of the analysis's grids tried from the track's details. (A grid
+// changed by hand was changed here, and is read once it's written.)
 watch(
   () => [props.track?.id, props.track?.grid?.using] as const,
   ([id, using], [wasId, wasUsing]) => {
-    if (id && id === wasId && using !== wasUsing && !pending.value) loadPreparation(false);
+    if (id && id === wasId && using !== wasUsing && using !== 'hand' && !pending.value) loadPreparation(false);
   },
 );
 // One made here is done when the track leaves the queue's running list.

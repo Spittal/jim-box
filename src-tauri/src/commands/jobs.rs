@@ -39,12 +39,8 @@ pub fn retry_job(app: AppHandle, store: State<'_, JobStore>, id: Uuid) -> AppRes
 /// Retries every job that found no source.
 #[tauri::command]
 pub fn retry_not_found_jobs(app: AppHandle, store: State<'_, JobStore>) -> AppResult<()> {
-    let ids: Vec<Uuid> = store
-        .list()
-        .into_iter()
-        .filter(|j| j.status == JobStatus::NotFound && !store.is_running(j.id))
-        .map(|j| j.id)
-        .collect();
+    let ids: Vec<Uuid> = store.read(|jobs| jobs.iter().filter(|j| j.status == JobStatus::NotFound).map(|j| j.id).collect());
+    let ids: Vec<Uuid> = ids.into_iter().filter(|&id| !store.is_running(id)).collect();
     for id in ids {
         store.update(&app, id, |j| j.reset())?;
         jobs::start(&app, id)?;

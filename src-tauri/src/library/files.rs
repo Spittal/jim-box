@@ -31,8 +31,12 @@ pub fn walk_files(root: &Path) -> AppResult<Vec<PathBuf>> {
             if is_hidden(&path) {
                 continue;
             }
+            // A linked folder isn't gone into: one linking back up would never end.
+            let linked = path.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink());
             if path.is_dir() {
-                stack.push(path);
+                if !linked {
+                    stack.push(path);
+                }
             } else {
                 files.push(path);
             }
@@ -40,6 +44,31 @@ pub fn walk_files(root: &Path) -> AppResult<Vec<PathBuf>> {
     }
     files.sort();
     Ok(files)
+}
+
+/// Tells one temporary file from another written at the same moment.
+static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Replaces a file's contents so that it holds the old ones or the new, never
+/// part of either: written beside it, flushed to disk, then renamed over it.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{}-{n}.tmp", std::process::id()));
+    let tmp = path.with_file_name(name);
+    let written = std::fs::File::create(&tmp).and_then(|mut file| {
+        file.write_all(bytes)?;
+        file.sync_all()
+    });
+    let done = written.and_then(|()| std::fs::rename(&tmp, path));
+    if done.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    done
 }
 
 /// `path`, or `path` with " (2)", " (3)"… before the extension if it's taken.
@@ -55,21 +84,47 @@ pub fn unique_destination(path: PathBuf) -> PathBuf {
         .expect("unbounded range always yields a free name")
 }
 
+/// Whether two paths name one file, as paths that differ only in case do
+/// on the volumes macOS and Windows use.
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
 /// Moves a file, creating parent folders. Never overwrites: returns the
 /// actual destination, which may carry a " (n)" suffix. Works across volumes.
 pub fn move_file(src: &Path, dest: PathBuf) -> AppResult<PathBuf> {
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let dest = unique_destination(dest);
-    if std::fs::rename(src, &dest).is_err() {
-        // Different volume: copy, then remove the original only once the copy succeeded.
-        if let Err(e) = std::fs::copy(src, &dest) {
-            // Not half a file left where the whole one should be.
-            let _ = std::fs::remove_file(&dest);
+    if src != dest && same_file(src, &dest) {
+        // Only the name's case changes. The name is "taken", by the file
+        // itself: go by way of another, as a rename to it may do nothing.
+        let stem = dest.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let ext = dest.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+        let between = unique_destination(dest.with_file_name(format!("{stem} (renaming){ext}")));
+        std::fs::rename(src, &between)?;
+        if let Err(e) = std::fs::rename(&between, &dest) {
+            let _ = std::fs::rename(&between, src);
             return Err(e.into());
         }
-        std::fs::remove_file(src)?;
+        return Ok(dest);
+    }
+    let dest = unique_destination(dest);
+    match std::fs::rename(src, &dest) {
+        Ok(()) => {}
+        // Another volume: copy, then remove the original only once the copy is whole and on disk.
+        Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {
+            let copied = std::fs::copy(src, &dest).and_then(|_| std::fs::OpenOptions::new().write(true).open(&dest)?.sync_all());
+            if let Err(e) = copied.and_then(|()| std::fs::remove_file(src)) {
+                // Not half a file where the whole one should be, nor the file in two places.
+                let _ = std::fs::remove_file(&dest);
+                return Err(e.into());
+            }
+        }
+        Err(e) => return Err(e.into()),
     }
     Ok(dest)
 }

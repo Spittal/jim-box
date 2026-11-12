@@ -117,8 +117,9 @@ pub async fn redownload(app: &AppHandle, track_id: String) -> AppResult<Job> {
         .path_of(&track_id)
         .ok_or_else(|| AppError::Validation("That track is no longer in the collection".into()))?;
     let jobs_store = app.state::<JobStore>();
-    if let Some(job) = jobs_store.list().iter().find(|j| j.replaces.as_ref() == Some(&path) && !j.status.is_finished()) {
-        return Ok(job.clone());
+    let replacing = jobs_store.read(|jobs| jobs.iter().find(|j| j.replaces.as_ref() == Some(&path) && !j.status.is_finished()).cloned());
+    if let Some(job) = replacing {
+        return Ok(job);
     }
 
     // What identifying found, if it has been; else what the file says.

@@ -8,7 +8,7 @@ use tauri::{AppHandle, Manager};
 use tracing::info;
 use uuid::Uuid;
 
-use super::pipeline::{file_into_library, finish};
+use super::pipeline::{complete, finish};
 use super::ranking::{version_context, MAX_LENGTH_DIFF_SECS, VERSION_WORDS};
 use super::JobStore;
 use crate::autotag;
@@ -114,14 +114,9 @@ async fn run(app: &AppHandle, id: Uuid) -> AppResult<()> {
     std::fs::create_dir_all(&staging)?;
     let downloaded = ytdlp
         .download(&best.id, &staging, |p| {
-            let _ = store.update(app, id, |j| {
-                j.progress = Some(TransferProgress {
-                    bytes_transferred: p.bytes,
-                    size: p.total,
-                    speed: p.speed,
-                    place_in_queue: None,
-                })
-            });
+            let progress =
+                TransferProgress { bytes_transferred: p.bytes, size: p.total, speed: p.speed, place_in_queue: None };
+            let _ = store.set_progress(app, id, Some(progress));
         })
         .await;
     let downloaded = match downloaded {
@@ -133,25 +128,15 @@ async fn run(app: &AppHandle, id: Uuid) -> AppResult<()> {
     };
     info!("Job {id}: got format {} at {:?} kbps", downloaded.format_id, downloaded.kbps);
 
-    store.update(app, id, |j| {
-        j.status = JobStatus::Tagging;
-        j.progress = None;
+    let kbps = downloaded.kbps;
+    let done = complete(app, id, downloaded.path, meta, None, move |j| {
         if let Some(yt) = j.youtube.as_mut() {
-            yt.bit_rate = downloaded.kbps;
+            yt.bit_rate = kbps;
         }
-    })?;
-    let dest = file_into_library(app, id, downloaded.path, meta, None).await;
+    })
+    .await;
     let _ = std::fs::remove_dir_all(&staging);
-    let dest = dest?;
-    info!("Job {id} completed from YouTube Music: {}", dest.display());
-    let playlist_id = store.update(app, id, |j| {
-        j.status = JobStatus::Completed;
-        j.output_path = Some(dest.clone());
-        j.playlist_id.clone()
-    })?;
-    let arrival = crate::rekordbox::Arrival { path: dest, playlist_id, ..Default::default() };
-    crate::ingest::arrived(app, vec![arrival]).await;
-    Ok(())
+    done
 }
 
 fn staging_dir(app: &AppHandle, id: Uuid) -> AppResult<PathBuf> {

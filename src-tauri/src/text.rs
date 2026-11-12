@@ -2,10 +2,27 @@
 
 use deunicode::deunicode;
 
-/// Parenthetical/bracketed annotations that don't change which recording a title refers to.
-const NOISE_MARKERS: [&str; 8] = [
-    "feat", "ft.", "with ", "remaster", "explicit", "mono", "stereo", "bonus",
-];
+/// Words that make a parenthetical/bracketed annotation one that doesn't
+/// change which recording a title refers to: "(Mono)", "[Bonus Track]".
+/// Whole words: "(Monolink Remix)" is a remix by Monolink.
+const NOISE_WORDS: [&str; 4] = ["explicit", "mono", "stereo", "bonus"];
+/// An annotation that starts with one of these names who else is on the track.
+const CREDIT_WORDS: [&str; 4] = ["feat", "ft", "featuring", "with"];
+/// Words that make an annotation a different recording whatever else it says:
+/// "(Stereo Love Edit)" is an edit.
+const DISTINCT_WORDS: [&str; 11] =
+    ["remix", "remixed", "edit", "rerub", "dub", "rework", "vip", "refix", "flip", "bootleg", "mashup"];
+
+/// Whether an annotation, without its brackets, is noise.
+fn is_noise(annotation: &str) -> bool {
+    let words = tokens(annotation);
+    let Some(first) = words.first() else { return false };
+    if CREDIT_WORDS.contains(&first.as_str()) {
+        return true;
+    }
+    let noisy = words.iter().any(|w| NOISE_WORDS.contains(&w.as_str()) || w.starts_with("remaster"));
+    noisy && !words.iter().any(|w| DISTINCT_WORDS.contains(&w.as_str()))
+}
 
 /// ASCII-folded, lowercased, punctuation replaced by single spaces.
 pub fn normalize(s: &str) -> String {
@@ -33,10 +50,18 @@ pub fn strip_noise(title: &str) -> String {
     while let Some(start) = rest.find(['(', '[']) {
         let close = if rest[start..].starts_with('(') { ')' } else { ']' };
         let Some(len) = rest[start..].find(close) else { break };
-        let inner = rest[start + 1..start + len].to_lowercase();
+        let inner = &rest[start + 1..start + len];
         out.push_str(&rest[..start]);
-        if !NOISE_MARKERS.iter().any(|m| inner.contains(m)) {
-            out.push_str(&rest[start..=start + len]);
+        if !is_noise(inner) {
+            // "(Club Mix feat. Someone)" is still the club mix.
+            let kept = cut_at_first(inner, &FEATURING);
+            if kept.len() == inner.trim().len() || kept.is_empty() {
+                out.push_str(&rest[start..=start + len]);
+            } else {
+                out.push_str(&rest[start..=start]);
+                out.push_str(kept);
+                out.push(close);
+            }
         }
         rest = &rest[start + len + 1..];
     }
@@ -44,7 +69,7 @@ pub fn strip_noise(title: &str) -> String {
 
     // "Song - Remastered 2009" style suffixes.
     if let Some((head, tail)) = out.rsplit_once(" - ") {
-        if NOISE_MARKERS.iter().any(|m| tail.to_lowercase().contains(m)) {
+        if is_noise(tail) {
             return head.trim().to_string();
         }
     }
@@ -176,5 +201,19 @@ mod tests {
         assert_eq!(strip_noise("One More Time (Radio Edit)"), "One More Time (Radio Edit)");
         assert_eq!(strip_noise("Weird Fishes/Arpeggi"), "Weird Fishes/Arpeggi");
         assert_eq!(strip_noise("Phantasm feat. Saori Koseki"), "Phantasm");
+        assert_eq!(strip_noise("Song (with Someone)"), "Song");
+        assert_eq!(strip_noise("Song (Mono Version)"), "Song");
+        assert_eq!(strip_noise("Song [Bonus Track]"), "Song");
+    }
+
+    #[test]
+    fn keeps_versions_that_only_look_like_noise() {
+        assert_eq!(strip_noise("Song (Monolink Remix)"), "Song (Monolink Remix)");
+        assert_eq!(strip_noise("Song (Stereo Love Edit)"), "Song (Stereo Love Edit)");
+        assert_eq!(strip_noise("Song (Defeat Mix)"), "Song (Defeat Mix)");
+        assert_eq!(strip_noise("Song (Dancing With Myself Mix)"), "Song (Dancing With Myself Mix)");
+        assert_eq!(strip_noise("Song - Monolink Remix"), "Song - Monolink Remix");
+        assert_eq!(strip_noise("Song (Club Mix feat. Someone)"), "Song (Club Mix)");
+        assert_eq!(version_words("Song (Monolink Remix)"), vec!["monolink", "remix"]);
     }
 }

@@ -64,20 +64,12 @@ export const useSearchStore = defineStore('search', () => {
     }
   }
 
-  /** Shows a message in the panel in place of results. */
-  function fail(message: string) {
-    latest++;
-    loading.value = false;
-    open.value = true;
-    error.value = message;
-  }
-
   function close() {
     open.value = false;
     error.value = null;
   }
 
-  return { open, results, owned, loading, error, asked, searchedFor, find, run, refreshOwned, fail, close };
+  return { open, results, owned, loading, error, asked, searchedFor, find, run, refreshOwned, close };
 });
 
 // Swap in new actions on hot reload instead of keeping the old store.

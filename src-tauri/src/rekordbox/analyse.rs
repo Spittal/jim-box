@@ -95,7 +95,11 @@ fn compute(path: &Path, follow: grid::Follow, hint: &grid::Hint) -> AppResult<Co
         let model = scope.spawn(|| beat_this::track(&head, rate, MODEL_THREADS));
         let analysis = rbl_analysis::analyse_with(&head, rate, options);
         // Without the model the grid is the signal's alone, and says so.
-        (analysis, model.join().unwrap_or_default())
+        let heard = model.join().unwrap_or_else(|_| {
+            tracing::error!("The beat tracker failed on {}; its grid is the signal's alone", path.display());
+            Default::default()
+        });
+        (analysis, heard)
     });
     let attacks = rbl_analysis::attack::AttackMap::new(&head, rate, options.attacks);
     let mut decided = grid::decide(&analysis.tempo, &heard, &attacks, &head, rate, follow, hint.tempo());
@@ -165,7 +169,9 @@ impl Collection {
     /// Its cues are kept. Blocking, for seconds.
     #[cfg(test)]
     pub fn analyse(&self, track_id: &str, follow_tempo: bool) -> AppResult<Analysed> {
-        self.analyse_with(track_id, follow_tempo, &grid::Hint::default())
+        let analysed = self.analyse_with(track_id, follow_tempo, &grid::Hint::default());
+        self.refresh()?;
+        analysed
     }
 
     /// [`Self::analyse`], told what the user knows of the track: roughly
@@ -178,7 +184,7 @@ impl Collection {
             .ok_or_else(|| AppError::Rekordbox("That track is no longer in the collection".into()))?
             as usize;
         // Before the decode, which is seconds of work for the same refusal.
-        if loaded.location.is_real_install && rbl_db::is_rekordbox_running() {
+        if loaded.location.is_real_install && crate::rekordbox::is_running() {
             return Err(AppError::Rekordbox("rekordbox is running. Quit it before analysing.".into()));
         }
         let path = PathBuf::from(super::local_path(loaded.index.folder_path.get(row)));
@@ -188,8 +194,10 @@ impl Collection {
         drop(loaded);
 
         let computed = compute(&path, grid::Follow::from(follow_tempo, hint), hint)?;
-        self.write(|writer, index| save(writer, index, track_id, &path, &computed))?;
+        // Read again by whoever asked, once for however many tracks (see `refresh`).
+        self.write_deferred(|writer, index| save(writer, index, track_id, &path, &computed))?;
         self.grids.analysed(track_id, &computed.decided, computed.using, *hint);
+        self.forget_view();
         Ok(Analysed {
             track_id: track_id.to_owned(),
             bpm: f64::from(computed.bpm_x100) / 100.0,
@@ -331,14 +339,7 @@ fn refresh_file_info(
 /// Writes a file beside its final name and renames it into place, so a
 /// reader never sees half of one.
 pub(super) fn replace_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let mut temporary = path.as_os_str().to_owned();
-    temporary.push(".tmp");
-    let temporary = PathBuf::from(temporary);
-    std::fs::write(&temporary, bytes)?;
-    std::fs::rename(&temporary, path)
+    crate::library::write_atomic(path, bytes)
 }
 
 #[cfg(test)]

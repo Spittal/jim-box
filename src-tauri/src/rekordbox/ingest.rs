@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{rekordbox_err, Collection};
 use crate::error::{AppError, AppResult};
-use crate::text::normalize;
+use crate::text::{normalize, strip_noise};
 
 /// How deep, and through how many entries, an import walks the folders it
 /// is given: enough for any music folder, not for a whole disk.
@@ -123,28 +123,34 @@ impl Collection {
     }
 
     /// For each (title, artist), the track with that title and artist,
-    /// compared loosely (case, accents and punctuation aside). One pass over
-    /// the collection.
+    /// compared loosely (case, accents and punctuation aside). Where no
+    /// title is the same, one that differs only by noise is taken: "Song
+    /// (feat. X)" for "Song", "Song - 2011 Remaster" for "Song". Two passes
+    /// over the collection at most.
     pub fn find_tracks(&self, wanted: &[(&str, &str)]) -> Vec<Option<String>> {
         let mut found = vec![None; wanted.len()];
         let Ok(loaded) = self.loaded() else { return found };
         let index = &loaded.index;
-        let wanted: Vec<(String, String)> = wanted.iter().map(|(t, a)| (normalize(t), normalize(a))).collect();
-        let mut left = wanted.iter().filter(|(title, _)| !title.is_empty()).count();
-        for row in 0..index.len() {
-            if left == 0 {
-                break;
-            }
-            let title = normalize(index.title.get(row));
-            let mut theirs: Option<String> = None;
-            for (at, (wanted_title, artist)) in wanted.iter().enumerate() {
-                if found[at].is_some() || wanted_title.is_empty() || *wanted_title != title {
-                    continue;
+        let artists: Vec<String> = wanted.iter().map(|(_, artist)| normalize(artist)).collect();
+        for loose in [false, true] {
+            let fold = |title: &str| if loose { normalize(&strip_noise(title)) } else { normalize(title) };
+            let titles: Vec<String> = wanted.iter().map(|(title, _)| fold(title)).collect();
+            let mut left = titles.iter().zip(&found).filter(|(title, found)| found.is_none() && !title.is_empty()).count();
+            for row in 0..index.len() {
+                if left == 0 {
+                    break;
                 }
-                let theirs = theirs.get_or_insert_with(|| normalize(index.artist_name(row as u32)));
-                if artist.is_empty() || theirs == artist || theirs.contains(artist.as_str()) || artist.contains(theirs.as_str()) {
-                    found[at] = Some(index.ids[row].to_string());
-                    left -= 1;
+                let title = fold(index.title.get(row));
+                let mut theirs: Option<String> = None;
+                for (at, (wanted_title, artist)) in titles.iter().zip(&artists).enumerate() {
+                    if found[at].is_some() || wanted_title.is_empty() || *wanted_title != title {
+                        continue;
+                    }
+                    let theirs = theirs.get_or_insert_with(|| normalize(index.artist_name(row as u32)));
+                    if artist.is_empty() || theirs == artist || theirs.contains(artist.as_str()) || artist.contains(theirs.as_str()) {
+                        found[at] = Some(index.ids[row].to_string());
+                        left -= 1;
+                    }
                 }
             }
         }

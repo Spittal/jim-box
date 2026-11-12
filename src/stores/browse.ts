@@ -11,6 +11,8 @@ import type { MissingEntry } from '@/types/playlist';
 
 /** Tracks fetched per request as the list scrolls. */
 const PAGE = 200;
+/** Pages held at once: the ones furthest from what's in view are let go. */
+const MAX_PAGES = 40;
 
 /** A track that isn't in the collection yet, listed above the ones that are. */
 export interface PendingRow {
@@ -143,6 +145,16 @@ export const useBrowseStore = defineStore('browse', () => {
       const next = new Map(stale ? [] : pages.value);
       stale = false;
       next.set(page, result.rows);
+      // Scrolled through, a big library would otherwise be held whole.
+      if (next.size > MAX_PAGES) {
+        const inView = Math.floor(visible.first / PAGE);
+        const furthest = [...next.keys()].sort((a, b) => Math.abs(b - inView) - Math.abs(a - inView));
+        for (const far of furthest.slice(0, next.size - MAX_PAGES)) {
+          if (far === page) continue;
+          next.delete(far);
+          requested.delete(far);
+        }
+      }
       pages.value = next;
       listError.value = null;
     } catch (e) {
@@ -194,38 +206,40 @@ export const useBrowseStore = defineStore('browse', () => {
   }
 
   /**
+   * Where each fetched track is, by id. Looking one up is then a step, not a
+   * walk through every row held: with thousands selected, each is looked up.
+   */
+  const places = computed(() => {
+    const found = new Map<string, { page: number; at: number }>();
+    for (const [page, rows] of pages.value) rows.forEach((row, at) => found.set(row.id, { page, at }));
+    return found;
+  });
+
+  /**
    * Shows a change to a track at once, ahead of the library being written
    * and read again, which then replaces it with what was saved.
    */
   function patchTrack(id: string, patch: Partial<CollectionTrack>) {
-    for (const [page, rows] of pages.value) {
-      const at = rows.findIndex((r) => r.id === id);
-      if (at === -1) continue;
-      const patched = rows.slice();
-      patched[at] = { ...rows[at], ...patch };
-      const next = new Map(pages.value);
-      next.set(page, patched);
-      pages.value = next;
-      return;
-    }
+    const place = places.value.get(id);
+    const rows = place && pages.value.get(place.page);
+    if (!place || !rows) return;
+    const patched = rows.slice();
+    patched[place.at] = { ...rows[place.at], ...patch };
+    const next = new Map(pages.value);
+    next.set(place.page, patched);
+    pages.value = next;
   }
 
   /** A track among the rows fetched so far. */
   function loadedTrack(id: string): CollectionTrack | null {
-    for (const rows of pages.value.values()) {
-      const found = rows.find((r) => r.id === id);
-      if (found) return found;
-    }
-    return null;
+    const place = places.value.get(id);
+    return (place && pages.value.get(place.page)?.[place.at]) ?? null;
   }
 
   /** Where a track is among the rows fetched so far. */
   function loadedIndex(id: string): number | null {
-    for (const [page, rows] of pages.value) {
-      const at = rows.findIndex((r) => r.id === id);
-      if (at !== -1) return page * PAGE + at;
-    }
-    return null;
+    const place = places.value.get(id);
+    return place ? place.page * PAGE + place.at : null;
   }
 
   /** The ids of rows `from` to `to` of the list, both included, fetched or not. */
@@ -242,14 +256,7 @@ export const useBrowseStore = defineStore('browse', () => {
   /** The track under this one in the list being shown, or null if it's the last or not in it. */
   async function trackAfter(id: string): Promise<CollectionTrack | null> {
     const asked = query.value;
-    let index = -1;
-    if (!stale) {
-      for (const [page, rows] of pages.value) {
-        const at = rows.findIndex((r) => r.id === id);
-        if (at !== -1) index = page * PAGE + at;
-        if (at !== -1) break;
-      }
-    }
+    let index = stale ? -1 : (loadedIndex(id) ?? -1);
     // Scrolled out of the rows held, or the list has changed since.
     if (index === -1) index = (await collection.trackIds(asked)).indexOf(id);
     if (index === -1) return null;
@@ -394,7 +401,6 @@ export const useBrowseStore = defineStore('browse', () => {
   );
 
   return {
-    PAGE,
     selected,
     search,
     filter,

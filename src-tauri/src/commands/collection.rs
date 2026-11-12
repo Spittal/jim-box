@@ -44,32 +44,29 @@ pub async fn open_collection(app: AppHandle) -> AppResult<CollectionState> {
 
 /// The collection as last read, without reading it again.
 #[tauri::command]
-pub fn collection_state(app: AppHandle) -> AppResult<CollectionState> {
-    state(&app)
+pub async fn collection_state(app: AppHandle) -> AppResult<CollectionState> {
+    library::blocking(move || state(&app)).await
 }
 
 /// A page of a track list, sorted and searched in the backend.
+///
+/// Off the main thread, as the rest here are: the first page of a list sorts all of it.
 #[tauri::command]
-pub fn collection_tracks(
-    collection: tauri::State<'_, Collection>,
-    query: TrackQuery,
-    offset: usize,
-    limit: usize,
-) -> AppResult<TrackPage> {
-    collection.tracks(&query, offset, limit.min(1000))
+pub async fn collection_tracks(app: AppHandle, query: TrackQuery, offset: usize, limit: usize) -> AppResult<TrackPage> {
+    library::blocking(move || app.state::<Collection>().tracks(&query, offset, limit.min(1000))).await
 }
 
 /// The id of every track in a list, for selecting them all.
 #[tauri::command]
-pub fn collection_track_ids(collection: tauri::State<'_, Collection>, query: TrackQuery) -> AppResult<Vec<String>> {
-    collection.track_ids(&query)
+pub async fn collection_track_ids(app: AppHandle, query: TrackQuery) -> AppResult<Vec<String>> {
+    library::blocking(move || app.state::<Collection>().track_ids(&query)).await
 }
 
 /// The artists, albums or genres already in the collection, the most used
 /// first, to offer as one is typed.
 #[tauri::command]
-pub fn collection_field_values(collection: tauri::State<'_, Collection>, field: String) -> AppResult<Vec<String>> {
-    collection.field_values(&field)
+pub async fn collection_field_values(app: AppHandle, field: String) -> AppResult<Vec<String>> {
+    library::blocking(move || app.state::<Collection>().field_values(&field)).await
 }
 
 /// A track to look for in the collection by name.
@@ -99,8 +96,12 @@ pub async fn edit_collection(app: AppHandle, edit: Edit) -> AppResult<EditOutcom
 /// Marks tracks' beat grids as reviewed, or takes that back. Only the
 /// app's own note of it changes, so rekordbox may be open.
 #[tauri::command]
-pub fn review_grids(app: AppHandle, track_ids: Vec<String>, reviewed: bool) {
-    app.state::<Collection>().review_grids(&track_ids, reviewed);
+pub async fn review_grids(app: AppHandle, track_ids: Vec<String>, reviewed: bool) -> AppResult<()> {
+    library::blocking(move || {
+        app.state::<Collection>().review_grids(&track_ids, reviewed);
+        Ok(())
+    })
+    .await
 }
 
 /// Adds files, and the music in folders, to the collection; and to a
@@ -135,7 +136,7 @@ pub async fn analyse_tracks(
     if hint.is_some_and(|hint| hint.bpm.is_some() && hint.tempo().is_none()) {
         return Err(AppError::Validation("A tempo is between 40 and 250 BPM".into()));
     }
-    if rbl_db::is_rekordbox_running() {
+    if crate::rekordbox::is_running() {
         return Err(AppError::Rekordbox("rekordbox is running. Quit it before analysing.".into()));
     }
     let Some(track_ids) = track_ids else {

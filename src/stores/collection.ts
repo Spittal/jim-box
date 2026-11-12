@@ -2,6 +2,7 @@ import { acceptHMRUpdate, defineStore } from 'pinia';
 import { ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type {
+  AnalysisEvent,
   AnalysisProgress,
   CollectionEdit,
   CollectionState,
@@ -53,16 +54,32 @@ export const useCollectionStore = defineStore('collection', () => {
     }
   }
 
+  /** Counts `collection-changed` events, so an earlier one's late answer is dropped. */
+  let changes = 0;
+
   /** Applies a `collection-changed` event: the backend changed the collection. */
   async function changed(now: Waiting) {
     waiting.value = now;
     // Nothing to refresh until the collection has been opened.
     if (!status.value) return;
+    const mine = ++changes;
     try {
-      applyState(await invoke<CollectionState>('collection_state'));
+      const state = await invoke<CollectionState>('collection_state');
+      // A later change is being read, and has all this one does.
+      if (mine === changes) applyState(state);
     } catch {
       // The next open reports it.
     }
+  }
+
+  /**
+   * Applies an `analysis-progress` event. One that only says the queue moved
+   * on doesn't list what waits: that is what waited, less what has started.
+   */
+  function analysisMoved(now: AnalysisEvent) {
+    const started = new Set(now.running);
+    const queued = now.queued ?? (analysis.value?.queued ?? []).filter((id) => !started.has(id));
+    analysis.value = { ...now, queued };
   }
 
   const tracks = (query: TrackQuery, offset: number, limit: number) =>
@@ -210,6 +227,7 @@ export const useCollectionStore = defineStore('collection', () => {
     generation,
     open,
     changed,
+    analysisMoved,
     tracks,
     trackIds,
     namesOf,

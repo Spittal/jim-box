@@ -54,7 +54,6 @@ pub fn run() {
         )
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_store::Builder::default().build())
         .on_menu_event(menu::handle_event)
         // Closing the window hides it, as macOS apps that work in the background
         // do: downloads and Soulseek sharing carry on, and clicking the Dock
@@ -155,6 +154,10 @@ pub fn run() {
 
     app.run(|handle, event| match event {
         RunEvent::Exit => {
+            // Changes to the downloads are saved a moment after they're made.
+            if let Some(jobs) = handle.try_state::<jobs::JobStore>() {
+                jobs.save_now(handle);
+            }
             tauri::async_runtime::block_on(handle.state::<Soulseek>().stop(handle));
         }
         #[cfg(target_os = "macos")]

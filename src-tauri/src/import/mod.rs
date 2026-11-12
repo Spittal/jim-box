@@ -19,6 +19,7 @@ pub use relocate::{change_music_dir, RelocateReport};
 
 use serde::Serialize;
 use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::async_runtime::JoinHandle;
 use tauri::{AppHandle, Emitter};
@@ -41,6 +42,37 @@ pub struct LibraryStore {
     items: Mutex<Vec<LibraryItem>>,
     progress: Mutex<LibraryProgress>,
     task: Mutex<Option<JoinHandle<()>>>,
+    /// Files are being changed: the task is asked to stop, not stopped where it is.
+    applying: AtomicBool,
+    stopping: AtomicBool,
+    /// The library's files are being moved (see [`Moving`]).
+    moving: AtomicBool,
+}
+
+/// Held while the music folder is moved or consolidated: nothing else that
+/// touches the library's files starts until it's dropped.
+pub struct Moving(AppHandle);
+
+impl Moving {
+    /// Refused while downloads, identifying, applying or another move are under way.
+    fn begin(app: &AppHandle) -> AppResult<Self> {
+        let store = tauri::Manager::state::<LibraryStore>(app);
+        let busy = || AppError::Validation("Wait for downloads and library work to finish first".into());
+        if store.moving.swap(true, Ordering::SeqCst) {
+            return Err(busy());
+        }
+        let moving = Self(app.clone());
+        if store.task_running() || tauri::Manager::state::<crate::jobs::JobStore>(app).has_running() {
+            return Err(busy());
+        }
+        Ok(moving)
+    }
+}
+
+impl Drop for Moving {
+    fn drop(&mut self) {
+        tauri::Manager::state::<LibraryStore>(&self.0).moving.store(false, Ordering::SeqCst);
+    }
 }
 
 impl LibraryStore {
@@ -49,6 +81,9 @@ impl LibraryStore {
             items: Mutex::new(Vec::new()),
             progress: Mutex::new(LibraryProgress::IDLE),
             task: Mutex::new(None),
+            applying: AtomicBool::new(false),
+            stopping: AtomicBool::new(false),
+            moving: AtomicBool::new(false),
         }
     }
 
@@ -130,7 +165,7 @@ impl LibraryStore {
         let _ = app.emit("library-progress", progress);
     }
 
-    pub fn is_busy(&self) -> bool {
+    fn task_running(&self) -> bool {
         self.task
             .lock()
             .expect("task lock poisoned")
@@ -144,7 +179,7 @@ impl LibraryStore {
         F: Future<Output = ()> + Send + 'static,
     {
         let mut task = self.task.lock().expect("task lock poisoned");
-        if task.as_ref().is_some_and(|t| !t.inner().is_finished()) {
+        if self.moving.load(Ordering::SeqCst) || task.as_ref().is_some_and(|t| !t.inner().is_finished()) {
             return Err(AppError::Validation("Still working on the last batch; wait for it to finish".into()));
         }
         let app = app.clone();
@@ -156,12 +191,33 @@ impl LibraryStore {
         Ok(())
     }
 
-    /// Stops identifying or applying. Files already changed stay changed.
+    /// Marks the running task as one that changes files, or as done with them.
+    fn set_applying(&self, applying: bool) {
+        self.stopping.store(false, Ordering::SeqCst);
+        self.applying.store(applying, Ordering::SeqCst);
+    }
+
+    /// Whether the task changing files has been asked to stop before its next one.
+    fn stop_requested(&self) -> bool {
+        self.stopping.load(Ordering::SeqCst)
+    }
+
+    /// Stops identifying or applying. Files already changed stay changed,
+    /// and the one being changed is finished first: stopped half-way it
+    /// would be moved without the collection knowing where.
     pub fn cancel(&self, app: &AppHandle) {
+        // A move isn't a task to stop: it runs to its end.
+        if self.moving.load(Ordering::SeqCst) {
+            return;
+        }
+        if self.applying.load(Ordering::SeqCst) && self.task_running() {
+            self.stopping.store(true, Ordering::SeqCst);
+            return;
+        }
         if let Some(task) = self.task.lock().expect("task lock poisoned").take() {
             task.abort();
         }
-        // Whatever was mid-flight goes back to what it was waiting as.
+        // Whatever was waiting its turn goes back to what it was.
         let stuck: Vec<Uuid> = self
             .items
             .lock()

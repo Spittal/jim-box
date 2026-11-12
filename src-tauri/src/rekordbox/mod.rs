@@ -246,11 +246,34 @@ impl Loaded {
     }
 }
 
+/// Whether rekordbox, or its agent, is running. Finding out lists every
+/// process on the machine, and it's asked before most things here: the
+/// answer is kept for a second.
+pub fn is_running() -> bool {
+    static LAST: Mutex<Option<(std::time::Instant, bool)>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    match *last {
+        Some((at, running)) if at.elapsed() < std::time::Duration::from_secs(1) => running,
+        _ => {
+            let running = rbl_db::is_rekordbox_running();
+            *last = Some((std::time::Instant::now(), running));
+            running
+        }
+    }
+}
+
 /// The collection as last read from `master.db`, and the list being browsed.
 pub struct Collection {
     loaded: RwLock<Option<Arc<Loaded>>>,
     /// The last list opened, so scrolling it doesn't sort it again per page.
-    view: Mutex<Option<(TrackQuery, Arc<Listing>)>>,
+    /// With it, which reading of the library it was made from (the address
+    /// of its `Loaded`): a list made from an earlier one names other rows.
+    view: Mutex<Option<(usize, TrackQuery, Arc<Listing>)>>,
+    /// The library on disk is ahead of what was read: changes were made
+    /// without reading it again after each (see `write_deferred`).
+    stale: AtomicBool,
+    /// The small waveforms made for the track list, by analysis path and form.
+    wave_previews: Mutex<HashMap<(String, u8), prepare::WavePreview>>,
     /// The `master.db` to read; None for the one rekordbox is set to use.
     master_db: Option<PathBuf>,
     /// Where `master.db` is copied before the first change of a session.
@@ -271,6 +294,8 @@ impl Collection {
         Self {
             loaded: RwLock::new(None),
             view: Mutex::new(None),
+            stale: AtomicBool::new(false),
+            wave_previews: Mutex::default(),
             master_db: None,
             backup_dir,
             backed_up: AtomicBool::new(false),
@@ -289,8 +314,24 @@ impl Collection {
     /// Nothing of rekordbox's changes.
     pub fn review_grids(&self, track_ids: &[String], reviewed: bool) {
         self.grids.review(track_ids, reviewed);
-        // A list filtered or sorted by it is out of date.
+        self.forget_view();
+    }
+
+    /// Drops the list held: one filtered or sorted by the grids' states is
+    /// out of date once they change.
+    pub(self) fn forget_view(&self) {
         *self.view.lock().expect("view lock poisoned") = None;
+    }
+
+    /// Reads the library again if changes were made to it without that
+    /// (see `write_deferred`). Returns whether it was read. Blocking.
+    pub fn refresh(&self) -> AppResult<bool> {
+        if !self.stale.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            return Ok(false);
+        }
+        let location = self.loaded()?.location.clone();
+        self.load_from(location)?;
+        Ok(true)
     }
 
     /// Of `track_ids`, those whose grid has been reviewed.
@@ -316,6 +357,7 @@ impl Collection {
 
     /// Reads the library at `location`. Blocking.
     pub fn load_from(&self, location: LibraryLocation) -> AppResult<CollectionStatus> {
+        self.stale.store(false, std::sync::atomic::Ordering::Release);
         let db = rbl_db::Library::open(location.clone(), OpenMode::ReadOnly).map_err(rekordbox_err)?;
         let (index, _) = rbl_index::load(&db).map_err(rekordbox_err)?;
         drop(db);
@@ -412,7 +454,7 @@ impl Collection {
             master_db: loaded.location.master_db.clone(),
             tracks: loaded.index.len(),
             playlists: (0..playlists.len()).filter(|&i| !playlists.is_folder(i)).count(),
-            rekordbox_running: rbl_db::is_rekordbox_running(),
+            rekordbox_running: crate::rekordbox::is_running(),
         })
     }
 
@@ -458,9 +500,10 @@ impl Collection {
     }
 
     fn open_view(&self, loaded: &Loaded, query: &TrackQuery) -> AppResult<Arc<Listing>> {
+        let reading = std::ptr::from_ref(loaded) as usize;
         let mut cached = self.view.lock().expect("view lock poisoned");
-        if let Some((key, view)) = cached.as_ref() {
-            if key == query {
+        if let Some((of, key, view)) = cached.as_ref() {
+            if *of == reading && key == query {
                 return Ok(view.clone());
             }
         }
@@ -495,7 +538,7 @@ impl Collection {
             query: query.query.trim().to_owned(),
             filter: Default::default(),
         });
-        let mut numbers = None;
+        let mut numbers: Option<Vec<u32>> = None;
         if query.reviewed.is_some() || !query.genres.is_empty() {
             let index = &loaded.index;
             let genres: HashSet<&str> = query.genres.iter().map(|genre| genre.trim()).collect();
@@ -517,6 +560,14 @@ impl Collection {
             let mut kept = keep.iter();
             view.rows.retain(|_| *kept.next().expect("one for each row"));
         }
+        // Sorted here with each row's place in its playlist beside it, so the
+        // number goes where the row does.
+        let mut order: Vec<(u32, u32)> = if sorted_here {
+            let number = |at: usize| numbers.as_ref().map_or_else(|| view.track_no_at(at), |numbers| numbers[at]);
+            view.rows.iter().enumerate().map(|(at, &row)| (row, number(at))).collect()
+        } else {
+            Vec::new()
+        };
         if by_playlists {
             let keys: HashMap<u32, String> = view
                 .rows
@@ -524,17 +575,22 @@ impl Collection {
                 .map(|&row| (row, loaded.playlist_names(row as usize).join(", ").to_lowercase()))
                 .collect();
             // Stable, so tracks in the same playlists keep the list's order.
-            view.rows.sort_by(|a, b| {
+            order.sort_by(|(a, _), (b, _)| {
                 let (a, b) = (&keys[a], &keys[b]);
                 let named = if query.descending { b.cmp(a) } else { a.cmp(b) };
                 a.is_empty().cmp(&b.is_empty()).then(named)
             });
         }
         if by_confidence {
-            let ranks = self.grids.ranks();
-            let of = |row: &u32| ranks.get(&loaded.index.ids[*row as usize].to_string()).copied();
+            let by_id = self.grids.ranks();
+            let ranks: HashMap<u32, u8> = view
+                .rows
+                .iter()
+                .filter_map(|&row| Some((row, *by_id.get(&loaded.index.ids[row as usize].to_string())?)))
+                .collect();
+            let of = |row: &u32| ranks.get(row).copied();
             // Stable, so tracks as sure as each other keep the list's order.
-            view.rows.sort_by(|a, b| {
+            order.sort_by(|(a, _), (b, _)| {
                 let (a, b) = (of(a), of(b));
                 let ordered = if query.descending { b.cmp(&a) } else { a.cmp(&b) };
                 a.is_none().cmp(&b.is_none()).then(ordered)
@@ -555,7 +611,7 @@ impl Collection {
                 .collect();
             let camelot = query.sort == Sort::KeyCamelot;
             // Stable, so tracks in the same key keep the list's order.
-            view.rows.sort_by(|a, b| {
+            order.sort_by(|(a, _), (b, _)| {
                 let ((a_rank, a), (b_rank, b)) = (&keys[a], &keys[b]);
                 let known = (*a_rank == u32::MAX).cmp(&(*b_rank == u32::MAX));
                 let ordered = if camelot { a_rank.cmp(b_rank) } else { Ordering::Equal }
@@ -564,8 +620,14 @@ impl Collection {
                 a.is_empty().cmp(&b.is_empty()).then(known).then(ordered)
             });
         }
+        if sorted_here {
+            view.rows = order.iter().map(|&(row, _)| row).collect();
+            if numbered {
+                numbers = Some(order.iter().map(|&(_, number)| number).collect());
+            }
+        }
         let listing = Arc::new(Listing { view, numbers });
-        *cached = Some((query.clone(), listing.clone()));
+        *cached = Some((reading, query.clone(), listing.clone()));
         Ok(listing)
     }
 
