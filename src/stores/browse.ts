@@ -199,6 +199,26 @@ export const useBrowseStore = defineStore('browse', () => {
     return null;
   }
 
+  /** Where a track is among the rows fetched so far. */
+  function loadedIndex(id: string): number | null {
+    for (const [page, rows] of pages.value) {
+      const at = rows.findIndex((r) => r.id === id);
+      if (at !== -1) return page * PAGE + at;
+    }
+    return null;
+  }
+
+  /** The ids of rows `from` to `to` of the list, both included, fetched or not. */
+  async function idsBetween(from: number, to: number): Promise<string[]> {
+    const ids: string[] = [];
+    for (let i = from; i <= to; i++) {
+      const id = stale ? undefined : trackAt(i)?.id;
+      if (!id) return (await collection.trackIds(query.value)).slice(from, to + 1);
+      ids.push(id);
+    }
+    return ids;
+  }
+
   /** The track under this one in the list being shown, or null if it's the last or not in it. */
   async function trackAfter(id: string): Promise<CollectionTrack | null> {
     const asked = query.value;
@@ -369,6 +389,8 @@ export const useBrowseStore = defineStore('browse', () => {
     ensure,
     trackAt,
     loadedTrack,
+    loadedIndex,
+    idsBetween,
     trackAfter,
     patchTrack,
     selection,

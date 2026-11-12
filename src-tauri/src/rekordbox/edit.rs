@@ -5,6 +5,7 @@
 //! The database is opened for one change and closed again, then read afresh,
 //! so rekordbox can take the file back between changes.
 
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
 use rbl_db::write::{backups_in, TrackField, Writer, ROOT};
@@ -34,8 +35,13 @@ pub enum Edit {
     RemoveTracks { playlist_id: String, track_ids: Vec<String> },
     /// Moves tracks within a playlist to just before `before`, or to the end.
     MoveTracks { playlist_id: String, track_ids: Vec<String>, before: Option<String> },
-    /// Takes tracks out of the collection and every playlist. Their files stay.
-    DeleteTracks { track_ids: Vec<String> },
+    /// Takes tracks out of the collection and every playlist. Their files
+    /// stay, unless `trash_files` sends them to the Trash too.
+    DeleteTracks {
+        track_ids: Vec<String>,
+        #[serde(default)]
+        trash_files: bool,
+    },
     SetRating { track_id: String, stars: u8 },
     /// rekordbox's colour, 1 to 8; 0 clears it.
     SetColor { track_id: String, color: u8 },
@@ -66,6 +72,30 @@ pub struct EditOutcome {
     pub playlists: Vec<PlaylistNode>,
     /// The playlist or folder a `CreatePlaylist` made.
     pub created_id: Option<String>,
+    /// Something the change couldn't finish, though the library was changed.
+    pub warning: Option<String>,
+}
+
+/// Moves the files of deleted tracks to the Trash; ones already gone are
+/// passed over. Says why if it can't: the tracks have left the collection
+/// by then.
+fn trash_files(files: &[PathBuf]) -> Option<String> {
+    let present: Vec<&PathBuf> = files.iter().filter(|file| file.is_file()).collect();
+    if present.is_empty() {
+        return None;
+    }
+    match trash::delete_all(&present) {
+        Ok(()) => {
+            tracing::info!("Moved {} deleted tracks' files to the Trash", present.len());
+            None
+        }
+        Err(e) => {
+            tracing::warn!("Couldn't move deleted tracks' files to the Trash: {e}");
+            Some(format!(
+                "The tracks were removed from the collection, but their files couldn't be moved to the Trash: {e}"
+            ))
+        }
+    }
 }
 
 fn named(name: &str) -> AppResult<&str> {
@@ -79,6 +109,7 @@ fn named(name: &str) -> AppResult<&str> {
 impl Collection {
     /// Makes one change and reads the library again. Blocking.
     pub fn edit(&self, edit: Edit) -> AppResult<EditOutcome> {
+        let mut warning = None;
         let created_id = match edit {
             Edit::UseGrid { track_id, source } => {
                 let grid = self
@@ -96,14 +127,22 @@ impl Collection {
                     Edit::Grid { track_id, .. } => Some(track_id.clone()),
                     _ => None,
                 };
+                // Found before the tracks go: afterwards the library no longer knows where they were.
+                let doomed: Vec<PathBuf> = match &edit {
+                    Edit::DeleteTracks { track_ids, trash_files: true } => {
+                        track_ids.iter().filter_map(|id| self.path_of(id)).collect()
+                    }
+                    _ => Vec::new(),
+                };
                 let created_id = self.write(|writer, index| apply(writer, index, edit))?;
+                warning = trash_files(&doomed);
                 if let Some(track_id) = regridded {
                     self.grids.edited(&track_id);
                 }
                 created_id
             }
         };
-        Ok(EditOutcome { status: self.status()?, playlists: self.playlists()?, created_id })
+        Ok(EditOutcome { status: self.status()?, playlists: self.playlists()?, created_id, warning })
     }
 
     /// Opens the library for one piece of work, closes it, and reads it
@@ -174,7 +213,7 @@ fn apply(writer: &mut Writer, index: &rbl_index::Library, edit: Edit) -> AppResu
             let order = moved_order(index, &playlist_id, &track_ids, before.as_deref())?;
             writer.reorder(&playlist_id, &order).map_err(rekordbox_err)?;
         }
-        Edit::DeleteTracks { track_ids } => {
+        Edit::DeleteTracks { track_ids, .. } => {
             writer.delete_tracks(&track_ids).map_err(rekordbox_err)?;
         }
         Edit::SetRating { track_id, stars } => {

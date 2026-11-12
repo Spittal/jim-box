@@ -16,5 +16,8 @@ export function shortcut(key: string): string {
 /** The label of a button that shows a file in its folder. */
 export const revealLabel = isMac ? 'Show in Finder' : 'Show in Explorer';
 
+/** Where deleted files go. */
+export const trashName = isMac ? 'Trash' : 'Recycle Bin';
+
 /** Where the system keeps saved passwords. */
 export const passwordStore = isMac ? 'the macOS Keychain' : 'Windows Credential Manager';

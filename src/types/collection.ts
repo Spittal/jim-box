@@ -137,7 +137,8 @@ export type CollectionEdit =
   | { kind: 'addTracks'; playlistId: string; trackIds: string[] }
   | { kind: 'removeTracks'; playlistId: string; trackIds: string[] }
   | { kind: 'moveTracks'; playlistId: string; trackIds: string[]; before: string | null }
-  | { kind: 'deleteTracks'; trackIds: string[] }
+  /** Out of the collection and every playlist; with `trashFiles`, their files go to the Trash too. */
+  | { kind: 'deleteTracks'; trackIds: string[]; trashFiles: boolean }
   | { kind: 'setRating'; trackId: string; stars: number }
   | { kind: 'setColor'; trackId: string; color: number }
   | { kind: 'setComment'; trackId: string; comment: string }
@@ -213,6 +214,8 @@ export interface EditOutcome {
   playlists: PlaylistNode[];
   /** The playlist or folder a `createPlaylist` made. */
   createdId: string | null;
+  /** Something the change couldn't finish, though the library was changed. */
+  warning: string | null;
 }
 
 /** Files waiting to join the collection, which rekordbox being open holds up. */

@@ -81,6 +81,8 @@ export const useCollectionStore = defineStore('collection', () => {
       const outcome = await invoke<EditOutcome>('edit_collection', { edit: change });
       status.value = outcome.status;
       playlists.value = outcome.playlists;
+      // Done, though not all of it: say what wasn't.
+      error.value = outcome.warning;
       generation.value++;
       return outcome.createdId;
     } catch (e) {

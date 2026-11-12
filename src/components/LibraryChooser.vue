@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { open as pickFile } from '@tauri-apps/plugin-dialog';
+import { confirm } from '@/composables/useConfirm';
 import { useLibrariesStore } from '@/stores/libraries';
 import type { LibraryInfo } from '@/types/libraries';
 
@@ -26,8 +27,6 @@ const makeDefault = ref(
 /** The path being opened. */
 const opening = ref<string | null>(null);
 const restarting = ref(false);
-/** The library whose Forget is waiting to be confirmed. */
-const forgetting = ref<string | null>(null);
 const error = ref<string | null>(null);
 
 async function openLibrary(masterDb: string) {
@@ -49,8 +48,15 @@ async function choose() {
 
 async function forget(library: LibraryInfo) {
   if (!library.id) return;
+  const yes = await confirm({
+    title: `Forget “${library.name}”?`,
+    message:
+      'It comes off the list, with the downloads, playlists and settings jim-box saved for it. The rekordbox library and its music aren’t touched.',
+    confirm: 'Forget',
+    danger: true,
+  });
+  if (!yes) return;
   error.value = null;
-  forgetting.value = null;
   try {
     await librariesStore.forget(library.id);
   } catch (e) {
@@ -74,17 +80,11 @@ const smallButton = 'shrink-0 text-xs text-text-muted transition-colors disabled
             {{ library.masterDb }}
           </code>
         </div>
-        <template v-if="library.id && forgetting === library.id">
-          <span class="shrink-0 text-xs text-text-muted">Forget its downloads and settings?</span>
-          <button :class="[smallButton, 'hover:text-status-error']" @click="forget(library)">Forget</button>
-          <button :class="[smallButton, 'hover:text-text-secondary']" @click="forgetting = null">Cancel</button>
-        </template>
-        <template v-else>
           <button
             v-if="library.id"
             :class="[smallButton, 'hover:text-status-error']"
             title="Take this library off the list, with the downloads, playlists and settings jim-box saved for it. The rekordbox library and its music aren't touched."
-            @click="forgetting = library.id"
+            @click="forget(library)"
           >
             Forget
           </button>
@@ -95,7 +95,6 @@ const smallButton = 'shrink-0 text-xs text-text-muted transition-colors disabled
           >
             {{ opening === library.masterDb ? (restarting ? 'Restarting…' : 'Opening…') : 'Open' }}
           </button>
-        </template>
       </li>
     </ul>
 

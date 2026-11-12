@@ -1,23 +1,26 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { formatAgo } from '@/composables/useFormat';
+import { useTrackActions } from '@/composables/useTrackActions';
 import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
 import { isActive, useJobsStore } from '@/stores/jobs';
 import { useLibraryStore } from '@/stores/library';
 import { usePlaylistStore } from '@/stores/playlist';
+import { shortcut } from '@/platform';
 
 /** The heading of the list being shown, and what can be done to it or the tracks selected in it. */
 const store = useCollectionStore();
 const { status, playlists, waiting, analysis, loading, error } = storeToRefs(store);
 const browse = useBrowseStore();
-const { selected, selectedNode, inPlaylist, selection, selectedIds, total, notice, link, pendingRows, pendingSelection, selectedPending } =
+const { selected, selectedNode, inPlaylist, selection, total, notice, link, pendingRows, pendingSelection, selectedPending } =
   storeToRefs(browse);
 const libraryStore = useLibraryStore();
 const playlistStore = usePlaylistStore();
 const jobs = useJobsStore();
+const actions = useTrackActions();
 
 const heading = computed(() => selectedNode.value?.name ?? 'Collection');
 const countLabel = computed(() => `${total.value} ${total.value === 1 ? 'track' : 'tracks'}`);
@@ -40,30 +43,9 @@ const targetPlaylists = computed(() =>
 
 function addToChosen(event: Event) {
   const select = event.target as HTMLSelectElement;
-  const trackIds = selectedIds.value;
-  if (select.value && trackIds.length) store.edit({ kind: 'addTracks', playlistId: select.value, trackIds });
+  if (select.value) actions.addToPlaylist(select.value);
   select.value = '';
 }
-
-async function removeSelected() {
-  if (!selected.value || !selectedIds.value.length) return;
-  const trackIds = selectedIds.value;
-  selection.value = new Set();
-  await store.edit({ kind: 'removeTracks', playlistId: selected.value, trackIds });
-}
-
-/** Asked before taking tracks out of the collection: how many. */
-const confirmingRemoval = ref(0);
-watch(selection, () => (confirmingRemoval.value = 0));
-
-async function deleteSelected() {
-  const trackIds = selectedIds.value;
-  selection.value = new Set();
-  await store.edit({ kind: 'deleteTracks', trackIds });
-}
-
-/** Looks the selected tracks up on MusicBrainz; what it finds shows beside the list. */
-const identifySelected = () => run(() => libraryStore.identify(selectedIds.value));
 
 // --- The selected pending rows -----------------------------------------------
 
@@ -103,17 +85,6 @@ const retryPicked = () => each(pickedStopped.value, (row) => jobs.retry(row.job!
 const fetchPicked = () => each(pickedUnfetched.value, (row) => jobs.fetch(row.entry!.request!, selected.value));
 
 // Analysis: BPM, beat grid, key and waveforms.
-
-/** The selection size a re-analysis is being confirmed for; 0 when it isn't. */
-const confirmingAnalysis = ref(0);
-watch(selection, () => (confirmingAnalysis.value = 0));
-
-/** Analyses what in the selection has no analysis; offers to redo it when all of it has. */
-async function analyseSelected(again: boolean) {
-  confirmingAnalysis.value = 0;
-  const queued = await store.analyse(selectedIds.value, again);
-  if (queued === 0 && !again) confirmingAnalysis.value = selection.value.size;
-}
 
 async function analyseAll() {
   const queued = await store.analyse(null, false);
@@ -190,7 +161,7 @@ const buttonClass =
           <button
             v-if="selection.size < total"
             :class="linkClass"
-            title="Select every track in this list"
+            :title="`Select every track in this list (${shortcut('A')})`"
             @click="browse.selectAll()"
           >
             Select all {{ total }}
@@ -200,25 +171,14 @@ const buttonClass =
             :class="buttonClass"
             :disabled="libraryStore.busy"
             title="Look the selected tracks up on MusicBrainz and propose tags and file names to review"
-            @click="identifySelected"
+            @click="actions.identify()"
           >
             Identify
           </button>
-          <template v-if="confirmingAnalysis === selection.size">
-            <button
-              :class="buttonClass"
-              title="Cues are kept. Beat grids are replaced, including any adjusted by hand in rekordbox."
-              @click="analyseSelected(true)"
-            >
-              Already analysed. Replace {{ selection.size === 1 ? 'its beat grid' : 'their beat grids' }}
-            </button>
-            <button :class="buttonClass" @click="confirmingAnalysis = 0">Cancel</button>
-          </template>
           <button
-            v-else
             :class="buttonClass"
             title="Work out the BPM, beat grid, key and waveforms of the selected tracks that don't have them"
-            @click="analyseSelected(false)"
+            @click="actions.analyse()"
           >
             Analyse
           </button>
@@ -234,23 +194,16 @@ const buttonClass =
             v-if="inPlaylist"
             :class="buttonClass"
             title="Take the selected tracks out of this playlist. They stay in the collection."
-            @click="removeSelected"
+            @click="actions.removeFromPlaylist()"
           >
             Remove from playlist
           </button>
-          <template v-if="confirmingRemoval === selection.size">
-            <button :class="buttonClass" class="text-status-error" @click="deleteSelected">
-              Remove {{ selection.size }} from collection
-            </button>
-            <button :class="buttonClass" @click="confirmingRemoval = 0">Cancel</button>
-          </template>
           <button
-            v-else
             :class="buttonClass"
-            title="Take the selected tracks out of the collection and every playlist. Their files stay on disk."
-            @click="confirmingRemoval = selection.size"
+            title="Take the selected tracks out of the collection and every playlist. You're asked first, and whether their files go too."
+            @click="actions.remove()"
           >
-            Remove…
+            Delete…
           </button>
         </template>
         <template v-else-if="pendingSelection.size">
@@ -258,7 +211,7 @@ const buttonClass =
           <button
             v-if="selectedPending.length < pendingRows.length"
             :class="linkClass"
-            title="Select every track that isn't in the collection yet"
+            :title="`Select every track that isn't in the collection yet (${shortcut('A')})`"
             @click="browse.selectAll()"
           >
             Select all {{ pendingRows.length }}

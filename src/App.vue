@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { storeToRefs } from 'pinia';
 import BottomBar from '@/components/BottomBar.vue';
+import ConfirmDialog from '@/components/ConfirmDialog.vue';
 import SearchPanel from '@/components/SearchPanel.vue';
 import CollectionView from '@/views/CollectionView.vue';
 import SettingsView from '@/views/SettingsView.vue';
@@ -116,5 +117,6 @@ if (!isMac) {
       </main>
       <BottomBar />
     </template>
+    <ConfirmDialog />
   </div>
 </template>

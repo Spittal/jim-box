@@ -9,15 +9,19 @@ import TrackPreview from '@/components/TrackPreview.vue';
 import { dragging, dropRow, endDrag, startDrag } from '@/composables/useDrag';
 import { formatDuration } from '@/composables/useFormat';
 import { gridClass, gridLabel, gridSummary } from '@/composables/useGridReport';
+import { showContextMenu, type MenuLine } from '@/composables/useContextMenu';
 import { useKeyNotation } from '@/composables/useKeyNotation';
 import { progressPercent, statusLabel } from '@/composables/useJobStatus';
+import { useTrackActions } from '@/composables/useTrackActions';
 import { TRACK_COLORS } from '@/composables/useTrackColors';
 import { PALETTES, chosenPalette } from '@/composables/useWaveform';
 import { useBrowseStore, type PendingRow } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
 import { isActive, useJobsStore } from '@/stores/jobs';
 import { useLibraryStore } from '@/stores/library';
-import { commandKey } from '@/platform';
+import { useUiStore } from '@/stores/ui';
+import { revealItemInDir } from '@tauri-apps/plugin-opener';
+import { commandKey, revealLabel } from '@/platform';
 import type { CollectionTrack, TrackPreview as Preview, TrackSort } from '@/types/collection';
 
 /**
@@ -30,10 +34,12 @@ const store = useCollectionStore();
 const { formatKey } = useKeyNotation();
 const { analysis } = storeToRefs(store);
 const browse = useBrowseStore();
-const { sort, descending, filter, total, listError, selection, selectedIds, pendingRows, pendingSelection, pendingOnly, inPlaylist, selected } =
+const { sort, descending, filter, total, listError, selection, selectedIds, pendingRows, pendingSelection, pendingOnly, inPlaylist, selected, detailTrack } =
   storeToRefs(browse);
 const jobs = useJobsStore();
 const library = useLibraryStore();
+const ui = useUiStore();
+const actions = useTrackActions();
 
 // Rows are fetched a page at a time as they scroll into view. Only the
 // visible slice is in the DOM, so a large library scrolls like a small one.
@@ -102,26 +108,196 @@ function keepTextUnselected(event: MouseEvent) {
   window.getSelection()?.removeAllRanges();
 }
 
-/** Where a shift-click's range starts. */
-let anchor: number | null = null;
+/** A row of the list: a pending one by its key, or a track by where it is and which it is. */
+type Spot = { key: string } | { index: number; id: string };
+
+/**
+ * Where a shift-click's or shift-arrow's range starts, where the last click or
+ * arrow key left off, and what else was picked when the range began: the range
+ * can shrink again without losing those.
+ */
+let anchor: Spot | null = null;
+let cursor: Spot | null = null;
+let kept = new Set<string>();
+/** Counts clicks and key presses, so a pick that had to wait for rows gives way to a later one. */
+let picks = 0;
+
+watch(
+  () => browse.resets,
+  () => {
+    anchor = cursor = null;
+    kept = new Set();
+    picks++;
+  },
+);
+
+/** Where a track now is: the list may have changed around it since it was picked. */
+function indexOf(spot: { index: number; id: string }): number {
+  if (browse.trackAt(spot.index)?.id === spot.id) return spot.index;
+  return browse.loadedIndex(spot.id) ?? Math.min(spot.index, Math.max(0, total.value - 1));
+}
+
+/** Picks one row, or with ⌘ (Ctrl on Windows) adds it to or drops it from what's picked. */
+function pick(spot: Spot, toggle = false) {
+  picks++;
+  const id = 'key' in spot ? spot.key : spot.id;
+  const picked = 'key' in spot ? pendingSelection.value : selection.value;
+  const next = new Set(toggle ? picked : []);
+  if (toggle && next.has(id)) next.delete(id);
+  else next.add(id);
+  anchor = cursor = spot;
+  kept = next;
+  if ('key' in spot) browse.selectPending(next);
+  else browse.selectTracks(next);
+}
+
+/** Picks from the anchor to a row of its kind, in place of the range last picked from it. */
+async function extendTo(spot: Spot) {
+  const from = anchor;
+  if (!from || 'key' in from !== 'key' in spot) return pick(spot);
+  cursor = spot;
+  const mine = ++picks;
+  if ('key' in spot && 'key' in from) {
+    const rows = pendingRows.value;
+    const a = rows.findIndex((r) => r.key === from.key);
+    const b = rows.findIndex((r) => r.key === spot.key);
+    if (a === -1 || b === -1) return pick(spot);
+    const range = rows.slice(Math.min(a, b), Math.max(a, b) + 1).map((r) => r.key);
+    browse.selectPending(new Set([...kept, ...range]));
+  } else if ('index' in spot && 'index' in from) {
+    const a = indexOf(from);
+    const list = browse.resets;
+    // Rows that haven't been fetched are in the range too.
+    const range = await browse.idsBetween(Math.min(a, spot.index), Math.max(a, spot.index)).catch(() => null);
+    if (!range || mine !== picks || list !== browse.resets) return;
+    browse.selectTracks(new Set([...kept, ...range]));
+  }
+}
 
 function clickRow(index: number, track: CollectionTrack, event: MouseEvent) {
-  const next = new Set(commandKey(event) || event.shiftKey ? selection.value : []);
-  if (event.shiftKey && anchor !== null) {
-    const [from, to] = anchor < index ? [anchor, index] : [index, anchor];
-    for (let i = from; i <= to; i++) {
-      const id = browse.trackAt(i)?.id;
-      if (id) next.add(id);
-    }
-  } else if (commandKey(event) && next.has(track.id)) {
-    next.delete(track.id);
-    anchor = index;
-  } else {
-    next.add(track.id);
-    anchor = index;
-  }
-  browse.selectTracks(next);
+  const spot = { index, id: track.id };
+  if (event.shiftKey) void extendTo(spot);
+  else pick(spot, commandKey(event));
 }
+
+/** A row's context menu: what the toolbar does to the selection, which a right-click on a row outside it moves there. */
+function rowMenu(index: number, track: CollectionTrack) {
+  if (!selection.value.has(track.id)) pick({ index, id: track.id });
+  const one = selection.value.size === 1;
+  const playlists = store.playlists.filter((p) => p.kind === 'playlist' && p.id !== selected.value);
+  const lines: MenuLine[] = [
+    { text: 'Open in Player', enabled: one, action: () => emit('open', track) },
+    { text: revealLabel, enabled: one, action: () => void revealItemInDir(track.path).catch((e) => (store.error = String(e))) },
+    'separator',
+    { text: 'Identify', enabled: !library.busy, action: () => void actions.identify() },
+    { text: 'Analyse', action: () => void actions.analyse() },
+    {
+      text: 'Add to Playlist',
+      enabled: playlists.length > 0,
+      items: playlists.map((p) => ({ text: p.name, action: () => void actions.addToPlaylist(p.id) })),
+    },
+    'separator',
+  ];
+  if (inPlaylist.value) lines.push({ text: 'Remove from Playlist', action: () => void actions.removeFromPlaylist() });
+  lines.push({ text: 'Delete from Collection…', action: () => void actions.remove() });
+  void showContextMenu(lines);
+}
+
+// --- Keys ---------------------------------------------------------------------
+
+/** Rows are counted down the whole list: the pending ones, then the collection's. */
+const rowCount = computed(() => pendingRows.value.length + (pendingOnly.value ? 0 : total.value));
+
+function positionOf(spot: Spot | null): number | null {
+  if (!spot) return null;
+  if ('key' in spot) {
+    const at = pendingRows.value.findIndex((r) => r.key === spot.key);
+    return at === -1 ? null : at;
+  }
+  return pendingOnly.value || !total.value ? null : pendingRows.value.length + indexOf(spot);
+}
+
+/** Scrolls just far enough to show a row. */
+function reveal(position: number) {
+  const el = scroller.value;
+  if (!el) return;
+  const top = position * ROW_HEIGHT;
+  if (top < el.scrollTop) el.scrollTop = top;
+  else if (top + ROW_HEIGHT > el.scrollTop + el.clientHeight) el.scrollTop = top + ROW_HEIGHT - el.clientHeight;
+}
+
+/**
+ * Moves the selection by some rows, or to the list's first or last; with
+ * `extend`, stretches it from the anchor instead, as far as the anchor's kind of row goes.
+ */
+async function move(by: number | 'first' | 'last', extend: boolean) {
+  const count = rowCount.value;
+  if (!count) return;
+  const pending = pendingRows.value.length;
+  const from = positionOf(cursor);
+  const nothingPicked = !selection.value.size && !pendingSelection.value.size;
+  let to: number;
+  if (by === 'first') to = 0;
+  else if (by === 'last') to = count - 1;
+  else if (from === null) {
+    // Nowhere to move from: the first row in view going down, the last going up.
+    const el = scroller.value;
+    const first = Math.ceil((el?.scrollTop ?? 0) / ROW_HEIGHT);
+    const last = Math.floor(((el?.scrollTop ?? 0) + (el?.clientHeight ?? 0)) / ROW_HEIGHT) - 1;
+    to = by > 0 ? first : last;
+  }
+  // With nothing picked (after Escape, or the picked tracks were removed), the row left off at is picked again.
+  else to = nothingPicked && Math.abs(by) === 1 ? from : from + by;
+  to = Math.min(count - 1, Math.max(0, to));
+  extend &&= !!anchor && from !== null && !nothingPicked;
+  if (extend) to = 'key' in anchor! ? Math.min(to, pending - 1) : Math.max(to, pending);
+
+  reveal(to);
+  let spot: Spot;
+  if (to < pending) spot = { key: pendingRows.value[to].key };
+  else {
+    const index = to - pending;
+    let id = browse.trackAt(index)?.id;
+    if (!id) {
+      // A jump to rows that haven't been fetched.
+      const mine = ++picks;
+      const list = browse.resets;
+      [id] = await browse.idsBetween(index, index).catch(() => []);
+      if (!id || mine !== picks || list !== browse.resets) return;
+    }
+    spot = { index, id };
+  }
+  if (extend) void extendTo(spot);
+  else pick(spot);
+}
+
+function onKey(event: KeyboardEvent) {
+  if (event.defaultPrevented || event.altKey || ui.settings) return;
+  const target = event.target as HTMLElement | null;
+  // Text fields keep their own keys: ⌘A selects their text, arrows move their caret.
+  if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
+  const command = commandKey(event);
+  const page = Math.max(1, Math.floor(viewportHeight.value / ROW_HEIGHT) - 1);
+  const picked = selection.value.size || pendingSelection.value.size;
+
+  if (command && !event.shiftKey && event.key.toLowerCase() === 'a') void browse.selectAll();
+  else if (event.key === 'ArrowDown') void move(command ? 'last' : 1, event.shiftKey);
+  else if (event.key === 'ArrowUp') void move(command ? 'first' : -1, event.shiftKey);
+  else if (event.key === 'PageDown') void move(page, event.shiftKey);
+  else if (event.key === 'PageUp') void move(-page, event.shiftKey);
+  else if (event.key === 'Home') void move('first', event.shiftKey);
+  else if (event.key === 'End') void move('last', event.shiftKey);
+  else if (event.key === 'Escape' && picked) browse.clearSelection();
+  else if (event.key === 'Enter' && detailTrack.value && !target?.closest('button, a')) emit('open', detailTrack.value);
+  else if ((event.key === 'Delete' || event.key === 'Backspace') && selection.value.size) {
+    // Out of a playlist at once, as its button does; out of the collection once that's been asked.
+    if (inPlaylist.value) void actions.removeFromPlaylist();
+    else void actions.remove();
+  } else return;
+  event.preventDefault();
+}
+onMounted(() => window.addEventListener('keydown', onKey));
+onUnmounted(() => window.removeEventListener('keydown', onKey));
 
 /** Clicking the current rating clears it, as in rekordbox. */
 function rate(track: CollectionTrack, stars: number) {
@@ -133,25 +309,11 @@ function rate(track: CollectionTrack, stars: number) {
 
 // --- Tracks on their way ----------------------------------------------------
 
-/** Where a shift-click's range of pending rows starts. */
-let pendingAnchor: string | null = null;
-
 /** Picks pending rows as tracks are picked: ⌘ adds or drops one, shift takes a range. */
 function clickPending(row: PendingRow, event?: MouseEvent) {
-  const rows = pendingRows.value;
-  const next = new Set((event && commandKey(event)) || event?.shiftKey ? pendingSelection.value : []);
-  const from = rows.findIndex((r) => r.key === pendingAnchor);
-  if (event?.shiftKey && from !== -1) {
-    const to = rows.indexOf(row);
-    for (let i = Math.min(from, to); i <= Math.max(from, to); i++) next.add(rows[i].key);
-  } else if ((event && commandKey(event)) && next.has(row.key)) {
-    next.delete(row.key);
-    pendingAnchor = row.key;
-  } else {
-    next.add(row.key);
-    pendingAnchor = row.key;
-  }
-  browse.selectPending(next);
+  const spot = { key: row.key };
+  if (event?.shiftKey) void extendTo(spot);
+  else pick(spot, !!event && commandKey(event));
 }
 
 const rowError = ref<{ key: string; message: string } | null>(null);
@@ -686,6 +848,7 @@ const smallButtonClass =
           :draggable="!!row.track"
           @click="row.track && clickRow(row.index, row.track, $event)"
           @dblclick="row.track && emit('open', row.track)"
+          @contextmenu.prevent="row.track && rowMenu(row.index, row.track)"
           @dragstart="row.track && dragTrack($event, row.track)"
           @dragend="endDrag"
           @dragover.stop="overRow($event, row.index)"

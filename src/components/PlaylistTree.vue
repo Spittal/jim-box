@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
+import { confirm } from '@/composables/useConfirm';
+import { showContextMenu, type MenuLine } from '@/composables/useContextMenu';
 import { dragging, dropTree, endDrag, startDrag } from '@/composables/useDrag';
 import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
@@ -50,8 +52,6 @@ function toggleFolder(id: string) {
 /** The tree row whose name is being typed: a new one, or one being renamed. */
 const naming = ref<{ id: string | null; folder: boolean; parentId: string | null; name: string } | null>(null);
 const nameInput = ref<HTMLInputElement[] | HTMLInputElement | null>(null);
-const confirmingDelete = ref<string | null>(null);
-watch(selected, () => (confirmingDelete.value = null));
 
 async function focusNameInput() {
   await nextTick();
@@ -103,12 +103,7 @@ const settingsNode = computed(() => playlists.value.find((p) => p.id === setting
 /** Its link to Spotify, if it has one. */
 const followed = computed(() => (settingsOf.value ? watched.value.get(settingsOf.value) ?? null : null));
 const linkUrl = ref('');
-/** Set while 1-to-1 sync waits for the user to confirm what it removes. */
-const confirmingMirror = ref(false);
-watch(settingsOf, () => {
-  linkUrl.value = '';
-  confirmingMirror.value = false;
-});
+watch(settingsOf, () => (linkUrl.value = ''));
 // Deleted while its settings were open.
 watch(settingsNode, (node) => !node && (settingsOf.value = null));
 
@@ -134,24 +129,27 @@ function linkSpotify() {
 function setSetting(change: Partial<SyncSettings>) {
   const id = settingsOf.value;
   const current = followed.value?.settings;
-  confirmingMirror.value = false;
   if (id && current) act(() => playlistStore.setSettings(id, { ...current, ...change }));
 }
 
 /** Turning 1-to-1 sync on asks first; turning it off doesn't. */
-function toggleMirror(event: Event) {
+async function toggleMirror(event: Event) {
   const box = event.target as HTMLInputElement;
-  if (box.checked) {
-    box.checked = false;
-    confirmingMirror.value = true;
-  } else {
-    setSetting({ mirror: false });
-  }
+  if (!box.checked) return setSetting({ mirror: false });
+  box.checked = false;
+  const yes = await confirm({
+    title: 'Turn on 1-to-1 sync?',
+    message:
+      'This removes tracks from this playlist. Every track that isn’t on the Spotify playlist is taken out now, ' +
+      'including ones you added yourself, and tracks later removed on Spotify are taken out too. They stay in your collection.',
+    confirm: 'Turn on 1-to-1 sync',
+    danger: true,
+  });
+  if (yes) setSetting({ mirror: true });
 }
 
 function unlinkSpotify() {
   const id = settingsOf.value;
-  confirmingMirror.value = false;
   if (id) act(() => playlistStore.unlink(id));
 }
 
@@ -159,9 +157,33 @@ const closeOnEscape = (event: KeyboardEvent) => event.key === 'Escape' && (setti
 onMounted(() => window.addEventListener('keydown', closeOnEscape));
 onUnmounted(() => window.removeEventListener('keydown', closeOnEscape));
 
-async function deletePlaylist(id: string) {
-  confirmingDelete.value = null;
-  await store.edit({ kind: 'deletePlaylist', id });
+/** Deletes a playlist or folder, once asked. */
+async function deletePlaylist(node: PlaylistNode) {
+  const yes = await confirm({
+    title: `Delete “${node.name}”?`,
+    message:
+      node.kind === 'folder'
+        ? 'The folder and the playlists in it are deleted. Their tracks stay in the collection.'
+        : 'The playlist is deleted. Its tracks stay in the collection.',
+    confirm: 'Delete',
+    danger: true,
+  });
+  if (yes) await store.edit({ kind: 'deletePlaylist', id: node.id });
+}
+
+/** A tree row's context menu; the Collection row's and the empty space's make new playlists at the top. */
+function treeMenu(node: PlaylistNode | null) {
+  if (node) browse.select(node.id);
+  const lines: MenuLine[] = [
+    { text: 'New Playlist', action: () => startCreate(false) },
+    { text: 'New Folder', action: () => startCreate(true) },
+  ];
+  if (node) {
+    lines.push('separator', { text: 'Rename', action: () => startRename(node) });
+    if (node.kind === 'playlist') lines.push({ text: 'Playlist Settings…', action: () => (settingsOf.value = node.id) });
+    lines.push('separator', { text: 'Delete…', action: () => void deletePlaylist(node) });
+  }
+  void showContextMenu(lines);
 }
 
 /** Where a new row's name box goes: after its parent's last descendant. */
@@ -250,7 +272,7 @@ const nameInputClass =
 
 <template>
   <div class="flex w-56 shrink-0 flex-col border-r border-border">
-    <ul class="min-h-0 flex-1 overflow-y-auto py-1 text-xs select-none">
+    <ul class="min-h-0 flex-1 overflow-y-auto py-1 text-xs select-none" @contextmenu.prevent="treeMenu(null)">
       <li
         class="flex cursor-default items-center gap-1 py-1 pr-2 pl-4"
         :class="selected === null ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:bg-surface-1'"
@@ -274,6 +296,7 @@ const nameInputClass =
           :draggable="naming?.id !== node.id"
           @click="browse.select(node.id)"
           @dblclick="startRename(node)"
+          @contextmenu.prevent.stop="treeMenu(node)"
           @dragstart="startDrag($event, { kind: 'playlist', id: node.id })"
           @dragend="endDrag"
           @dragover="overTree($event, node)"
@@ -414,19 +437,6 @@ const nameInputClass =
                   </span>
                 </span>
               </label>
-              <div v-if="confirmingMirror" class="flex flex-col gap-2 rounded border border-status-error/40 bg-status-error/10 p-3 text-xs">
-                <p class="text-status-error">
-                  <strong>This removes tracks from this playlist.</strong> Every track that isn't on the Spotify
-                  playlist is taken out now, including ones you added yourself, and tracks later removed on Spotify
-                  are taken out too. They stay in your collection.
-                </p>
-                <div class="flex gap-2">
-                  <button class="rounded bg-status-error/20 px-2 py-1 text-status-error hover:bg-status-error/30" @click="setSetting({ mirror: true })">
-                    Turn on 1-to-1 sync
-                  </button>
-                  <button class="rounded bg-surface-2 px-2 py-1 hover:bg-surface-3" @click="confirmingMirror = false">Cancel</button>
-                </div>
-              </div>
               <button
                 class="self-start rounded bg-surface-2 px-3 py-1.5 text-xs transition-colors hover:bg-surface-3"
                 title="Stop following the Spotify playlist. This playlist and its tracks stay as they are."
@@ -451,24 +461,6 @@ const nameInputClass =
       <button :class="treeButtonClass" class="whitespace-nowrap" title="New playlist" @click="startCreate(false)">+ Playlist</button>
       <button :class="treeButtonClass" class="whitespace-nowrap" title="New folder" @click="startCreate(true)">+ Folder</button>
       <span class="flex-1" />
-      <template v-if="selectedNode && confirmingDelete === selectedNode.id">
-        <button :class="iconButtonClass" title="Keep it" aria-label="Cancel deleting" @click="confirmingDelete = null">
-          <svg viewBox="0 0 16 16" class="size-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
-            <path d="M4 4l8 8M12 4l-8 8" />
-          </svg>
-        </button>
-        <button
-          class="shrink-0 rounded bg-status-error/15 p-1 text-status-error hover:bg-status-error/30"
-          :title="`Click again to delete “${selectedNode.name}”`"
-          :aria-label="`Delete ${selectedNode.name}`"
-          @click="deletePlaylist(selectedNode.id)"
-        >
-          <svg viewBox="0 0 16 16" class="size-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path :d="TRASH_ICON" />
-          </svg>
-        </button>
-      </template>
-      <template v-else>
         <button
           :class="iconButtonClass"
           :disabled="!selectedNode"
@@ -489,13 +481,12 @@ const nameInputClass =
               ? 'Delete this folder and the playlists in it. Tracks stay in the collection.'
               : 'Delete this playlist. Its tracks stay in the collection.'"
           aria-label="Delete"
-          @click="selectedNode && (confirmingDelete = selectedNode.id)"
+          @click="selectedNode && deletePlaylist(selectedNode)"
         >
           <svg viewBox="0 0 16 16" class="size-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path :d="TRASH_ICON" />
           </svg>
         </button>
-      </template>
     </div>
   </div>
 </template>

@@ -4,6 +4,7 @@ import { storeToRefs } from 'pinia';
 import { useLibraryStore } from '@/stores/library';
 import { useSettingsStore } from '@/stores/settings';
 import { useUiStore } from '@/stores/ui';
+import { confirm } from '@/composables/useConfirm';
 import { formatBytes } from '@/composables/useFormat';
 import type { RelocateReport } from '@/types/library';
 
@@ -22,7 +23,6 @@ const root = ref<HTMLElement | null>(null);
 const target = ref('');
 /** Paths of the places to move out of. */
 const picked = ref<string[]>([]);
-const confirming = ref(false);
 const moving = ref(false);
 const report = ref<RelocateReport | null>(null);
 const error = ref<string | null>(null);
@@ -46,7 +46,6 @@ watch(
   },
   { immediate: true },
 );
-watch([target, picked], () => (confirming.value = false));
 
 async function look() {
   try {
@@ -57,6 +56,12 @@ async function look() {
 }
 
 async function consolidate() {
+  const yes = await confirm({
+    title: `Move ${count(total.value.tracks, 'file', 'files')} (${formatBytes(total.value.bytes)})?`,
+    message: `They are moved into ${target.value} and filed by the paths set for the library. The tracks keep their cues, beat grids and playlists, and nothing is overwritten.`,
+    confirm: 'Move',
+  });
+  if (!yes) return;
   moving.value = true;
   error.value = null;
   report.value = null;
@@ -128,25 +133,10 @@ watch(targets, look);
           the list of library folders; if it was the starred one, the folder you move into takes the star.
         </span>
         <div class="flex items-center gap-2">
-          <template v-if="confirming && !moving">
-            <button
-              class="rounded bg-accent px-3 py-1.5 text-xs text-white transition-colors hover:bg-accent-hover"
-              @click="consolidate"
-            >
-              Move {{ count(total.tracks, 'file', 'files') }} ({{ formatBytes(total.bytes) }})
-            </button>
-            <button
-              class="rounded bg-surface-2 px-3 py-1.5 text-xs transition-colors hover:bg-surface-3"
-              @click="confirming = false"
-            >
-              Cancel
-            </button>
-          </template>
           <button
-            v-else
             :disabled="moving || plan.rekordboxRunning || !total.tracks"
             class="rounded bg-surface-2 px-3 py-1.5 text-xs transition-colors hover:bg-surface-3 disabled:opacity-50"
-            @click="confirming = true"
+            @click="consolidate"
           >
             {{ moving ? 'Moving…' : 'Consolidate…' }}
           </button>
