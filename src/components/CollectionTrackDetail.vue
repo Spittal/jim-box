@@ -194,12 +194,15 @@ function identify() {
   if (!libraryStore.busy) run(() => libraryStore.identify([props.track.id]));
 }
 
-/** Keys pressed anywhere: ⌘L starts analysing the track again, ⌘I identifies it and ⌘R downloads it again, from a text field too. */
+/** Keys pressed anywhere: ⌘L starts analysing the track again, ⌘I identifies it, ⌘R downloads it again and ⌘1 to ⌘5 give it its stars, from a text field too. */
 function onWindowKey(event: KeyboardEvent) {
   if (event.defaultPrevented || event.altKey || ui.settings) return;
   if (!commandKey(event) || event.shiftKey) return;
   const key = event.key.toLowerCase();
-  if (key === 'l') beatGrid.value?.startAnalyse();
+  if (/^Digit[1-5]$/.test(event.code)) {
+    // As clicking that star: the rating it already has is cleared.
+    if (!event.repeat) rate(Number(event.code.slice(5)));
+  } else if (key === 'l') beatGrid.value?.startAnalyse();
   else if (key === 'i') identify();
   else if (key === 'r') {
     if (!downloading.value && !starting.value && !event.repeat) redownload();

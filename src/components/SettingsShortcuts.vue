@@ -64,6 +64,7 @@ const groups: { title: string; note?: string; lines: Line[] }[] = [
   {
     title: 'Track sidebar',
     lines: [
+      { does: 'Rate the track one to five stars; its rating again clears it', keys: [[cmd, '1'], ['…'], [cmd, '5']] },
       { does: 'The next entry, from Genre on; or the one before', keys: [['Tab'], [shift, 'Tab']] },
       { does: 'The entry above or below', keys: [['↑'], ['↓']] },
       { does: 'Along the genres, playlists, stars or colours', keys: [['←'], ['→']] },

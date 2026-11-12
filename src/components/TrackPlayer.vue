@@ -299,21 +299,22 @@ function onKey(event: KeyboardEvent) {
   if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
   const command = commandKey(event);
   if (!command && (event.metaKey || event.ctrlKey)) return;
-  const pad = /^Digit[1-8]$/.test(event.code) ? Number(event.code.slice(5)) - 1 : -1;
+  // With ⌘, the digits are the picked track's stars (see CollectionTrackDetail.vue), not pads.
+  const pad = !command && /^Digit[1-8]$/.test(event.code) ? Number(event.code.slice(5)) - 1 : -1;
+
+  // Going back while it plays allows a beat for the one being played; paused, it's the plain count.
+  const lead = engine.playing ? 1 : 0;
 
   if (command) {
     if (!props.track || event.shiftKey) return;
-    if (event.code === 'Comma') jumpBeats((-SMALL_JUMP_BARS * 4) + 1);
+    if (event.code === 'Comma') jumpBeats((-SMALL_JUMP_BARS * 4) + lead);
     else if (event.code === 'Period') jumpBeats(SMALL_JUMP_BARS * 4);
-    else if (pad >= 0) {
-      const cue = hotCues.value[pad];
-      if (cue && !event.repeat) deleteCue(cue);
-    } else if (event.code === 'KeyM') {
+    else if (event.code === 'KeyM') {
       if (!event.repeat) setCue(null);
     } else if (event.code === 'KeyB') {
       if (canEditGrid.value && !event.repeat) setDownbeat();
     } else return;
-  } else if (event.code === 'Comma') jumpBeats(event.shiftKey ? (-BIG_JUMP_BARS * 4) + 1 : -2);
+  } else if (event.code === 'Comma') jumpBeats(event.shiftKey ? (-BIG_JUMP_BARS * 4) + lead : -1 - lead);
   else if (event.code === 'Period') jumpBeats(event.shiftKey ? BIG_JUMP_BARS * 4 : 1);
   else if (!props.track) return;
   else if (pad >= 0) {
