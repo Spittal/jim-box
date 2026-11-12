@@ -11,7 +11,7 @@ import { shortcut } from '@/platform';
 
 /** The heading of the list being shown, what narrows it, and what can be added to it. */
 const store = useCollectionStore();
-const { status, waiting, analysis, loading, error } = storeToRefs(store);
+const { status, waiting, loading, error } = storeToRefs(store);
 const browse = useBrowseStore();
 const {
   selected,
@@ -115,11 +115,14 @@ function removeFetches() {
 const retryPicked = () => each(pickedStopped.value, (row) => jobs.retry(row.job!.id));
 const fetchPicked = () => each(pickedUnfetched.value, (row) => jobs.fetch(row.entry!.request!, selected.value));
 
-// Analysis: BPM, beat grid, key and waveforms.
+// --- The library's own menu ------------------------------------------------------
 
-async function analyseAll() {
-  const queued = await store.analyse(null, false);
-  if (queued === 0) notice.value = 'Every track in the collection is analysed.';
+const libraryMenu = ref(false);
+
+/** Closes the menu and does what was picked from it. */
+function pickFromMenu(action: () => unknown) {
+  libraryMenu.value = false;
+  void action();
 }
 
 // Adding music from disk: to the collection, and to the open playlist.
@@ -161,14 +164,65 @@ function fetchAll() {
 }
 
 const linkClass = 'text-[11px] text-text-muted transition-colors hover:text-text-primary';
+const menuItemClass = 'px-3 py-1 text-left hover:bg-surface-2 disabled:opacity-50 disabled:hover:bg-transparent';
 const buttonClass =
   'rounded bg-surface-2 px-3 py-1.5 text-xs transition-colors hover:bg-surface-3 disabled:opacity-50';
 </script>
 
 <template>
   <header class="flex flex-col gap-2 border-b border-border px-4 py-3">
-    <div class="flex items-center justify-between gap-4">
-      <div class="min-w-0">
+    <div class="flex items-center gap-3">
+      <!-- What's done to the library as a whole: adding to it, reading it again. -->
+      <div class="relative shrink-0">
+        <button
+          class="flex size-7 items-center justify-center rounded bg-surface-2 text-sm leading-none transition-colors hover:bg-surface-3"
+          :class="libraryMenu ? 'bg-surface-3' : ''"
+          title="Add music, refresh"
+          aria-label="Library actions"
+          aria-haspopup="menu"
+          :aria-expanded="libraryMenu"
+          @click="libraryMenu = !libraryMenu"
+        >
+          ⋯
+        </button>
+        <template v-if="libraryMenu">
+          <div class="fixed inset-0 z-10" @click="libraryMenu = false" @contextmenu.prevent.stop="libraryMenu = false" />
+          <div
+            role="menu"
+            class="absolute top-full left-0 z-20 mt-1 flex w-44 flex-col rounded border border-border bg-surface-1 py-1 text-xs text-text-primary shadow-lg"
+            @contextmenu.prevent.stop
+            @keydown.esc.stop="libraryMenu = false"
+          >
+            <button
+              role="menuitem"
+              :class="menuItemClass"
+              :title="inPlaylist ? 'Add music files to the collection and this playlist' : 'Add music files to the collection'"
+              @click="pickFromMenu(() => addFromDisk(false))"
+            >
+              Add files…
+            </button>
+            <button
+              role="menuitem"
+              :class="menuItemClass"
+              :title="inPlaylist ? 'Add all the music in a folder to the collection and this playlist' : 'Add all the music in a folder to the collection'"
+              @click="pickFromMenu(() => addFromDisk(true))"
+            >
+              Add folder…
+            </button>
+            <button
+              role="menuitem"
+              :class="menuItemClass"
+              class="mt-1 border-t border-border pt-1.5"
+              :disabled="loading"
+              title="Read the library again to pick up changes made in rekordbox"
+              @click="pickFromMenu(() => store.open())"
+            >
+              Refresh
+            </button>
+          </div>
+        </template>
+      </div>
+      <div class="min-w-0 flex-1">
         <h1 class="truncate text-sm font-medium">{{ heading }}</h1>
         <p class="truncate font-mono text-xs text-text-muted">
           <template v-if="status">{{ countLabel }} · {{ status.masterDb }}</template>
@@ -249,7 +303,7 @@ const buttonClass =
           <template v-if="filterMenu">
             <div class="fixed inset-0 z-10" @click="filterMenu = false" @contextmenu.prevent.stop="filterMenu = false" />
             <div
-              class="absolute top-full left-0 z-20 mt-1 flex w-52 flex-col rounded border border-border bg-surface-1 py-1 text-xs text-text-primary shadow-lg"
+              class="absolute top-full right-0 z-20 mt-1 flex w-52 flex-col rounded border border-border bg-surface-1 py-1 text-xs text-text-primary shadow-lg"
               @contextmenu.prevent.stop
               @keydown.esc.stop="filterMenu = false"
             >
@@ -305,36 +359,6 @@ const buttonClass =
             </div>
           </template>
         </div>
-        <button
-          :class="buttonClass"
-          :disabled="analysis?.active"
-          title="Work out the BPM, beat grid, key and waveforms of every track in the collection that doesn't have them"
-          @click="analyseAll"
-        >
-          Analyse new
-        </button>
-        <button
-          :class="buttonClass"
-          :title="inPlaylist ? 'Add music files to the collection and this playlist' : 'Add music files to the collection'"
-          @click="addFromDisk(false)"
-        >
-          Add files…
-        </button>
-        <button
-          :class="buttonClass"
-          :title="inPlaylist ? 'Add all the music in a folder to the collection and this playlist' : 'Add all the music in a folder to the collection'"
-          @click="addFromDisk(true)"
-        >
-          Add folder…
-        </button>
-        <button
-          :class="buttonClass"
-          :disabled="loading"
-          title="Read the library again to pick up changes made in rekordbox"
-          @click="store.open()"
-        >
-          Refresh
-        </button>
       </div>
     </div>
 

@@ -12,7 +12,7 @@ import { dragging, dropRow, endDrag, startDrag } from '@/composables/useDrag';
 import { formatDuration } from '@/composables/useFormat';
 import { gridClass, gridLabel, gridSummary } from '@/composables/useGridReport';
 import { showContextMenu, type MenuLine } from '@/composables/useContextMenu';
-import { useKeyNotation } from '@/composables/useKeyNotation';
+import { keysCompatible, useKeyNotation } from '@/composables/useKeyNotation';
 import { progressPercent, statusLabel } from '@/composables/useJobStatus';
 import { useTrackActions } from '@/composables/useTrackActions';
 import { TRACK_COLORS } from '@/composables/useTrackColors';
@@ -33,6 +33,8 @@ import type { CollectionTrack, TrackPreview as Preview, TrackSort } from '@/type
 const props = defineProps<{
   /** The track in the player, whose row is marked apart from the selected ones. */
   playingId?: string | null;
+  /** That track's key: the tracks that mix with it have their own key lit. */
+  playingKey?: string | null;
 }>();
 const emit = defineEmits<{ open: [track: CollectionTrack] }>();
 
@@ -43,6 +45,11 @@ function rowClass(track: CollectionTrack | null | undefined) {
     return `shadow-[inset_2px_0_0_var(--color-accent)] ${picked ? 'bg-accent/25' : 'bg-accent/10 hover:bg-accent/15'}`;
   }
   return picked ? 'bg-surface-2' : 'hover:bg-surface-1';
+}
+
+/** Whether a track is in a key that mixes with the one in the player. */
+function mixesInKey(track: CollectionTrack) {
+  return !!props.playingKey && track.id !== props.playingId && keysCompatible(track.key, props.playingKey);
 }
 
 const store = useCollectionStore();
@@ -822,40 +829,44 @@ const smallButtonClass =
           />
         </span>
       </div>
-      <button
-        class="absolute top-1/2 right-0.5 -translate-y-1/2 rounded px-1 leading-none hover:bg-surface-2 hover:text-text-primary"
-        title="Choose columns"
-        @click="columnsMenu = !columnsMenu"
-      >
-        ⋮
-      </button>
-      <template v-if="columnsMenu">
-        <div class="fixed inset-0 z-10" @click="columnsMenu = false" @contextmenu.prevent.stop="columnsMenu = false" />
-        <div
-          class="absolute top-full right-1 z-20 mt-1 flex w-40 flex-col rounded border border-border bg-surface-1 py-1 text-xs text-text-primary shadow-lg"
-          @contextmenu.prevent.stop
+      <!-- The columns' menu, at the end of the header: it fills the room the rows leave at their right (`pr-7`). -->
+      <div class="relative z-[2] -ml-3 w-0 self-stretch">
+        <button
+          class="absolute -inset-y-1.5 left-0 flex w-7 items-center justify-center text-sm leading-none hover:bg-surface-2 hover:text-text-primary"
+          :class="columnsMenu ? 'bg-surface-2 text-text-primary' : ''"
+          title="Choose columns"
+          @click="columnsMenu = !columnsMenu"
         >
-          <label
-            v-for="column in available"
-            :key="column.id"
-            class="flex cursor-default items-center gap-2 px-3 py-1 hover:bg-surface-2"
+          ⋮
+        </button>
+        <template v-if="columnsMenu">
+          <div class="fixed inset-0 z-10" @click="columnsMenu = false" @contextmenu.prevent.stop="columnsMenu = false" />
+          <div
+            class="absolute top-full -right-6 z-20 mt-2.5 flex w-40 flex-col rounded border border-border bg-surface-1 py-1 text-xs text-text-primary shadow-lg"
+            @contextmenu.prevent.stop
           >
-            <input
-              type="checkbox"
-              :checked="!hiddenColumns.has(column.id)"
-              :disabled="columns.length === 1 && !hiddenColumns.has(column.id)"
-              @change="toggleColumn(column.id)"
-            />
-            {{ column.name ?? column.label }}
-          </label>
-          <button
-            class="mt-1 border-t border-border px-3 pt-1.5 pb-0.5 text-left text-text-muted hover:text-text-primary"
-            @click="resetColumns"
-          >
-            Reset columns
-          </button>
-        </div>
-      </template>
+            <label
+              v-for="column in available"
+              :key="column.id"
+              class="flex cursor-default items-center gap-2 px-3 py-1 hover:bg-surface-2"
+            >
+              <input
+                type="checkbox"
+                :checked="!hiddenColumns.has(column.id)"
+                :disabled="columns.length === 1 && !hiddenColumns.has(column.id)"
+                @change="toggleColumn(column.id)"
+              />
+              {{ column.name ?? column.label }}
+            </label>
+            <button
+              class="mt-1 border-t border-border px-3 pt-1.5 pb-0.5 text-left text-text-muted hover:text-text-primary"
+              @click="resetColumns"
+            >
+              Reset columns
+            </button>
+          </div>
+        </template>
+      </div>
     </div>
     <p v-if="listError" class="error-box m-4">{{ listError }}</p>
     <div
@@ -1039,7 +1050,13 @@ const smallButtonClass =
             >
               <template v-if="row.track.grid">{{ gridLabel(row.track.grid) }}</template>
             </span>
-            <span v-else-if="column.id === 'key'" class="truncate font-mono text-text-secondary" :class="column.class" :style="cellStyle[column.id]">{{ formatKey(row.track.key) }}</span>
+            <span
+              v-else-if="column.id === 'key'"
+              class="truncate font-mono"
+              :class="[column.class, mixesInKey(row.track) ? 'rounded bg-status-ok/15 font-semibold text-status-ok' : 'text-text-secondary']"
+              :style="cellStyle[column.id]"
+              :title="mixesInKey(row.track) ? 'Mixes in key with the track in the player' : undefined"
+            >{{ formatKey(row.track.key) }}</span>
             <span v-else-if="column.id === 'duration'" class="truncate font-mono text-text-muted" :class="column.class" :style="cellStyle[column.id]">
               {{ row.track.durationSecs ? formatDuration(row.track.durationSecs) : '' }}
             </span>

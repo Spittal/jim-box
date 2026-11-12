@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
+import LibraryCover from '@/components/LibraryCover.vue';
+import VolumeKnob from '@/components/VolumeKnob.vue';
 import { preview, stopPreview } from '@/audio/preview';
 import { TrackAudio } from '@/audio/trackAudio';
 import {
@@ -14,6 +16,7 @@ import {
 } from '@/composables/useWaveform';
 import { editedGrid, nearestBeatIndex, sameGrid } from '@/composables/useGridEdit';
 import { useKeyNotation } from '@/composables/useKeyNotation';
+import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
 import { useUiStore } from '@/stores/ui';
 import { commandKey, shortcut } from '@/platform';
@@ -30,13 +33,17 @@ const props = defineProps<{ track: CollectionTrack | null }>();
 const emit = defineEmits<{ close: []; ended: [] }>();
 
 const store = useCollectionStore();
+const browse = useBrowseStore();
 const ui = useUiStore();
 const { formatKey } = useKeyNotation();
 
 /** rekordbox's detailed waveforms have 150 columns a second. */
 const COLUMNS_PER_SEC = 150;
 const PADS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
-const LOOP_LENGTHS = [1, 2, 4, 8, 16, 32];
+/** The lengths a loop can be, in beats: one and two beats, then one bar to thirty-two. */
+const LOOP_SIZES = [1, 2, 4, 8, 16, 32, 64, 128];
+/** The tempo can be played this much slower or faster than the track's own. */
+const SPEED_RANGE = [0.5, 2] as const;
 
 // rekordbox's own colours, as rbxport measured them from it.
 const COLOR = {
@@ -130,6 +137,7 @@ async function loadTrack() {
   playing.value = false;
   position.value = 0;
   activeLoop.value = null;
+  speed.value = 1;
   prep.value = null;
   waves.value = new Map();
   error.value = null;
@@ -201,6 +209,72 @@ function jumpBeats(count: number) {
 
 /** A loop being played round: reaching its end goes back to its start. */
 const activeLoop = ref<{ startMs: number; endMs: number } | null>(null);
+// The audio thread goes round it, to the sample. Sync, so it's told before a seek that follows.
+watch(activeLoop, (loop) => engine.setLoop(loop), { flush: 'sync' });
+
+/** Which of `LOOP_SIZES` a loop set now is. */
+const loopSize = ref(LOOP_SIZES.indexOf(32));
+const loopLabel = computed(() => {
+  const count = LOOP_SIZES[loopSize.value];
+  return count < 4 ? `${count} beat` : `${count / 4} bar`;
+});
+
+/** Where a loop of so many beats from `startMs` ends: on the grid's own beat where it starts on one. */
+function loopEnd(startMs: number, count: number): number {
+  const list = beats.value;
+  const at = nearestBeat(startMs);
+  let end: number;
+  if (at >= 0 && Math.abs(list[at][0] - startMs) < 2 && at + count < list.length) end = list[at + count][0];
+  else {
+    const bpm = (at >= 0 ? list[at][2] / 100 : null) ?? prep.value?.bpm ?? props.track?.bpm ?? 120;
+    end = startMs + (count * 60_000) / bpm;
+  }
+  return Math.min(Math.round(end), Math.round(durationMs.value));
+}
+
+/** Starts a loop of the chosen length at the playhead, or leaves the one playing. */
+function toggleLoop() {
+  if (activeLoop.value) return void (activeLoop.value = null);
+  if (!props.track) return;
+  const at = nearestBeat(position.value);
+  const startMs = quantize.value && at >= 0 ? beats.value[at][0] : Math.round(position.value);
+  const endMs = loopEnd(startMs, LOOP_SIZES[loopSize.value]);
+  if (endMs > startMs) activeLoop.value = { startMs, endMs };
+}
+
+/** Halves or doubles the loop's length; one playing changes where it ends. */
+function stepLoop(by: number) {
+  const next = Math.max(0, Math.min(LOOP_SIZES.length - 1, loopSize.value + by));
+  if (next === loopSize.value) return;
+  loopSize.value = next;
+  const loop = activeLoop.value;
+  if (!loop) return;
+  const endMs = loopEnd(loop.startMs, LOOP_SIZES[next]);
+  if (endMs > loop.startMs) activeLoop.value = { startMs: loop.startMs, endMs };
+}
+
+// --- Volume and tempo ----------------------------------------------------------
+
+/** The master volume knob, 0 to 1, kept between runs. */
+const savedVolume = Number(localStorage.getItem('player.volume') ?? 1);
+const volume = ref(savedVolume >= 0 && savedVolume <= 1 ? savedVolume : 1);
+watch(
+  volume,
+  (level) => {
+    // Squared: evenly louder to the ear as the knob turns.
+    engine.setVolume(level * level);
+    localStorage.setItem('player.volume', String(level));
+  },
+  { immediate: true },
+);
+
+/**
+ * How fast the track is played, 1 being as recorded. The samples are stepped
+ * through faster or slower, so the pitch goes with the tempo as on a turntable:
+ * nothing is stretched. It's the playing only; the track and its grid are as they were.
+ */
+const speed = ref(1);
+watch(speed, (now) => engine.setSpeed(now), { flush: 'sync' });
 
 function goToCue(cue: Cue) {
   activeLoop.value = cue.endMs ? { startMs: cue.positionMs, endMs: cue.endMs } : null;
@@ -209,6 +283,12 @@ function goToCue(cue: Cue) {
 
 // A click on each beat, to hear whether the grid sits on the music.
 const metronome = ref(false);
+/** The clicks' own volume knob, 0 to 1, kept between runs; the master volume is on top of it. */
+const savedClickVolume = Number(localStorage.getItem('player.metronomeVolume') ?? 0.35);
+const clickVolume = ref(savedClickVolume >= 0 && savedClickVolume <= 1 ? savedClickVolume : 0.35);
+watch(clickVolume, (level) => localStorage.setItem('player.metronomeVolume', String(level)));
+/** A click's gain with the knob at full: well over the music, to be heard through a loud track. */
+const CLICK_GAIN = 2;
 /** The time of the last beat a click was scheduled for. */
 let clickedUpTo = -1;
 
@@ -217,6 +297,9 @@ function scheduleClicks(ms: number) {
   // On the audio's own clock, so a click lands on its beat.
   const clicks = engine.context;
   if (!metronome.value || !list.length || !clicks) return;
+  // Squared, as the master volume is. Silent clicks aren't made at all.
+  const level = CLICK_GAIN * clickVolume.value * clickVolume.value;
+  if (level < 0.001) return;
   // After a jump, beats click again from the new place.
   if (ms < clickedUpTo - 200 || ms > clickedUpTo + 2000) clickedUpTo = ms - 1;
   for (let i = Math.max(0, nearestBeat(ms) - 1); i < list.length && list[i][0] <= ms + 120; i++) {
@@ -224,13 +307,13 @@ function scheduleClicks(ms: number) {
     if (at <= clickedUpTo || at < ms) continue;
     clickedUpTo = at;
     // `ms` is what's being heard, which was played a moment ago.
-    const when = Math.max(clicks.currentTime, clicks.currentTime + (at - ms) / 1000 - engine.latency);
+    const when = Math.max(clicks.currentTime, clicks.currentTime + (at - ms) / 1000 / speed.value - engine.latency);
     const oscillator = clicks.createOscillator();
     const gain = clicks.createGain();
     oscillator.frequency.value = bar === 1 ? 1760 : 1175;
-    gain.gain.setValueAtTime(0.25, when);
+    gain.gain.setValueAtTime(level, when);
     gain.gain.exponentialRampToValueAtTime(0.001, when + 0.04);
-    oscillator.connect(gain).connect(clicks.destination);
+    oscillator.connect(gain).connect(engine.output ?? clicks.destination);
     oscillator.start(when);
     oscillator.stop(when + 0.05);
   }
@@ -250,12 +333,7 @@ function tick() {
   frame = 0;
   const running = engine.playing;
   if (running) {
-    let ms = engine.positionMs();
-    const loop = activeLoop.value;
-    if (loop && ms >= loop.endMs) {
-      engine.seek(loop.startMs);
-      ms = loop.startMs;
-    }
+    const ms = engine.positionMs();
     position.value = ms;
     scheduleClicks(ms);
   }
@@ -326,6 +404,8 @@ function onKey(event: KeyboardEvent) {
     else if (!event.repeat) setCue(pad);
   } else if (event.code === 'KeyM' && !event.shiftKey) {
     if (!event.repeat) setCue(null);
+  } else if (event.code === 'KeyQ' && !event.shiftKey) {
+    if (!event.repeat) quantize.value = !quantize.value;
   } else return;
   event.preventDefault();
 }
@@ -341,8 +421,6 @@ function onKeyUp(event: KeyboardEvent) {
 
 /** Put new cues on the nearest beat. */
 const quantize = ref(true);
-/** New cues are loops this many beats long; 0 for plain cues. */
-const loopBeats = ref(0);
 
 // A change shows at once, as it will be once written, and is written behind
 // the scenes in the order it was made: writing one reads rekordbox's whole
@@ -452,20 +530,13 @@ async function write() {
   await loadPreparation(false);
 }
 
-/** Where a cue set now would go, and where it would end if it's a loop. */
+/** Where a cue set now would go: the playhead, or the loop being played, which it then keeps. */
 function cuePoint(): { positionMs: number; endMs: number | null } {
+  const loop = activeLoop.value;
+  if (loop) return { positionMs: Math.round(loop.startMs), endMs: Math.round(loop.endMs) };
   const at = nearestBeat(position.value);
-  const list = beats.value;
-  const start = quantize.value && at >= 0 ? list[at][0] : Math.round(position.value);
-  if (!loopBeats.value) return { positionMs: start, endMs: null };
-  let end: number;
-  if (quantize.value && at >= 0 && at + loopBeats.value < list.length) {
-    end = list[at + loopBeats.value][0];
-  } else {
-    const bpm = prep.value?.bpm ?? props.track?.bpm ?? 120;
-    end = Math.round(start + (loopBeats.value * 60_000) / bpm);
-  }
-  return { positionMs: start, endMs: Math.min(end, Math.round(durationMs.value)) };
+  const start = quantize.value && at >= 0 ? beats.value[at][0] : Math.round(position.value);
+  return { positionMs: start, endMs: null };
 }
 
 /** Sets a cue at the playhead: on a pad, in place of what's on it, or a memory cue. */
@@ -532,6 +603,10 @@ function nameCue(cue: Cue, event: Event) {
 }
 
 // --- Beat grid ---------------------------------------------------------------
+
+/** Whether the beat grid's tools are showing under the cues', kept between runs. */
+const gridTools = ref(localStorage.getItem('player.gridTools') === 'true');
+watch(gridTools, (shown) => localStorage.setItem('player.gridTools', String(shown)));
 
 /** Change the grid only from the playhead on, for a track that changes tempo. */
 const fromHere = ref(false);
@@ -606,6 +681,43 @@ const bpmHere = computed(() => {
 });
 watch(bpmHere, (bpm) => (bpmInput.value = bpm ? bpm.toFixed(2) : ''));
 
+/** The tempo being heard: the grid's, at the speed it's played. */
+const playBpm = computed(() => (bpmHere.value ? bpmHere.value * speed.value : null));
+/** How far the speed is from the track's own, as a mixer's tempo fader reads. */
+const speedLabel = computed(() => {
+  const percent = (speed.value - 1) * 100;
+  return `${percent > 0 ? '+' : '−'}${Math.abs(percent).toFixed(1)}%`;
+});
+
+/** Plays at a tempo, by playing faster or slower. */
+function setPlayBpm(bpm: number) {
+  const own = bpmHere.value;
+  if (!own || !Number.isFinite(bpm) || bpm <= 0) return;
+  const next = Math.max(SPEED_RANGE[0], Math.min(SPEED_RANGE[1], bpm / own));
+  speed.value = Math.abs(next - 1) < 0.0005 ? 1 : next;
+}
+
+/** A step faster or slower: 1 BPM, or with Shift a tenth of one. */
+function stepPlayBpm(direction: number, event: MouseEvent | KeyboardEvent) {
+  if (playBpm.value) setPlayBpm(playBpm.value + direction * (event.shiftKey ? 0.1 : 1));
+}
+
+function typePlayBpm(event: Event) {
+  const input = event.target as HTMLInputElement;
+  setPlayBpm(Number(input.value));
+  // What was typed gives way to what it came to: a tempo out of range, or not a number.
+  input.value = playBpm.value?.toFixed(2) ?? '';
+}
+
+/** Clicking the current rating clears it, as in rekordbox. */
+function rate(stars: number) {
+  const track = props.track;
+  if (!track) return;
+  const next = track.rating === stars ? 0 : stars;
+  browse.patchTrack(track.id, { rating: next });
+  store.edit({ kind: 'setRating', trackId: track.id, stars: next });
+}
+
 function commitBpm() {
   const bpm = Number(bpmInput.value);
   if (!bpm || bpm.toFixed(2) === bpmHere.value?.toFixed(2)) return;
@@ -652,8 +764,6 @@ function toggleLock() {
 
 const detail = ref<HTMLCanvasElement | null>(null);
 const overview = ref<HTMLCanvasElement | null>(null);
-/** Which tools show under the waveforms, as rekordbox's tabs do. */
-const tools = ref<'cues' | 'grid'>('cues');
 /** Seconds of audio across the detailed waveform. */
 const ZOOMS = [2, 4, 8, 16, 32];
 const zoom = ref(2);
@@ -685,6 +795,15 @@ function drawDetail() {
     if (!cue.endMs || cue.endMs < startMs || cue.positionMs > endMs) continue;
     c.fillStyle = 'rgba(255,130,5,0.22)';
     c.fillRect(x(cue.positionMs), 0, (cue.endMs - cue.positionMs) * pxPerMs, height);
+  }
+  // The loop being played, brighter, with its two ends marked.
+  const loop = activeLoop.value;
+  if (loop && loop.endMs >= startMs && loop.startMs <= endMs) {
+    c.fillStyle = 'rgba(255,130,5,0.3)';
+    c.fillRect(x(loop.startMs), 0, (loop.endMs - loop.startMs) * pxPerMs, height);
+    c.fillStyle = '#ff8205';
+    c.fillRect(x(loop.startMs), 0, 2, height);
+    c.fillRect(x(loop.endMs) - 2, 0, 2, height);
   }
 
   const wave = currentWave();
@@ -793,6 +912,11 @@ function drawOverview() {
     c.fillStyle = cueColor(cue);
     if (cue.endMs) c.fillRect(at(cue.positionMs), 0, Math.max(1, at(cue.endMs) - at(cue.positionMs)), 2);
     head(c, at(cue.positionMs) + 0.5, 0, 3.5, true);
+  }
+  const loop = activeLoop.value;
+  if (loop) {
+    c.fillStyle = '#ff8205';
+    c.fillRect(at(loop.startMs), height - 3, Math.max(2, at(loop.endMs) - at(loop.startMs)), 3);
   }
   c.fillStyle = playing.value ? COLOR.playheadPlaying : COLOR.playheadPaused;
   c.fillRect(at(position.value) - 1, 0, 2, height);
@@ -916,7 +1040,7 @@ watch(
 // Everything the waveforms show. Sync, so a change made during a frame is
 // drawn by that frame.
 watch(
-  [position, zoom, palette, waves, prep, playing, durationMs, () => props.track?.id],
+  [position, zoom, palette, waves, prep, playing, durationMs, activeLoop, () => props.track?.id],
   invalidate,
   { flush: 'sync' },
 );
@@ -940,62 +1064,111 @@ onBeforeUnmount(() => {
   engine.dispose();
 });
 
+// One height for everything in the tools' rows: the pads and the loop's two rows are made to it too.
 const buttonClass =
-  'rounded bg-surface-2 px-2 py-1 text-[11px] transition-colors hover:bg-surface-3 disabled:opacity-40';
-const onClass = 'rounded bg-accent px-2 py-1 text-[11px] text-white transition-colors disabled:opacity-40';
-const tabClass = 'px-2 py-0.5 text-[11px] disabled:opacity-30';
+  'inline-flex h-6 items-center justify-center rounded bg-surface-2 px-2 text-[11px] whitespace-nowrap transition-colors hover:bg-surface-3 disabled:opacity-40';
+const onClass =
+  'inline-flex h-6 items-center justify-center rounded bg-accent px-2 text-[11px] whitespace-nowrap text-white transition-colors disabled:opacity-40';
+/** A figure in the top bar: a small label over a large value. */
+const statClass = 'flex shrink-0 flex-col items-center leading-none';
+const statLabelClass = 'mb-1 text-[9px] font-medium tracking-wider text-text-muted uppercase';
+const statValueClass = 'font-mono text-base font-semibold text-text-primary';
 </script>
 
 <template>
   <section class="flex shrink-0 flex-col gap-1.5 border-b border-border px-4 pb-2 text-xs">
-    <div class="flex h-8 items-center gap-3">
+    <div class="flex h-14 items-center gap-3 pt-1">
       <button
-        class="flex size-7 shrink-0 items-center justify-center rounded-full bg-surface-3 text-sm hover:bg-accent disabled:opacity-40"
+        class="flex size-9 shrink-0 items-center justify-center rounded-full bg-surface-3 text-sm hover:bg-accent disabled:opacity-40"
         :disabled="!ready"
         :title="playing ? 'Pause (Space)' : 'Play (Space)'"
         @click="toggle"
       >
         {{ playing ? '❚❚' : '▶' }}
       </button>
+      <LibraryCover :path="track?.path ?? null" class="size-11" />
       <div class="min-w-0 flex-1">
         <template v-if="track">
-          <p class="truncate leading-tight">
-            {{ track.title }}
-            <span class="text-text-secondary">· {{ track.artist }}</span>
-          </p>
-          <p class="font-mono text-[11px] leading-tight text-text-muted">
-            <template v-if="loading">Decoding…</template>
-            <template v-else>{{ timeLabel }}</template>
-            <span v-if="barAndBeat" class="ml-2" title="Bar and beat at the playhead">{{ barAndBeat }}</span>
-            <span v-if="bpmHere" class="ml-2">{{ bpmHere.toFixed(2) }} BPM</span>
-            <span v-if="track.key" class="ml-2">{{ formatKey(track.key) }}</span>
-            <span v-if="activeLoop" class="ml-2 text-status-busy">
-              Looping
-              <button class="underline" @click="activeLoop = null">exit</button>
-            </span>
+          <p class="truncate text-sm leading-tight font-medium">{{ track.title }}</p>
+          <p class="truncate leading-tight text-text-secondary">
+            {{ track.artist }}<span v-if="track.album" class="text-text-muted"> · {{ track.album }}</span>
           </p>
         </template>
         <p v-else class="text-text-muted">No track loaded</p>
       </div>
       <template v-if="track">
-        <button :class="buttonClass" :title="`Back a beat (comma key, ${shortcut('comma')} for 8 bars, shift+comma for 16)`" @click="jumpBeats(-1)">◀ Beat</button>
-        <button :class="buttonClass" :title="`Forward a beat (period key, ${shortcut('period')} for 8 bars, shift+period for 16)`" @click="jumpBeats(1)">Beat ▶</button>
+        <div :class="statClass" class="w-36">
+          <span :class="statLabelClass">Time</span>
+          <span :class="statValueClass" class="text-sm">
+            <template v-if="loading">Decoding…</template>
+            <template v-else>{{ timeLabel }}</template>
+          </span>
+        </div>
+        <div v-if="barAndBeat" :class="statClass" class="w-14" title="Bar and beat at the playhead">
+          <span :class="statLabelClass">Bar</span>
+          <span :class="statValueClass">{{ barAndBeat }}</span>
+        </div>
+        <div v-if="playBpm" :class="statClass">
+          <span :class="statLabelClass" class="relative">
+            BPM
+            <!-- Out of the flow, beside the label: it comes and goes without moving the tempo under it. -->
+            <button
+              v-if="speed !== 1"
+              class="absolute top-1/2 left-full ml-1 -translate-y-1/2 rounded bg-status-busy/20 px-1 font-mono tracking-normal whitespace-nowrap text-status-busy hover:bg-status-busy/30"
+              title="Playing faster or slower than the track's own tempo. Click to go back to it."
+              @click="speed = 1"
+            >{{ speedLabel }}</button>
+          </span>
+          <span class="flex items-center gap-1">
+            <input
+              :value="playBpm.toFixed(2)"
+              :class="[statValueClass, speed !== 1 ? 'text-status-busy' : '']"
+              class="w-[4.75rem] rounded border border-transparent bg-transparent text-center outline-none hover:border-border focus:border-border-active"
+              title="The tempo it plays at. Type one, or use the arrows: the track plays faster or slower, and its pitch goes with it, as on a turntable. The track and its grid aren't changed."
+              spellcheck="false"
+              inputmode="decimal"
+              @change="typePlayBpm"
+              @keydown.enter="($event.target as HTMLInputElement).blur()"
+              @keydown.up.prevent="stepPlayBpm(1, $event)"
+              @keydown.down.prevent="stepPlayBpm(-1, $event)"
+            />
+            <span class="flex flex-col gap-px text-[8px] leading-none text-text-secondary">
+              <button
+                class="rounded-t bg-surface-2 px-1 py-0.5 hover:bg-surface-3"
+                title="Faster by 1 BPM (Shift: 0.1)"
+                @click="stepPlayBpm(1, $event)"
+              >▲</button>
+              <button
+                class="rounded-b bg-surface-2 px-1 py-0.5 hover:bg-surface-3"
+                title="Slower by 1 BPM (Shift: 0.1)"
+                @click="stepPlayBpm(-1, $event)"
+              >▼</button>
+            </span>
+          </span>
+        </div>
+        <div v-else-if="track.bpm" :class="statClass">
+          <span :class="statLabelClass">BPM</span>
+          <span :class="statValueClass">{{ track.bpm.toFixed(2) }}</span>
+        </div>
+        <div v-if="track.key" :class="statClass" class="w-10">
+          <span :class="statLabelClass">Key</span>
+          <span :class="statValueClass">{{ formatKey(track.key) }}</span>
+        </div>
+        <div :class="statClass">
+          <span :class="statLabelClass">Rating</span>
+          <span class="flex text-base leading-none">
+            <button
+              v-for="star in 5"
+              :key="star"
+              tabindex="-1"
+              :class="star <= track.rating ? 'text-status-busy hover:text-text-primary' : 'text-text-muted/50 hover:text-text-secondary'"
+              :title="`${star} ${star === 1 ? 'star' : 'stars'}`"
+              @click="rate(star)"
+            >{{ star <= track.rating ? '★' : '☆' }}</button>
+          </span>
+        </div>
       </template>
-      <div class="flex overflow-hidden rounded border border-border" title="Waveform colours, as in rekordbox">
-        <button
-          v-for="p in PALETTES"
-          :key="p.id"
-          :class="[tabClass, (palette?.id ?? chosenPalette) === p.id ? 'bg-surface-3 text-text-primary' : 'text-text-muted hover:bg-surface-2']"
-          :disabled="!!track && !!waves.size && !waves.has(p.kind)"
-          @click="chosenPalette = p.id"
-        >
-          {{ p.label }}
-        </button>
-      </div>
-      <div class="flex items-center gap-1">
-        <button :class="buttonClass" title="Zoom out" :disabled="zoom === ZOOMS.length - 1" @click="setZoom(zoom + 1)">−</button>
-        <button :class="buttonClass" title="Zoom in" :disabled="zoom === 0" @click="setZoom(zoom - 1)">+</button>
-      </div>
+      <VolumeKnob v-model="volume" label="Master volume" class="size-8" />
       <button
         v-if="track"
         class="text-text-muted hover:text-text-primary"
@@ -1037,56 +1210,94 @@ const tabClass = 'px-2 py-0.5 text-[11px] disabled:opacity-30';
       />
     </div>
 
-    <div class="flex min-h-7 flex-wrap items-center gap-x-3 gap-y-1.5" :class="track ? '' : 'pointer-events-none opacity-40'">
-      <div class="flex shrink-0 overflow-hidden rounded border border-border">
+    <div class="flex min-h-7 flex-wrap items-center justify-center gap-x-3 gap-y-1.5" :class="track ? '' : 'pointer-events-none opacity-40'">
+      <div class="flex items-center gap-1">
         <button
-          :class="[tabClass, tools === 'cues' ? 'bg-surface-3 text-text-primary' : 'text-text-muted hover:bg-surface-2']"
-          @click="tools = 'cues'"
+          v-for="(letter, slot) in PADS"
+          :key="letter"
+          class="relative h-6 w-8 rounded pt-0.5 text-[11px] leading-none font-semibold transition-colors disabled:opacity-40"
+          :class="hotCues[slot] ? 'text-black' : 'bg-surface-2 text-text-muted hover:bg-surface-3'"
+          :style="hotCues[slot] ? { backgroundColor: cueColor(hotCues[slot]!) } : {}"
+          :title="hotCues[slot]
+            ? `Hot cue ${letter} at ${formatTime(hotCues[slot]!.positionMs)}. Click (${slot + 1}) to go there, Shift-click (Shift+${slot + 1}) to delete.`
+            : activeLoop
+              ? `Save the loop playing as hot cue ${letter} (${slot + 1})`
+              : `Set hot cue ${letter} at the playhead (${slot + 1})`"
+          @click="pressPad(slot, $event)"
         >
-          Cues
-        </button>
-        <button
-          :class="[tabClass, tools === 'grid' ? 'bg-surface-3 text-text-primary' : 'text-text-muted hover:bg-surface-2']"
-          title="Beat grid and tempo"
-          @click="tools = 'grid'"
-        >
-          Grid
+          <span class="absolute top-0.5 left-0.5 font-mono text-[8px] leading-none font-normal opacity-70">{{ slot + 1 }}</span>
+          {{ letter }}
         </button>
       </div>
-
-      <template v-if="tools === 'cues'">
-        <div class="flex items-center gap-1">
-          <button
-            v-for="(letter, slot) in PADS"
-            :key="letter"
-            class="size-6 rounded text-[11px] font-semibold transition-colors disabled:opacity-40"
-            :class="hotCues[slot] ? 'text-black' : 'bg-surface-2 text-text-muted hover:bg-surface-3'"
-            :style="hotCues[slot] ? { backgroundColor: cueColor(hotCues[slot]!) } : {}"
-            :title="hotCues[slot]
-              ? `Hot cue ${letter} at ${formatTime(hotCues[slot]!.positionMs)}. Click (${slot + 1}) to go there, Shift-click (Shift+${slot + 1}) to delete.`
-              : `Set hot cue ${letter} at the playhead (${slot + 1})`"
-            @click="pressPad(slot, $event)"
-          >
-            {{ letter }}
-          </button>
-        </div>
-        <button :class="buttonClass" title="Set a memory cue at the playhead (M)" @click="setCue(null)">
-          + Memory cue
+      <button
+        :class="buttonClass"
+        :title="activeLoop ? 'Save the loop playing as a memory cue (M)' : 'Set a memory cue at the playhead (M)'"
+        aria-label="Set a memory cue"
+        @click="setCue(null)"
+      >
+        <!-- A memory cue as the waveform marks one: a red head on its line. -->
+        <svg viewBox="0 0 12 14" class="h-3.5 w-auto" fill="#ea3323" stroke="#ea3323" stroke-linejoin="round" stroke-linecap="round">
+          <path d="M1.5 1.5h9L6 7.5z" stroke-width="1.5" />
+          <path d="M6 7.5v5.5" stroke-width="1.5" fill="none" />
+        </svg>
+      </button>
+      <button
+        :class="quantize ? onClass : buttonClass"
+        class="font-semibold"
+        :title="quantize
+          ? 'Quantize is on: new cues and loops go on the nearest beat. Click (Q) to turn it off.'
+          : 'Quantize is off: new cues and loops go exactly at the playhead. Click (Q) to turn it on.'"
+        :aria-pressed="quantize"
+        @click="quantize = !quantize"
+      >
+        Q
+      </button>
+      <!-- The loop: its length above, to start and leave it; halve and double beneath. -->
+      <div class="flex h-6 w-14 shrink-0 flex-col gap-px text-[10px]">
+        <button
+          class="min-h-0 flex-1 rounded-t px-1 leading-none font-medium whitespace-nowrap transition-colors"
+          :class="activeLoop ? 'bg-status-busy text-black' : 'bg-surface-2 hover:bg-surface-3'"
+          :title="activeLoop
+            ? 'Looping. Click to leave the loop. A cue set now is saved as this loop.'
+            : `Loop ${loopLabel} from the playhead`"
+          :aria-pressed="!!activeLoop"
+          @click="toggleLoop"
+        >
+          {{ loopLabel }}
         </button>
-        <label class="flex items-center gap-1 text-[11px] text-text-secondary" title="New cues are loops of this length">
-          Set as
-          <select v-model.number="loopBeats" class="rounded border border-border bg-surface-1 px-1 py-0.5 text-[11px] outline-none">
-            <option :value="0">cue</option>
-            <option v-for="n in LOOP_LENGTHS" :key="n" :value="n">{{ n }}-beat loop</option>
-          </select>
-        </label>
-        <label class="flex items-center gap-1 text-[11px] text-text-secondary" title="Put new cues on the nearest beat">
-          <input v-model="quantize" type="checkbox" class="accent-accent" />
-          Quantize
-        </label>
-      </template>
+        <div class="flex h-2.5 shrink-0 gap-px text-[7px] leading-none text-text-secondary">
+          <button
+            class="flex flex-1 items-center justify-center rounded-bl bg-surface-2 hover:bg-surface-3 disabled:opacity-40"
+            title="Halve the loop"
+            :disabled="loopSize === 0"
+            @click="stepLoop(-1)"
+          >◀</button>
+          <button
+            class="flex flex-1 items-center justify-center rounded-br bg-surface-2 hover:bg-surface-3 disabled:opacity-40"
+            title="Double the loop"
+            :disabled="loopSize === LOOP_SIZES.length - 1"
+            @click="stepLoop(1)"
+          >▶</button>
+        </div>
+      </div>
 
-      <template v-else>
+      <button
+        :class="gridTools ? onClass : buttonClass"
+        :title="gridTools ? 'Hide the beat grid\'s tools' : 'Show the beat grid\'s tools: tempo, downbeat, metronome'"
+        aria-label="Beat grid tools"
+        :aria-pressed="gridTools"
+        @click="gridTools = !gridTools"
+      >
+        <!-- A beat grid: a bar's four lines, the first taller. -->
+        <svg viewBox="0 0 18 12" class="h-3.5 w-auto" fill="none" stroke="currentColor" stroke-linecap="round">
+          <path d="M2.5 1v10" stroke-width="2" />
+          <path d="M7 4v7M11.5 4v7M16 4v7" stroke-width="1.5" />
+        </svg>
+      </button>
+
+      <!-- The cues' tools on one line, the beat grid's on the next. -->
+      <span v-if="gridTools" class="h-0 basis-full" aria-hidden="true" />
+      <div v-if="gridTools" class="flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5">
         <button
           :class="buttonClass"
           class="font-medium"
@@ -1150,14 +1361,22 @@ const tabClass = 'px-2 py-0.5 text-[11px] disabled:opacity-30';
             Use {{ tappedBpm.toFixed(1) }}
           </button>
         </div>
-        <label
-          class="flex items-center gap-1 text-[11px] text-text-secondary"
-          title="Change the grid only from the playhead on, leaving the beats before it: for a track that changes tempo"
+        <button
+          :class="fromHere ? onClass : buttonClass"
+          :title="fromHere
+            ? 'From the playhead on: grid changes leave the beats before the playhead as they are, for a track that changes tempo. Click to change the whole grid again.'
+            : 'Change the grid only from the playhead on, leaving the beats before it: for a track that changes tempo'"
+          aria-label="From playhead on"
+          :aria-pressed="fromHere"
+          @click="fromHere = !fromHere"
         >
-          <input v-model="fromHere" type="checkbox" class="accent-accent" />
-          From playhead on
-        </label>
-        <div class="ml-auto flex items-center gap-1">
+          <!-- The playhead, and an arrow on from it. -->
+          <svg viewBox="0 0 18 12" class="h-3.5 w-auto" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M2.5 1v10" stroke="#ff3b30" stroke-width="2" />
+            <path d="M6.5 6h9M12 2.5 15.5 6 12 9.5" stroke="currentColor" stroke-width="1.5" />
+          </svg>
+        </button>
+        <div class="flex items-center gap-1">
           <button
             :class="metronome ? onClass : buttonClass"
             :disabled="!beats.length"
@@ -1166,6 +1385,7 @@ const tabClass = 'px-2 py-0.5 text-[11px] disabled:opacity-30';
           >
             Metronome
           </button>
+          <VolumeKnob v-model="clickVolume" label="Metronome volume" class="size-6" :class="beats.length ? '' : 'opacity-40'" />
           <button :class="buttonClass" :disabled="!undoStack.length || waiting || locked" title="Undo the last grid change" @click="undo">
             Undo
           </button>
@@ -1180,11 +1400,11 @@ const tabClass = 'px-2 py-0.5 text-[11px] disabled:opacity-30';
             {{ locked ? 'Locked' : 'Lock' }}
           </button>
         </div>
-      </template>
+      </div>
     </div>
 
     <!-- Every cue, to name or delete: one line, scrolling sideways. -->
-    <ul v-if="tools === 'cues' && cues.length" class="flex gap-x-3 overflow-x-auto whitespace-nowrap">
+    <ul v-if="cues.length" class="flex gap-x-3 overflow-x-auto whitespace-nowrap">
       <li v-for="cue in cues" :key="cueKeys.get(cue.id) ?? cue.id" class="flex shrink-0 items-center gap-1">
         <button
           class="rounded px-1 text-[10px] font-semibold text-black"

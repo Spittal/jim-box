@@ -58,6 +58,7 @@ const groups: { title: string; note?: string; lines: Line[] }[] = [
       { does: 'Go to a hot cue, or set it where there is none', keys: [['1'], ['…'], ['8']] },
       { does: 'Delete a hot cue', keys: [[shift, '1'], ['…'], [shift, '8']] },
       { does: 'Set a memory cue', keys: [['M'], [cmd, 'M']] },
+      { does: 'Turn quantize on or off', keys: [['Q']] },
       { does: 'Set the downbeat: the beat at the playhead starts its bar', keys: [[cmd, 'B']] },
     ],
   },

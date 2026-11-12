@@ -32,6 +32,21 @@ function parseKey(text: string): Key | null {
   return { pitch: ((pitch % 12) + 12) % 12, minor: /^m(in|inor)?$/.test(named[3] ?? '') };
 }
 
+/** A key's number on the Camelot wheel, 0 to 11. */
+const wheelNumber = (key: Key) => CAMELOT_MINOR.indexOf(key.minor ? key.pitch : (key.pitch + 9) % 12);
+
+/**
+ * Whether two keys mix: the same key, its neighbours either way round the
+ * Camelot wheel, or its relative major or minor. False where either isn't a key.
+ */
+export function keysCompatible(a: string, b: string): boolean {
+  const one = parseKey(a.trim());
+  const other = parseKey(b.trim());
+  if (!one || !other) return false;
+  const apart = (wheelNumber(one) - wheelNumber(other) + 12) % 12;
+  return one.minor === other.minor ? apart === 0 || apart === 1 || apart === 11 : apart === 0;
+}
+
 /** A key in the chosen notation. One that isn't recognised is shown as it's stored. */
 export function formatKey(name: string, notation: KeyNotation): string {
   const text = name.trim();

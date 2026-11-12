@@ -9,6 +9,7 @@ import ToggleRow from '@/components/ToggleRow.vue';
 import { useLibrariesStore } from '@/stores/libraries';
 import { useSettingsStore } from '@/stores/settings';
 import { useSettingsSave } from '@/composables/useSettingsSave';
+import { PALETTES, chosenPalette } from '@/composables/useWaveform';
 import type { KeyNotation, PathTemplates } from '@/types/settings';
 
 const settingsStore = useSettingsStore();
@@ -152,6 +153,32 @@ async function savePaths() {
             :title="`e.g. ${option.example}`"
             :aria-pressed="settings.keyNotation === option.id"
             @click="settings.keyNotation !== option.id && save({ keyNotation: option.id })"
+          >
+            {{ option.label }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="flex flex-col gap-2">
+      <span class="text-xs text-text-secondary">Waveforms</span>
+      <div class="flex items-start justify-between gap-4 rounded border border-border bg-surface-1 px-3 py-2">
+        <span class="flex flex-col">
+          <span class="text-sm">Waveform colours</span>
+          <span class="text-xs text-text-muted">
+            How waveforms are drawn in the player and the track list, as in rekordbox. A track analysed without the chosen style is drawn in the nearest it has.
+          </span>
+        </span>
+        <div class="flex shrink-0 overflow-hidden rounded border border-border">
+          <button
+            v-for="option in PALETTES"
+            :key="option.id"
+            class="px-3 py-1 text-xs transition-colors"
+            :class="chosenPalette === option.id
+              ? 'bg-surface-3 font-medium text-text-primary'
+              : 'bg-surface-1 text-text-muted hover:text-text-secondary'"
+            :aria-pressed="chosenPalette === option.id"
+            @click="chosenPalette = option.id"
           >
             {{ option.label }}
           </button>

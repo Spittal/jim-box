@@ -34,6 +34,13 @@ export class TrackAudio {
   context: AudioContext | null = null;
 
   private node: AudioWorkletNode | null = null;
+  /** The master volume, which everything heard goes through: the metronome's clicks too. */
+  output: GainNode | null = null;
+  private volume = 1;
+  /** How fast the track plays, 1 being as recorded. */
+  private speed = 1;
+  /** The frames a loop goes round between. */
+  private loop: { start: number; end: number } | null = null;
   /** The track rate `context` was made for. */
   private contextRate = 0;
   private rate = 44_100;
@@ -90,7 +97,14 @@ export class TrackAudio {
     if (stream !== this.stream || !this.context || !this.node) return;
     this.rate = rate;
     this.durationMs = (frames / rate) * 1000;
-    this.node.port.postMessage({ type: 'start', frames, step: rate / this.context.sampleRate, seq: ++this.seq });
+    this.node.port.postMessage({
+      type: 'start',
+      frames,
+      step: rate / this.context.sampleRate,
+      speed: this.speed,
+      seq: ++this.seq,
+    });
+    this.sendLoop();
     this.ready = true;
     this.play();
   }
@@ -112,7 +126,10 @@ export class TrackAudio {
     await context.audioWorklet.addModule(workletUrl);
     const node = new AudioWorkletNode(context, 'track-player', { numberOfInputs: 0, outputChannelCount: [2] });
     node.port.onmessage = (event: MessageEvent<Report>) => this.heard(event.data);
-    node.connect(context.destination);
+    const output = context.createGain();
+    output.gain.value = this.volume;
+    node.connect(output).connect(context.destination);
+    this.output = output;
     this.context = context;
     this.contextRate = rate;
     this.node = node;
@@ -141,9 +158,44 @@ export class TrackAudio {
 
   /** Where the track is being heard. */
   positionMs(): number {
-    const at = (this.frame / this.rate) * 1000;
-    if (!this.playing || !this.context) return at;
-    return at + Math.max(0, this.context.currentTime - this.time - this.latency) * 1000;
+    if (!this.playing || !this.context) return (this.frame / this.rate) * 1000;
+    const since = Math.max(0, this.context.currentTime - this.time - this.latency);
+    let frame = this.frame + since * this.rate * this.speed;
+    // The audio thread has gone round the loop since it last said where it was.
+    const loop = this.loop;
+    if (loop && frame >= loop.end) frame = loop.start + ((frame - loop.end) % (loop.end - loop.start));
+    return (frame / this.rate) * 1000;
+  }
+
+  /** The master volume's gain, 0 to 1. */
+  setVolume(gain: number) {
+    this.volume = gain;
+    if (this.output && this.context) this.output.gain.setTargetAtTime(gain, this.context.currentTime, 0.01);
+  }
+
+  /** Plays faster or slower, 1 being as recorded. Nothing is stretched: the pitch goes with it. */
+  setSpeed(speed: number) {
+    if (speed === this.speed) return;
+    // Where it has got to at the old speed is where the new one carries on from.
+    if (this.playing && this.context) {
+      this.frame = (this.positionMs() / 1000) * this.rate;
+      this.time = this.context.currentTime - this.latency;
+    }
+    this.speed = speed;
+    this.node?.port.postMessage({ type: 'speed', speed });
+  }
+
+  /** Goes round between two times until told otherwise with null. */
+  setLoop(loop: { startMs: number; endMs: number } | null) {
+    this.loop =
+      loop && loop.endMs > loop.startMs
+        ? { start: Math.round((loop.startMs / 1000) * this.rate), end: Math.round((loop.endMs / 1000) * this.rate) }
+        : null;
+    this.sendLoop();
+  }
+
+  private sendLoop() {
+    this.node?.port.postMessage({ type: 'loop', start: this.loop?.start ?? 0, end: this.loop?.end ?? 0 });
   }
 
   play() {
@@ -184,7 +236,8 @@ export class TrackAudio {
     this.frames = 0;
     this.frame = 0;
     this.durationMs = 0;
-    this.node?.port.postMessage({ type: 'start', frames: 0, step: 1, seq: ++this.seq });
+    this.loop = null;
+    this.node?.port.postMessage({ type: 'start', frames: 0, step: 1, speed: this.speed, seq: ++this.seq });
     this.rest();
   }
 
@@ -205,5 +258,6 @@ export class TrackAudio {
     void this.context?.close();
     this.context = null;
     this.node = null;
+    this.output = null;
   }
 }

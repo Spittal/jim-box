@@ -19,6 +19,11 @@ class TrackPlayer extends AudioWorkletProcessor {
     this.at = 0;
     /** Frames of the track to each one put out. */
     this.step = 1;
+    /** How fast it plays, 1 being as recorded: pitch follows, as on a turntable. */
+    this.speed = 1;
+    /** The frames a loop goes round between; no loop while the end isn't after the start. */
+    this.loopStart = 0;
+    this.loopEnd = 0;
     this.playing = false;
     /** The main thread's count of loads and seeks, sent back with reports. */
     this.seq = 0;
@@ -34,6 +39,9 @@ class TrackPlayer extends AudioWorkletProcessor {
         this.done = false;
         this.at = 0;
         this.step = message.step;
+        this.speed = message.speed ?? 1;
+        this.loopStart = 0;
+        this.loopEnd = 0;
         this.playing = false;
         this.seq = message.seq;
         break;
@@ -66,6 +74,14 @@ class TrackPlayer extends AudioWorkletProcessor {
         this.seq = message.seq;
         this.report();
         break;
+      case 'speed':
+        this.speed = message.speed;
+        this.report();
+        break;
+      case 'loop':
+        this.loopStart = message.start;
+        this.loopEnd = message.end;
+        break;
     }
   }
 
@@ -78,11 +94,15 @@ class TrackPlayer extends AudioWorkletProcessor {
     if (this.blocks++ % REPORT_EVERY === 0) this.report();
     const left = outputs[0][0];
     const right = outputs[0][1] ?? left;
-    const { pcm, step } = this;
+    const { pcm, loopStart, loopEnd } = this;
+    const step = this.step * this.speed;
+    const looping = loopEnd > loopStart;
     const last = this.filled - 1;
     let at = this.at;
     let i = 0;
     for (; i < left.length; i++) {
+      // Round the loop to the sample, so it stays in time however short it is.
+      if (looping && at >= loopEnd) at = loopStart + ((at - loopEnd) % (loopEnd - loopStart));
       const frame = Math.floor(at);
       // The frame after is needed too, to go between them.
       if (frame >= last) break;
