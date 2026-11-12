@@ -28,7 +28,20 @@ import type { CollectionTrack, TrackPreview as Preview, TrackSort } from '@/type
  * The tracks of the list being shown. Tracks still being fetched come first,
  * dimmed, with where their fetch has got to; then the ones in the collection.
  */
+const props = defineProps<{
+  /** The track in the player, whose row is marked apart from the selected ones. */
+  playingId?: string | null;
+}>();
 const emit = defineEmits<{ open: [track: CollectionTrack] }>();
+
+/** A row's background: the track in the player is tinted, and more so when it's selected too. */
+function rowClass(track: CollectionTrack | null | undefined) {
+  const picked = !!track && selection.value.has(track.id);
+  if (track && track.id === props.playingId) {
+    return `shadow-[inset_2px_0_0_var(--color-accent)] ${picked ? 'bg-accent/25' : 'bg-accent/10 hover:bg-accent/15'}`;
+  }
+  return picked ? 'bg-surface-2' : 'hover:bg-surface-1';
+}
 
 const store = useCollectionStore();
 const { formatKey } = useKeyNotation();
@@ -841,7 +854,7 @@ const smallButtonClass =
           :key="row.index"
           class="absolute right-0 left-0 flex cursor-default items-center gap-3 pr-7 pl-4 text-xs"
           :class="[
-            row.track && selection.has(row.track.id) ? 'bg-surface-2' : 'hover:bg-surface-1',
+            rowClass(row.track),
             dropRow === row.index ? 'border-t border-accent' : '',
           ]"
           :style="{ top: `${row.index * ROW_HEIGHT}px`, height: `${ROW_HEIGHT}px` }"
@@ -870,7 +883,11 @@ const smallButtonClass =
               :class="column.class" :style="cellStyle[column.id]"
             />
             <span v-else-if="column.id === 'title'" class="flex items-center gap-1.5 overflow-hidden" :class="column.class" :style="cellStyle[column.id]">
-              <span class="truncate" :title="row.track.path">{{ row.track.title }}</span>
+              <span
+                class="truncate"
+                :class="row.track.id === playingId ? 'font-medium text-accent-hover' : ''"
+                :title="row.track.path"
+              >{{ row.track.title }}</span>
               <span
                 v-if="library.forTrack(row.track.id)?.status === 'matched'"
                 class="shrink-0 rounded bg-accent/15 px-1.5 font-mono text-[10px] leading-4 text-accent-hover"

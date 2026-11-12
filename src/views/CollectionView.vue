@@ -103,7 +103,7 @@ const buttonClass =
 
     <div v-if="status" class="flex min-h-0 flex-1">
       <PlaylistTree />
-      <TrackList @open="opened = $event" />
+      <TrackList :playing-id="opened?.id ?? null" @open="opened = $event" />
       <FetchPanel v-if="focused" />
       <CollectionTrackDetail v-else-if="detailTrack" :track="detailTrack" @close="browse.clearSelection()" />
       <FixPanel v-else-if="identified.length" :items="identified" @close="browse.clearSelection()" />
