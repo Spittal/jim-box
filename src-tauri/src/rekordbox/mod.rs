@@ -163,6 +163,8 @@ pub struct TrackRow {
     pub comment: String,
     /// The playlists the track is in, by name. Intelligent playlists aren't counted.
     pub playlists: Vec<String>,
+    /// Those playlists' ids, in the same order: names can repeat.
+    pub playlist_ids: Vec<String>,
     /// Whether the track has a beat grid and waveforms.
     pub analysed: bool,
     /// What is known of its grid: how this app decided it, and whether
@@ -207,6 +209,15 @@ impl Loaded {
         self.memberships
             .get(row)
             .map(|lists| lists.iter().map(|&i| playlists.name(i as usize).to_owned()).collect())
+            .unwrap_or_default()
+    }
+
+    /// The ids of the playlists the track at `row` is in, in the order of `playlist_names`.
+    fn playlist_ids(&self, row: usize) -> Vec<String> {
+        let playlists = self.index.playlists();
+        self.memberships
+            .get(row)
+            .map(|lists| lists.iter().map(|&i| playlists.ids[i as usize].to_string()).collect())
             .unwrap_or_default()
     }
 }
@@ -569,6 +580,7 @@ impl Collection {
                     path: local_path(index.folder_path.get(r)),
                     comment: index.comment.get(r).to_owned(),
                     playlists: loaded.playlist_names(r),
+                    playlist_ids: loaded.playlist_ids(r),
                     analysed: analyse::is_analysed(index.analysed[r]),
                     grid: self.grids.get(&index.ids[r].to_string()),
                 }
@@ -665,6 +677,8 @@ pub(crate) mod tests {
         let q = query(Source::Playlist { id: node.id.clone() }, Sort::TrackNo);
         for row in collection.tracks(&q, 0, 1000).unwrap().rows {
             assert!(row.playlists.contains(&node.name), "{} names {}", row.title, node.name);
+            assert!(row.playlist_ids.contains(&node.id), "{} is in {}", row.title, node.name);
+            assert_eq!(row.playlist_ids.len(), row.playlists.len());
         }
 
         let all = collection.tracks(&query(Source::Collection, Sort::Playlists), 0, 1000).unwrap();

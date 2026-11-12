@@ -117,6 +117,8 @@ export interface CollectionTrack {
   comment: string;
   /** The playlists it's in, by name. Intelligent playlists aren't counted. */
   playlists: string[];
+  /** Those playlists' ids, in the same order: names can repeat. */
+  playlistIds: string[];
   analysed: boolean;
   /** What is known of its grid; null when this app hasn't analysed it and it hasn't been reviewed. */
   grid: GridState | null;
@@ -198,6 +200,10 @@ export interface Preparation {
   cues: Cue[];
   /** rekordbox's analysis lock: the grid can't be changed. */
   locked: boolean;
+  /** The colour a hot cue set now on each of pads A to H is drawn in. */
+  padColors: string[];
+  /** The colour of a loop set on any of them. */
+  loopColor: string;
 }
 
 /** What the track list shows of a track: its whole waveform, small, and its cues. */

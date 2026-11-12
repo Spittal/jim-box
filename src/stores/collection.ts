@@ -92,23 +92,33 @@ export const useCollectionStore = defineStore('collection', () => {
   /**
    * Makes one change to rekordbox's library. Returns the id of what it
    * created, if anything; on failure sets `error` and returns undefined.
+   * A `quiet` change is one of several being made in a row to a track's cues
+   * or grid: the lists aren't read again for each, and `touch` is called
+   * after the last.
    */
-  async function edit(change: CollectionEdit): Promise<string | null | undefined> {
+  async function edit(change: CollectionEdit, { quiet = false } = {}): Promise<string | null | undefined> {
     error.value = null;
     try {
       const outcome = await invoke<EditOutcome>('edit_collection', { edit: change });
       status.value = outcome.status;
-      playlists.value = outcome.playlists;
       // Done, though not all of it: say what wasn't.
       error.value = outcome.warning;
-      generation.value++;
+      if (!quiet) {
+        playlists.value = outcome.playlists;
+        generation.value++;
+      }
       return outcome.createdId;
     } catch (e) {
       error.value = String(e);
       // The backend read the library again; show what is really there.
-      generation.value++;
+      if (!quiet) generation.value++;
       return undefined;
     }
+  }
+
+  /** Has the track lists read again, after quiet changes. */
+  function touch() {
+    generation.value++;
   }
 
   /** Marks tracks' beat grids as reviewed, or takes that back. */
@@ -204,6 +214,7 @@ export const useCollectionStore = defineStore('collection', () => {
     trackIds,
     namesOf,
     edit,
+    touch,
     importPaths,
     analyse,
     cancelAnalysis,

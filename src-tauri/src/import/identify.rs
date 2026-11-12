@@ -39,6 +39,24 @@ pub fn identify(app: &AppHandle, track_ids: Vec<String>) -> AppResult<()> {
     })
 }
 
+/// The genres MusicBrainz has for a collection track, the likeliest first.
+/// The recording is the one given (what identifying found), or is looked up
+/// by the file's tags and name. Nothing is kept or changed.
+pub async fn genres(app: &AppHandle, track_id: String, recording_id: Option<String>) -> AppResult<Vec<String>> {
+    let sources = app.state::<Sources>();
+    if let Some(id) = recording_id {
+        return sources.musicbrainz.genres(&id).await;
+    }
+    let Some(path) = app.state::<Collection>().path_of(&track_id) else {
+        return Err(AppError::Validation("That track is no longer in the collection".into()));
+    };
+    let settings = app.state::<SettingsState>().snapshot();
+    let reading = path.clone();
+    let scanned = library::blocking(move || library::read_file(&reading)).await?;
+    let relative = path.strip_prefix(settings.library_root_for(&path)).unwrap_or(&path);
+    autotag::genres(&sources, &scanned.tags, relative, scanned.duration_secs, None).await
+}
+
 /// Reads the tracks' files into the store, ready to be identified.
 async fn read_files(app: &AppHandle, files: Vec<(String, PathBuf)>) -> AppResult<Vec<LibraryItem>> {
     let store = app.state::<LibraryStore>();

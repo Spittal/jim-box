@@ -115,6 +115,11 @@ pub struct Preparation {
     pub cues: Vec<Cue>,
     /// rekordbox's analysis lock: the grid can't be changed.
     pub locked: bool,
+    /// The colour a hot cue set now on each of pads A to H is drawn in, so
+    /// one can be shown before it's written.
+    pub pad_colors: Vec<String>,
+    /// And the colour of a loop set on any of them.
+    pub loop_color: String,
 }
 
 /// How many columns a track list preview has: enough for the column's width
@@ -283,6 +288,7 @@ impl Collection {
             .ok_or_else(|| AppError::Rekordbox("That track is no longer in the collection".into()))?
             as usize;
         let db = rbl_db::Library::open(loaded.location.clone(), OpenMode::ReadOnly).map_err(rekordbox_err)?;
+        let colors = HotCueColors::installed();
 
         let relative = index.analysis_path.get(row);
         let beats = if relative.is_empty() {
@@ -301,6 +307,8 @@ impl Collection {
                 .collect(),
             cues: cues_of(&db, track_id)?,
             locked: is_locked(&db, track_id)?,
+            pad_colors: (0..8).map(|slot| colors.color_of(0, slot, false)).collect(),
+            loop_color: colors.color_of(0, 0, true),
         })
     }
 

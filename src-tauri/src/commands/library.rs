@@ -19,6 +19,17 @@ pub fn identify_tracks(app: AppHandle, track_ids: Vec<String>) -> AppResult<()> 
     import::identify(&app, track_ids)
 }
 
+/// The genres MusicBrainz has for a collection track, the likeliest first;
+/// see [`import::genres`].
+#[tauri::command]
+pub async fn musicbrainz_genres(
+    app: AppHandle,
+    track_id: String,
+    recording_id: Option<String>,
+) -> AppResult<Vec<String>> {
+    import::genres(&app, track_id, recording_id).await
+}
+
 #[tauri::command]
 pub fn apply_library_matches(app: AppHandle, ids: Vec<Uuid>) -> AppResult<()> {
     import::apply(&app, ids)

@@ -20,6 +20,8 @@ const BUSY_BACKOFF: Duration = Duration::from_secs(2);
 /// MusicBrainz's "Various Artists" artist.
 const VARIOUS_ARTISTS_ID: &str = "89ad4ac3-39f7-470e-963a-56509c546377";
 const SEARCH_LIMIT: &str = "10";
+/// Genres to offer for a track: past the first few, they're one person's vote.
+const MAX_GENRES: usize = 6;
 
 // --- Domain types ---
 
@@ -124,6 +126,19 @@ impl MusicBrainz {
             .get::<RecordingDto>(&format!("/recording/{id}"), &[("inc", "releases release-groups media artist-credits isrcs")])
             .await;
         Ok(not_found_as_none(recording)?.map(into_recording))
+    }
+
+    /// The genres MusicBrainz's users have voted onto a recording, the albums
+    /// it's on and its artists: the most specific first, and of those the
+    /// most voted. Empty when nobody has, which is common for recordings.
+    pub async fn genres(&self, recording_id: &str) -> AppResult<Vec<String>> {
+        let found = self
+            .get::<GenreLookup>(
+                &format!("/recording/{recording_id}"),
+                &[("inc", "genres artist-credits releases release-groups")],
+            )
+            .await;
+        Ok(not_found_as_none(found)?.map(rank_genres).unwrap_or_default())
     }
 
     /// The recordings an ISRC is assigned to (usually one).
@@ -289,6 +304,46 @@ struct UrlResource {
     resource: String,
 }
 
+/// A recording with the genres voted onto it and onto what it's part of.
+#[derive(Deserialize)]
+struct GenreLookup {
+    #[serde(default)]
+    genres: Vec<Genre>,
+    #[serde(rename = "artist-credit", default)]
+    artist_credit: Vec<GenreCredit>,
+    #[serde(default)]
+    releases: Vec<GenreRelease>,
+}
+
+#[derive(Deserialize)]
+struct Genre {
+    name: String,
+    #[serde(default)]
+    count: i32,
+}
+
+#[derive(Deserialize)]
+struct GenreCredit {
+    artist: Tagged,
+}
+
+#[derive(Deserialize)]
+struct GenreRelease {
+    #[serde(rename = "release-group")]
+    release_group: Option<Tagged>,
+}
+
+/// An artist or release group, for its genres.
+#[derive(Deserialize)]
+struct Tagged {
+    id: String,
+    #[serde(default)]
+    genres: Vec<Genre>,
+    /// Of a release group: what makes it a compilation, a soundtrack…
+    #[serde(rename = "secondary-types", default)]
+    secondary_types: Vec<String>,
+}
+
 #[derive(Deserialize)]
 struct RecordingDto {
     id: String,
@@ -397,6 +452,43 @@ fn into_recording(dto: RecordingDto) -> Recording {
         })
         .collect();
     Recording { id: dto.id, title: dto.title, length_ms: dto.length, base, appearances }
+}
+
+/// The recording's own genres, then its albums', then its artists'; each by
+/// votes. Compilations are left out: their genres are of the other tracks.
+fn rank_genres(found: GenreLookup) -> Vec<String> {
+    let mut groups: Vec<Tagged> = Vec::new();
+    for group in found.releases.into_iter().filter_map(|r| r.release_group) {
+        if group.secondary_types.is_empty() && !groups.iter().any(|g| g.id == group.id) {
+            groups.push(group);
+        }
+    }
+    let artists = found.artist_credit.into_iter().map(|c| c.artist);
+    let levels = [
+        found.genres,
+        groups.into_iter().flat_map(|g| g.genres).collect(),
+        artists.flat_map(|a| a.genres).collect(),
+    ];
+
+    let mut names: Vec<String> = Vec::new();
+    for level in levels {
+        // A genre voted onto two of a recording's albums has both's votes.
+        let mut votes: Vec<(String, i32)> = Vec::new();
+        for genre in level {
+            match votes.iter_mut().find(|(name, _)| *name == genre.name) {
+                Some((_, count)) => *count += genre.count,
+                None => votes.push((genre.name, genre.count)),
+            }
+        }
+        votes.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        for (name, _) in votes {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    names.truncate(MAX_GENRES);
+    names
 }
 
 fn summarize(release: &Release) -> ReleaseSummary {
@@ -524,6 +616,26 @@ mod tests {
             ArtistCredit { name: "Pharrell Williams".into(), joinphrase: "".into(), artist: ArtistRef { id: "b".into() } },
         ];
         assert_eq!(credit_name(&credit), "Daft Punk feat. Pharrell Williams");
+    }
+
+    #[test]
+    fn ranks_genres_from_the_recording_outwards() {
+        let found: GenreLookup = serde_json::from_str(
+            r#"{
+                "genres": [{"name": "french house", "count": 1}],
+                "artist-credit": [{"artist": {"id": "a", "genres": [
+                    {"name": "electronic", "count": 42}, {"name": "house", "count": 22}, {"name": "trap", "count": 1}
+                ]}}],
+                "releases": [
+                    {"release-group": {"id": "g", "genres": [{"name": "house", "count": 3}, {"name": "disco", "count": 2}]}},
+                    {"release-group": {"id": "g", "genres": [{"name": "house", "count": 3}, {"name": "disco", "count": 2}]}},
+                    {"release-group": {"id": "h", "genres": [{"name": "disco", "count": 2}]}},
+                    {"release-group": {"id": "c", "secondary-types": ["Compilation"], "genres": [{"name": "pop", "count": 9}]}}
+                ]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(rank_genres(found), ["french house", "disco", "house", "electronic", "trap"]);
     }
 
     #[test]

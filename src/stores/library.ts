@@ -55,6 +55,27 @@ export const useLibraryStore = defineStore('library', () => {
   /** Downloads a collection track again; it moves to the new file once that succeeds. */
   const redownload = (trackId: string) => invoke<Job>('redownload_track', { trackId });
 
+  /** What MusicBrainz was found to have for each track asked about this session. */
+  const genresFound = new Map<string, Promise<string[]>>();
+
+  /**
+   * The genres MusicBrainz has for a collection track, the likeliest first.
+   * Takes a few seconds the first time: the recording has to be found, and
+   * MusicBrainz allows a request a second. Empty when it has none.
+   */
+  function genres(trackId: string): Promise<string[]> {
+    const recordingId = forTrack(trackId)?.proposal?.metadata.mbRecordingId ?? null;
+    const key = `${trackId} ${recordingId ?? ''}`;
+    let found = genresFound.get(key);
+    if (!found) {
+      found = invoke<string[]>('musicbrainz_genres', { trackId, recordingId });
+      genresFound.set(key, found);
+      // A failure isn't an answer: ask again next time.
+      found.catch(() => genresFound.delete(key));
+    }
+    return found;
+  }
+
   const byTrack = computed(() => new Map(items.value.map((i) => [i.trackId, i])));
   /** What identifying found for a collection track, if it has been looked up. */
   const forTrack = (trackId: string) => byTrack.value.get(trackId);
@@ -109,6 +130,7 @@ export const useLibraryStore = defineStore('library', () => {
     cancel,
     dismiss,
     forTrack,
+    genres,
     fixes,
     changeMusicDir,
     plan,

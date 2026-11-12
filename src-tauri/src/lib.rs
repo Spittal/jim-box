@@ -116,6 +116,7 @@ pub fn run() {
             commands::jobs::remove_job,
             commands::library::get_library,
             commands::library::identify_tracks,
+            commands::library::musicbrainz_genres,
             commands::library::library_cover_art,
             commands::library::library_cover_thumb,
             commands::library::redownload_track,

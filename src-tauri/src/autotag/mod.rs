@@ -131,6 +131,41 @@ pub async fn identify_file(
     Ok(Some(Identified { metadata, confidence, request: Some(request) }))
 }
 
+/// The genres MusicBrainz has for a file's recording, the likeliest first.
+/// `recording_id` is the recording it's known to be, if it has been
+/// identified; otherwise it's found by the file's tags or name. Empty when
+/// the recording isn't found, or nobody has given it a genre.
+pub async fn genres(
+    sources: &Sources,
+    tags: &ExistingTags,
+    relative_path: &Path,
+    duration_secs: Option<u32>,
+    recording_id: Option<String>,
+) -> AppResult<Vec<String>> {
+    let hint = hint_from_file(tags, relative_path, duration_secs).unwrap_or_default();
+    let known = recording_id.or_else(|| tags.mb_recording_id.clone());
+    let mut id = recording_id_for(sources, &hint, known).await?;
+    if id.is_none() && !hint.title.is_empty() {
+        if let Some((request, _)) = find_track(sources, &hint).await? {
+            id = recording_id_for(sources, &TrackHint::from(&request), request.mb_recording_id.clone()).await?;
+        }
+    }
+    match id {
+        Some(id) => sources.musicbrainz.genres(&id).await,
+        None => Ok(Vec::new()),
+    }
+}
+
+/// The MusicBrainz recording a hint is of: the one it names, else its ISRC's.
+async fn recording_id_for(sources: &Sources, hint: &TrackHint, known: Option<String>) -> AppResult<Option<String>> {
+    if known.is_some() {
+        return Ok(known);
+    }
+    let Some(isrc) = &hint.isrc else { return Ok(None) };
+    let candidates = sources.musicbrainz.isrc_recordings(isrc).await?;
+    Ok(track::pick_recording(&candidates, hint).map(|r| r.id.clone()))
+}
+
 /// A folder matched to a release as a whole.
 pub struct AlbumCandidate {
     pub release: AlbumRelease,
@@ -255,6 +290,18 @@ mod live_tests {
                 println!("  {source:6} {} - {} ({}, {}s)", r.artist, r.title, r.album, r.duration_secs);
             }
             assert!(!results.is_empty());
+        }
+    }
+
+    /// Hits Deezer and MusicBrainz. Run with `cargo test -- --ignored live_genres --nocapture`.
+    #[tokio::test]
+    #[ignore]
+    async fn live_genres() {
+        let sources = Sources::new();
+        for path in ["Daft Punk - One More Time.mp3", "Hundred Waters - Wave to Anchor.mp3"] {
+            let found = genres(&sources, &ExistingTags::default(), Path::new(path), None, None).await.unwrap();
+            println!("{path}: {found:?}");
+            assert!(!found.is_empty());
         }
     }
 }

@@ -12,6 +12,7 @@ import {
   head,
   type Wave,
 } from '@/composables/useWaveform';
+import { editedGrid, nearestBeatIndex, sameGrid } from '@/composables/useGridEdit';
 import { useKeyNotation } from '@/composables/useKeyNotation';
 import { useCollectionStore } from '@/stores/collection';
 import type { Beat, CollectionEdit, CollectionTrack, Cue, GridChange, Preparation } from '@/types/collection';
@@ -101,7 +102,9 @@ async function loadPreparation(withWaveform = true) {
       withWaveform ? store.waveform(id) : null,
     ]);
     if (props.track?.id !== id || load !== latestLoad) return;
-    prep.value = nextPrep;
+    // Changes still being written are ahead of what was read: the read after
+    // the last of them is the one to show.
+    if (!pending.value) prep.value = nextPrep;
     if (!bytes) return;
     const found = new Map<number, Uint8Array>();
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -179,18 +182,7 @@ function seek(ms: number) {
 }
 
 /** The index of the beat nearest a time, or -1 without a grid. */
-function nearestBeat(ms: number): number {
-  const list = beats.value;
-  if (!list.length) return -1;
-  let lo = 0;
-  let hi = list.length - 1;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (list[mid][0] < ms) lo = mid + 1;
-    else hi = mid;
-  }
-  return lo > 0 && ms - list[lo - 1][0] <= list[lo][0] - ms ? lo - 1 : lo;
-}
+const nearestBeat = (ms: number) => nearestBeatIndex(beats.value, ms);
 
 function jumpBeats(count: number) {
   const at = nearestBeat(position.value);
@@ -289,21 +281,113 @@ function onKey(event: KeyboardEvent) {
 const quantize = ref(true);
 /** New cues are loops this many beats long; 0 for plain cues. */
 const loopBeats = ref(0);
-const busy = ref(false);
 
-/** Makes a change and reads the track again. False if it was refused. */
-async function change(edit: CollectionEdit): Promise<boolean> {
-  if (busy.value || !props.track) return false;
-  busy.value = true;
+// A change shows at once, as it will be once written, and is written behind
+// the scenes in the order it was made: writing one reads rekordbox's whole
+// library again, which is no time to make a button wait.
+
+/** A change shown, and waiting to be written. */
+interface Write {
+  edit: CollectionEdit;
+  trackId: string;
+  /** `failures` when it was made. */
+  batch: number;
+  /** The undo stack before it, to go back to if it's refused. */
+  undo: Beat[][];
+  /** The id a new cue is shown under until rekordbox's is known. */
+  cueId?: string;
+  /** Run once written, before the next change is. */
+  settle?: () => Promise<void>;
+  done: ((written: boolean) => void)[];
+}
+
+const queue: Write[] = [];
+let writing = false;
+/** Changes shown that are still to be written. */
+const pending = ref(0);
+/** Bumped when a change is refused: those made on top of it aren't written. */
+let failures = 0;
+/** The id rekordbox gave each cue set here, by the id it was shown under. */
+const cueIds = new Map<string, string>();
+/** The other way round: a cue keeps its place in the list when its id arrives. */
+const cueKeys = new Map<string, string>();
+let cuesMade = 0;
+
+/** Two nudges of the whole grid in a row are one, twice as far. */
+function joined(first: CollectionEdit, then: CollectionEdit): CollectionEdit | null {
+  if (first.kind !== 'grid' || then.kind !== 'grid' || first.trackId !== then.trackId) return null;
+  if (first.fromMs !== null || then.fromMs !== null) return null;
+  if (first.change.kind !== 'nudge' || then.change.kind !== 'nudge') return null;
+  return { ...first, change: { kind: 'nudge', ms: first.change.ms + then.change.ms } };
+}
+
+/**
+ * Makes a change: `show` puts it on screen now, and it's written when the
+ * ones before it have been. Resolves to false if it was refused, after
+ * which what is really there is read and shown.
+ */
+function change(
+  edit: CollectionEdit,
+  { show, settle, cueId }: { show?: () => void; settle?: () => Promise<void>; cueId?: string } = {},
+): Promise<boolean> {
+  if (!props.track) return Promise.resolve(false);
+  const trackId = props.track.id;
   error.value = null;
-  try {
-    const outcome = await store.edit(edit);
-    if (outcome === undefined) error.value = store.error;
-    await loadPreparation(false);
-    return outcome !== undefined;
-  } finally {
-    busy.value = false;
+  const undo = undoStack.value;
+  show?.();
+  return new Promise((done) => {
+    const last = queue[queue.length - 1];
+    const both = last && !last.settle && !settle && last.batch === failures ? joined(last.edit, edit) : null;
+    if (last && both) {
+      last.edit = both;
+      last.done.push(done);
+      return;
+    }
+    queue.push({ edit, trackId, batch: failures, undo, cueId, settle, done: [done] });
+    pending.value++;
+    void write();
+  });
+}
+
+async function write() {
+  if (writing) return;
+  writing = true;
+  while (queue.length) {
+    const next = queue.shift()!;
+    let written = false;
+    try {
+      if (next.batch === failures) {
+        // A cue set a moment ago is known to rekordbox by another id.
+        const edit =
+          'cueId' in next.edit && cueIds.has(next.edit.cueId)
+            ? { ...next.edit, cueId: cueIds.get(next.edit.cueId)! }
+            : next.edit;
+        const outcome = await store.edit(edit, { quiet: true });
+        written = outcome !== undefined;
+        if (!written) {
+          failures++;
+          if (props.track?.id === next.trackId) {
+            error.value = store.error;
+            undoStack.value = next.undo;
+          }
+        } else {
+          if (next.cueId && outcome) {
+            cueIds.set(next.cueId, outcome);
+            cueKeys.set(outcome, next.cueId);
+          }
+          await next.settle?.();
+        }
+      }
+    } catch (e) {
+      error.value = String(e);
+    }
+    pending.value--;
+    for (const done of next.done) done(written);
   }
+  writing = false;
+  // Once, for however many changes: the lists show cues and tempos too.
+  store.touch();
+  await loadPreparation(false);
 }
 
 /** Where a cue set now would go, and where it would end if it's a loop. */
@@ -322,22 +406,67 @@ function cuePoint(): { positionMs: number; endMs: number | null } {
   return { positionMs: start, endMs: Math.min(end, Math.round(durationMs.value)) };
 }
 
+/** Sets a cue at the playhead: on a pad, in place of what's on it, or a memory cue. */
+function setCue(slot: number | null) {
+  if (!props.track) return;
+  const at = cuePoint();
+  if (slot === null && cues.value.some((c) => c.slot === null && c.positionMs === at.positionMs && c.endMs === at.endMs)) {
+    error.value = "There's a memory cue there already";
+    return;
+  }
+  const id = `new-${++cuesMade}`;
+  change(
+    { kind: 'addCue', trackId: props.track.id, slot, ...at },
+    {
+      cueId: id,
+      show: () => {
+        const current = prep.value;
+        if (!current) return;
+        const kept = current.cues.filter((c) => slot === null || c.slot !== slot);
+        // In the colour rekordbox will draw it in, so it doesn't change when written.
+        const color = slot === null ? null : at.endMs ? current.loopColor : (current.padColors[slot % 8] ?? null);
+        const cue: Cue = { id, slot, ...at, comment: '', color };
+        prep.value = {
+          ...current,
+          cues: [...kept, cue].sort((a, b) => a.positionMs - b.positionMs || (a.slot ?? -1) - (b.slot ?? -1)),
+        };
+      },
+    },
+  );
+}
+
+function deleteCue(cue: Cue) {
+  change(
+    { kind: 'deleteCue', cueId: cue.id },
+    {
+      show: () => {
+        if (prep.value) prep.value = { ...prep.value, cues: prep.value.cues.filter((c) => c.id !== cue.id) };
+      },
+    },
+  );
+}
+
 /** A pad with a cue jumps to it; an empty one takes a cue at the playhead. */
 function pressPad(slot: number, event: MouseEvent) {
   if (!props.track) return;
   const cue = hotCues.value[slot];
-  if (cue && event.shiftKey) return change({ kind: 'deleteCue', cueId: cue.id });
+  if (cue && event.shiftKey) return deleteCue(cue);
   if (cue) return goToCue(cue);
-  change({ kind: 'addCue', trackId: props.track.id, slot, ...cuePoint() });
-}
-
-function addMemoryCue() {
-  if (props.track) change({ kind: 'addCue', trackId: props.track.id, slot: null, ...cuePoint() });
+  setCue(slot);
 }
 
 function nameCue(cue: Cue, event: Event) {
   const comment = (event.target as HTMLInputElement).value.trim();
-  if (comment !== cue.comment) change({ kind: 'nameCue', cueId: cue.id, comment });
+  if (comment === cue.comment) return;
+  change(
+    { kind: 'nameCue', cueId: cue.id, comment },
+    {
+      show: () => {
+        if (!prep.value) return;
+        prep.value = { ...prep.value, cues: prep.value.cues.map((c) => (c.id === cue.id ? { ...c, comment } : c)) };
+      },
+    },
+  );
 }
 
 // --- Beat grid ---------------------------------------------------------------
@@ -347,32 +476,58 @@ const fromHere = ref(false);
 /** Grids as they were before each change, newest last. */
 const undoStack = ref<Beat[][]>([]);
 const locked = computed(() => prep.value?.locked ?? false);
-const canEditGrid = computed(() => !!beats.value.length && !locked.value && !busy.value);
+/** A grid change that can't be shown until it's written is being made. */
+const waiting = ref(false);
+const canEditGrid = computed(() => !!beats.value.length && !locked.value && !waiting.value);
 
-async function grid(gridChange: GridChange) {
-  if (!props.track) return;
-  const before = beats.value;
-  const done = await change({
-    kind: 'grid',
-    trackId: props.track.id,
-    change: gridChange,
-    fromMs: fromHere.value ? Math.round(position.value) : null,
-  });
-  if (done && before.length && JSON.stringify(before) !== JSON.stringify(beats.value)) {
-    undoStack.value = [...undoStack.value.slice(-49), before];
-  }
+function showGrid(next: Beat[]) {
+  if (prep.value) prep.value = { ...prep.value, beats: next, bpm: next.length ? next[0][2] / 100 : prep.value.bpm };
 }
 
-async function undo() {
-  const last = undoStack.value[undoStack.value.length - 1];
+function grid(gridChange: GridChange): Promise<boolean> {
+  const current = prep.value;
+  if (!props.track || !current) return Promise.resolve(false);
+  const trackId = props.track.id;
+  const fromMs = fromHere.value ? Math.round(position.value) : null;
+  const edit: CollectionEdit = { kind: 'grid', trackId, change: gridChange, fromMs };
+  const remember = (before: Beat[]) => (undoStack.value = [...undoStack.value.slice(-49), before]);
+
+  const next = editedGrid(current.beats, gridChange, fromMs, current.durationMs);
+  if (next) {
+    if (sameGrid(next, current.beats)) return Promise.resolve(true);
+    return change(edit, {
+      show: () => {
+        remember(current.beats);
+        showGrid(next);
+      },
+    });
+  }
+  // Not one to work out here: the grid waits to be told what it came to.
+  waiting.value = true;
+  return change(edit, {
+    settle: async () => {
+      const read = await store.preparation(trackId);
+      if (props.track?.id !== trackId || !prep.value) return;
+      const before = beats.value;
+      showGrid(read.beats);
+      if (before.length && !sameGrid(before, read.beats)) remember(before);
+    },
+  }).finally(() => (waiting.value = false));
+}
+
+function undo() {
+  const stack = undoStack.value;
+  const last = stack[stack.length - 1];
   if (!last || !props.track) return;
-  const done = await change({
-    kind: 'grid',
-    trackId: props.track.id,
-    change: { kind: 'restore', beats: last },
-    fromMs: null,
-  });
-  if (done) undoStack.value = undoStack.value.slice(0, -1);
+  change(
+    { kind: 'grid', trackId: props.track.id, change: { kind: 'restore', beats: last }, fromMs: null },
+    {
+      show: () => {
+        undoStack.value = stack.slice(0, -1);
+        showGrid(last);
+      },
+    },
+  );
 }
 
 /** Makes the beat nearest the playhead the first of its bar; nothing moves. */
@@ -419,7 +574,16 @@ async function useTappedTempo() {
 }
 
 function toggleLock() {
-  if (props.track) change({ kind: 'lockAnalysis', trackId: props.track.id, locked: !locked.value });
+  if (!props.track) return;
+  const now = !locked.value;
+  change(
+    { kind: 'lockAnalysis', trackId: props.track.id, locked: now },
+    {
+      show: () => {
+        if (prep.value) prep.value = { ...prep.value, locked: now };
+      },
+    },
+  );
 }
 
 // --- Drawing -----------------------------------------------------------------
@@ -657,7 +821,7 @@ watch([() => props.track?.bpm, () => props.track?.analysed], () => loadPreparati
 watch(
   () => [props.track?.id, props.track?.grid?.using] as const,
   ([id, using], [wasId, wasUsing]) => {
-    if (id && id === wasId && using !== wasUsing && !busy.value) loadPreparation(false);
+    if (id && id === wasId && using !== wasUsing && !pending.value) loadPreparation(false);
   },
 );
 // One made here is done when the track leaves the queue's running list.
@@ -820,7 +984,6 @@ const tabClass = 'px-2 py-0.5 text-[11px] disabled:opacity-30';
             class="size-6 rounded text-[11px] font-semibold transition-colors disabled:opacity-40"
             :class="hotCues[slot] ? 'text-black' : 'bg-surface-2 text-text-muted hover:bg-surface-3'"
             :style="hotCues[slot] ? { backgroundColor: cueColor(hotCues[slot]!) } : {}"
-            :disabled="busy"
             :title="hotCues[slot]
               ? `Hot cue ${letter} at ${formatTime(hotCues[slot]!.positionMs)}. Click to go there, Shift-click to delete.`
               : `Set hot cue ${letter} at the playhead`"
@@ -829,7 +992,7 @@ const tabClass = 'px-2 py-0.5 text-[11px] disabled:opacity-30';
             {{ letter }}
           </button>
         </div>
-        <button :class="buttonClass" :disabled="busy" title="Set a memory cue at the playhead" @click="addMemoryCue">
+        <button :class="buttonClass" title="Set a memory cue at the playhead" @click="setCue(null)">
           + Memory cue
         </button>
         <label class="flex items-center gap-1 text-[11px] text-text-secondary" title="New cues are loops of this length">
@@ -925,12 +1088,12 @@ const tabClass = 'px-2 py-0.5 text-[11px] disabled:opacity-30';
           >
             Metronome
           </button>
-          <button :class="buttonClass" :disabled="!undoStack.length || busy || locked" title="Undo the last grid change" @click="undo">
+          <button :class="buttonClass" :disabled="!undoStack.length || waiting || locked" title="Undo the last grid change" @click="undo">
             Undo
           </button>
           <button
             :class="locked ? onClass : buttonClass"
-            :disabled="!beats.length || busy"
+            :disabled="!beats.length"
             :title="locked
               ? 'The grid is locked, here and in rekordbox: it can\'t be changed or analysed over. Click to unlock.'
               : 'Lock the grid, here and in rekordbox, so it can\'t be changed or analysed over'"
@@ -944,7 +1107,7 @@ const tabClass = 'px-2 py-0.5 text-[11px] disabled:opacity-30';
 
     <!-- Every cue, to name or delete: one line, scrolling sideways. -->
     <ul v-if="tools === 'cues' && cues.length" class="flex gap-x-3 overflow-x-auto whitespace-nowrap">
-      <li v-for="cue in cues" :key="cue.id" class="flex shrink-0 items-center gap-1">
+      <li v-for="cue in cues" :key="cueKeys.get(cue.id) ?? cue.id" class="flex shrink-0 items-center gap-1">
         <button
           class="rounded px-1 text-[10px] font-semibold text-black"
           :style="{ backgroundColor: cueColor(cue) }"
@@ -965,8 +1128,7 @@ const tabClass = 'px-2 py-0.5 text-[11px] disabled:opacity-30';
         <button
           class="text-text-muted hover:text-status-error"
           title="Delete this cue"
-          :disabled="busy"
-          @click="change({ kind: 'deleteCue', cueId: cue.id })"
+          @click="deleteCue(cue)"
         >✕</button>
       </li>
     </ul>
