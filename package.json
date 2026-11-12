@@ -1,7 +1,7 @@
 {
   "name": "jim-box",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "rekordbox library management, with search that finds lossless copies of tracks for it",
   "type": "module",
   "packageManager": "pnpm@10.24.0",
