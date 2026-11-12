@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, shallowRef } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import CollectionToolbar from '@/components/CollectionToolbar.vue';
 import CollectionTrackDetail from '@/components/CollectionTrackDetail.vue';
@@ -15,14 +15,13 @@ import { useLibraryStore } from '@/stores/library';
 import { stepPane } from '@/composables/useDetailKeys';
 import { useUiStore } from '@/stores/ui';
 import { commandKey } from '@/platform';
-import type { CollectionTrack } from '@/types/collection';
 import type { LibraryItem } from '@/types/library';
 
 /** The one screen: rekordbox's playlists and tracks, with what's picked beside them. */
 const store = useCollectionStore();
 const { status, analysis, loading, error } = storeToRefs(store);
 const browse = useBrowseStore();
-const { selection, focused, detailTrack, notice } = storeToRefs(browse);
+const { selection, focused, detailTrack, notice, opened } = storeToRefs(browse);
 const library = useLibraryStore();
 
 onMounted(() => {
@@ -30,9 +29,7 @@ onMounted(() => {
   store.loadAnalysis();
 });
 
-/** The track in the player, as it was when opened. */
-const opened = shallowRef<CollectionTrack | null>(null);
-/** The same track as the list now has it, when it's loaded: fresh after edits. */
+/** The track in the player (`opened` is it as it was when opened) as the list now has it, when it's loaded: fresh after edits. */
 const playerTrack = computed(() => (opened.value ? (browse.loadedTrack(opened.value.id) ?? opened.value) : null));
 
 /** A track played to its end: the one under it in the list plays next. */

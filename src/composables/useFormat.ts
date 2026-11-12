@@ -18,6 +18,16 @@ export function formatDuration(secs: number): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+/** How long a list of tracks plays for: "48 min", "3 h 05 min", "2 days 4 h". */
+export function formatLength(secs: number): string {
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `${mins} min`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} h ${String(mins % 60).padStart(2, '0')} min`;
+  const days = Math.floor(hours / 24);
+  return `${days} ${days === 1 ? 'day' : 'days'} ${hours % 24} h`;
+}
+
 const FORMAT_LABELS: Record<string, string> = { vorbis: 'OGG' };
 
 /** e.g. "FLAC 24/96", "FLAC 16/44.1" or "MP3 320k". */

@@ -168,6 +168,8 @@ engine.onstate = () => {
   // Paused, the audio says exactly where; playing, each frame asks.
   if (engine.ready && !engine.playing) position.value = engine.positionMs();
 };
+// What's done to the list knows whether its track is being heard (see useTrackActions.ts).
+watch(playing, (now) => (browse.playing = now), { immediate: true });
 // ...and a search preview takes over from the track.
 watch(
   () => preview.key,
@@ -345,9 +347,9 @@ function tick() {
   if (running && !frame) frame = requestAnimationFrame(tick);
 }
 
-/** ⌘← and ⌘→ go this far: a phrase or two, to the next part of the track. */
-const SMALL_JUMP_BARS = 8;
-const BIG_JUMP_BARS = 16;
+/** How far ⌘, and ⌘. go, and ⇧, and ⇧.: a bar, and a phrase, to the next part of the track. */
+const SMALL_JUMP_BARS = 1;
+const BIG_JUMP_BARS = 8;
 
 /** Whether a key pressed there is typed: a box of text, not a tick box or a button. */
 function typing(target: HTMLElement | null): boolean {
@@ -406,6 +408,8 @@ function onKey(event: KeyboardEvent) {
     if (!event.repeat) setCue(null);
   } else if (event.code === 'KeyQ' && !event.shiftKey) {
     if (!event.repeat) quantize.value = !quantize.value;
+  } else if (event.code === 'KeyG' && !event.shiftKey) {
+    if (!event.repeat) gridTools.value = !gridTools.value;
   } else return;
   event.preventDefault();
 }
@@ -489,6 +493,25 @@ function change(
   });
 }
 
+/** Waiting for the changes shown to have been written. */
+const idlers: (() => void)[] = [];
+// An undo is of the last change made, which has to be written first.
+const stopSettling = store.onSettle(() =>
+  writing || queue.length ? new Promise<void>((done) => idlers.push(done)) : Promise.resolve(),
+);
+onBeforeUnmount(stopSettling);
+
+// An undo or redo of this track's cues, grid or lock: read them again. The
+// grids kept here to go back to no longer lead to the one it has now.
+watch(
+  () => store.undone,
+  (last) => {
+    if (!props.track || !last?.trackIds.includes(props.track.id)) return;
+    undoStack.value = [];
+    void loadPreparation(false);
+  },
+);
+
 async function write() {
   if (writing) return;
   writing = true;
@@ -525,6 +548,7 @@ async function write() {
     for (const done of next.done) done(written);
   }
   writing = false;
+  for (const done of idlers.splice(0)) done();
   // Once, for however many changes: the lists show cues and tempos too.
   store.touch();
   await loadPreparation(false);
@@ -1283,7 +1307,7 @@ const statValueClass = 'font-mono text-base font-semibold text-text-primary';
 
       <button
         :class="gridTools ? onClass : buttonClass"
-        :title="gridTools ? 'Hide the beat grid\'s tools' : 'Show the beat grid\'s tools: tempo, downbeat, metronome'"
+        :title="gridTools ? 'Hide the beat grid\'s tools (G)' : 'Show the beat grid\'s tools: tempo, downbeat, metronome (G)'"
         aria-label="Beat grid tools"
         :aria-pressed="gridTools"
         @click="gridTools = !gridTools"
@@ -1403,28 +1427,28 @@ const statValueClass = 'font-mono text-base font-semibold text-text-primary';
       </div>
     </div>
 
-    <!-- Every cue, to name or delete: one line, scrolling sideways. -->
-    <ul v-if="cues.length" class="flex gap-x-3 overflow-x-auto whitespace-nowrap">
-      <li v-for="cue in cues" :key="cueKeys.get(cue.id) ?? cue.id" class="flex shrink-0 items-center gap-1">
+    <!-- Every cue, to name or delete: one line. Short of room, the names narrow; past that it scrolls sideways, with no bar shown. -->
+    <ul v-if="cues.length" class="flex gap-x-3 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <li v-for="cue in cues" :key="cueKeys.get(cue.id) ?? cue.id" class="flex min-w-0 items-center gap-1">
         <button
-          class="rounded px-1 text-[10px] font-semibold text-black"
+          class="shrink-0 rounded px-1 text-[10px] font-semibold text-black"
           :style="{ backgroundColor: cueColor(cue) }"
           :title="cue.endMs ? 'Play this loop' : 'Go to this cue'"
           @click="goToCue(cue)"
         >
           {{ cueLabel(cue) }}{{ cue.endMs ? ' ↻' : '' }}
         </button>
-        <span class="font-mono text-[10px] text-text-muted">{{ formatTime(cue.positionMs) }}</span>
+        <span class="shrink-0 font-mono text-[10px] text-text-muted">{{ formatTime(cue.positionMs) }}</span>
         <input
           :value="cue.comment"
           placeholder="name"
           spellcheck="false"
-          class="w-20 rounded border border-transparent bg-transparent px-1 text-[11px] outline-none hover:border-border focus:border-border-active"
+          class="w-16 min-w-9 rounded border border-transparent bg-transparent px-1 text-[11px] outline-none hover:border-border focus:border-border-active"
           @change="nameCue(cue, $event)"
           @keydown.enter="($event.target as HTMLInputElement).blur()"
         />
         <button
-          class="text-text-muted hover:text-status-error"
+          class="shrink-0 text-text-muted hover:text-status-error"
           title="Delete this cue"
           @click="deleteCue(cue)"
         >✕</button>

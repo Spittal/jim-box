@@ -431,10 +431,10 @@ async fn reconcile(app: &AppHandle, playlist: PlaylistMatch) -> AppResult<bool> 
         if !(plan.add.is_empty() && plan.remove.is_empty()) && !crate::rekordbox::is_running() {
             if !plan.remove.is_empty() {
                 info!("Playlist '{}': taking out {} tracks that aren't on Spotify", work.name, plan.remove.len());
-                collection.edit(Edit::RemoveTracks { playlist_id: list_id.clone(), track_ids: plan.remove })?;
+                collection.edit_unasked(Edit::RemoveTracks { playlist_id: list_id.clone(), track_ids: plan.remove })?;
             }
             if !plan.add.is_empty() {
-                collection.edit(Edit::AddTracks { playlist_id: list_id.clone(), track_ids: plan.add })?;
+                collection.edit_unasked(Edit::AddTracks { playlist_id: list_id.clone(), track_ids: plan.add })?;
             }
             changed = true;
         }
@@ -535,7 +535,7 @@ pub async fn import(app: &AppHandle, input: &str, rekordbox_id: String) -> AppRe
             if crate::rekordbox::is_running() {
                 return Err(running());
             }
-            collection.edit(Edit::AddTracks { playlist_id: list_id, track_ids: plan.add })?;
+            collection.edit_unasked(Edit::AddTracks { playlist_id: list_id, track_ids: plan.add })?;
         }
         Ok((imported, plan.fetch))
     })

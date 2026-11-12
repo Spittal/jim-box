@@ -516,6 +516,19 @@ pub(super) fn add_cue(
     .map_err(rekordbox_err)
 }
 
+/// A track's beat grid as its analysis file has it now: (milliseconds,
+/// place in the bar, tempo in hundredths of a BPM) for each beat, as
+/// `GridChange::Restore` takes them. None for a track with no grid.
+pub(super) fn grid_beats(writer: &Writer, index: &rbl_index::Library, track_id: &str) -> Option<Vec<(u32, u8, u16)>> {
+    let relative = index.analysis_path.get(index.row_of(track_id)? as usize);
+    if relative.is_empty() {
+        return None;
+    }
+    let [dat, ..] = analysis_files(&writer.library().location().share_root, relative);
+    let beats = rbl_anlz::Anlz::read(&dat).ok()?.beat_grid()?;
+    Some(beats.iter().map(|beat| (beat.time_ms, u8::try_from(beat.beat_number).unwrap_or(0), beat.tempo_x100)).collect())
+}
+
 /// Changes a track's beat grid in its analysis files, and its tempo on its
 /// row. The extended grid some `.EXT` files carry can't be re-derived, so
 /// it's emptied when it no longer describes the beats, as rbxport does.
@@ -695,6 +708,65 @@ mod tests {
         add(&collection, &id, None, 500, None);
         let again = collection.edit(Edit::AddCue { track_id: id.clone(), slot: None, position_ms: 500, end_ms: None });
         assert!(again.is_err());
+    }
+
+    #[test]
+    fn cues_the_grid_and_the_lock_are_undone_and_redone() {
+        let (_dir, collection, id) = prepared();
+        let cues = |collection: &Collection| -> Vec<_> {
+            let cues = collection.preparation(&id).unwrap().cues;
+            cues.into_iter().map(|c| (c.slot, c.position_ms, c.end_ms, c.comment)).collect()
+        };
+        add(&collection, &id, Some(0), 2_000, None);
+        let one = cues(&collection);
+        // Setting the pad again moves its cue: one change, though two rows.
+        add(&collection, &id, Some(0), 4_000, None);
+        let moved = cues(&collection);
+        let on_a = collection.preparation(&id).unwrap().cues.remove(0);
+        collection.edit(Edit::NameCue { cue_id: on_a.id.clone(), comment: "Drop".into() }).unwrap();
+        let named = cues(&collection);
+        collection.edit(Edit::DeleteCue { cue_id: on_a.id }).unwrap();
+        assert!(cues(&collection).is_empty());
+
+        let undo = |collection: &Collection| collection.undo().unwrap();
+        let back = undo(&collection);
+        assert_eq!((back.what, back.track_ids), (Some("deleting the cue"), vec![id.clone()]));
+        assert_eq!(cues(&collection), named);
+        undo(&collection);
+        assert_eq!(cues(&collection), moved);
+        undo(&collection);
+        assert_eq!(cues(&collection), one);
+        undo(&collection);
+        assert!(cues(&collection).is_empty());
+        for _ in 0..3 {
+            collection.redo().unwrap();
+        }
+        assert_eq!(cues(&collection), named);
+
+        let grid = |collection: &Collection| collection.preparation(&id).unwrap();
+        let before = grid(&collection);
+        collection
+            .edit(Edit::Grid { track_id: id.clone(), change: GridChange::Nudge { ms: 7 }, from_ms: None })
+            .unwrap();
+        collection
+            .edit(Edit::Grid { track_id: id.clone(), change: GridChange::Tempo { bpm: 100.0 }, from_ms: None })
+            .unwrap();
+        let respaced = grid(&collection);
+        assert_ne!(respaced.beats, before.beats);
+        collection.edit(Edit::LockAnalysis { track_id: id.clone(), locked: true }).unwrap();
+
+        // The grid can't go back while it's locked; the lock is undone first.
+        assert_eq!(undo(&collection).what, Some("locking the analysis"));
+        assert!(!grid(&collection).locked);
+        undo(&collection);
+        assert_eq!(undo(&collection).what, Some("the grid change"));
+        assert_eq!(grid(&collection).beats, before.beats);
+        assert!((grid(&collection).bpm.unwrap() - before.bpm.unwrap()).abs() < 0.01);
+        collection.redo().unwrap();
+        collection.redo().unwrap();
+        assert_eq!(grid(&collection).beats, respaced.beats);
+        collection.redo().unwrap();
+        assert!(grid(&collection).locked);
     }
 
     #[test]

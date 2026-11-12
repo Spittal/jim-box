@@ -12,7 +12,7 @@ use tauri_plugin_opener::OpenerExt;
 use tracing::warn;
 
 /// Menu ids forwarded to the frontend, which owns navigation.
-const FRONTEND_COMMANDS: &[&str] = &["settings", "find", "find-online", "consolidate", "shortcuts"];
+const FRONTEND_COMMANDS: &[&str] = &["settings", "find", "find-online", "consolidate", "shortcuts", "undo", "redo"];
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
@@ -35,7 +35,8 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let app_menu = SubmenuBuilder::new(app, &pkg.name)
         .about(Some(about))
         .separator()
-        .item(&item("settings", "Settings…", "CmdOrCtrl+,")?)
+        // Without the usual ⌘,: that steps the player back a bar (see TrackPlayer.vue).
+        .item(&MenuItemBuilder::with_id("settings", "Settings…").build(app)?)
         .separator()
         .services()
         .separator()
@@ -55,9 +56,12 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .close_window()
         .build()?;
 
+    // Not the system's Undo and Redo, which only know of text being typed:
+    // the frontend gives these to a text field that has the keyboard, and
+    // otherwise to the last change made to the library (see App.vue).
     let edit_menu = SubmenuBuilder::new(app, "Edit")
-        .undo()
-        .redo()
+        .item(&item("undo", "Undo", "CmdOrCtrl+Z")?)
+        .item(&item("redo", "Redo", "CmdOrCtrl+Shift+Z")?)
         .separator()
         .cut()
         .copy()

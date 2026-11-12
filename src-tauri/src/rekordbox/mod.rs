@@ -9,10 +9,11 @@
 mod analyse;
 mod edit;
 mod grid;
+mod history;
 mod ingest;
 mod prepare;
 
-pub use edit::{Edit, EditOutcome};
+pub use edit::{Edit, EditOutcome, UndoOutcome};
 pub use grid::{Hint as GridHint, Source as GridSource};
 pub use ingest::{Arrival, ImportReport};
 pub use prepare::{Audio, GridChange, Preparation, Preview};
@@ -80,6 +81,9 @@ pub struct PlaylistNode {
 pub enum Source {
     Collection,
     Playlist { id: String },
+    /// Several playlists or folders as one list: each one's tracks after the
+    /// last's, a track in more than one listed once.
+    Playlists { ids: Vec<String> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -142,6 +146,10 @@ pub struct TrackQuery {
     /// the empty name is tracks with no genre. Empty for every genre.
     #[serde(default)]
     pub genres: Vec<String>,
+    /// Only tracks with one of these ratings, in stars; 0 is tracks with
+    /// none. Empty for every rating.
+    #[serde(default)]
+    pub ratings: Vec<u8>,
 }
 
 /// A list as it's shown: its rows in order, filtered.
@@ -150,6 +158,8 @@ struct Listing {
     /// Each row's place in its playlist, where filtering took rows out from
     /// between them; None where the view's own numbering still holds.
     numbers: Option<Vec<u32>>,
+    /// How long its tracks are, played one after another.
+    duration_secs: u64,
 }
 
 impl Listing {
@@ -201,6 +211,8 @@ pub struct TrackRow {
 pub struct TrackPage {
     /// Tracks in the whole list, not just this page.
     pub total: usize,
+    /// How long the whole list's tracks are together.
+    pub duration_secs: u64,
     pub offset: usize,
     pub rows: Vec<TrackRow>,
 }
@@ -281,6 +293,8 @@ pub struct Collection {
     backed_up: AtomicBool,
     /// Held for the length of a change: one at a time.
     editing: Mutex<()>,
+    /// The changes made this session, to undo.
+    history: Mutex<history::History>,
     /// How each grid this app made was decided, and which are reviewed.
     grids: grid::States,
 }
@@ -300,6 +314,7 @@ impl Collection {
             backup_dir,
             backed_up: AtomicBool::new(false),
             editing: Mutex::new(()),
+            history: Mutex::default(),
             grids: grid::States::default(),
         }
     }
@@ -507,23 +522,45 @@ impl Collection {
                 return Ok(view.clone());
             }
         }
-        let source = match &query.source {
-            Source::Collection => TrackSource::Collection,
-            Source::Playlist { id } => {
-                let playlists = loaded.index.playlists();
-                let index = id
-                    .parse()
-                    .ok()
-                    .and_then(|id| playlists.index_of(id))
-                    .ok_or_else(|| AppError::Rekordbox("That playlist no longer exists".into()))?;
-                if playlists.is_folder(index) {
-                    TrackSource::PlaylistFolder(index)
-                } else if playlists.is_smart(index) {
-                    TrackSource::SmartPlaylist(index)
-                } else {
-                    TrackSource::Playlist(index)
+        let playlists = loaded.index.playlists();
+        let source_of = |id: &str| -> AppResult<TrackSource> {
+            let index = id
+                .parse()
+                .ok()
+                .and_then(|id| playlists.index_of(id))
+                .ok_or_else(|| AppError::Rekordbox("That playlist no longer exists".into()))?;
+            Ok(if playlists.is_folder(index) {
+                TrackSource::PlaylistFolder(index)
+            } else if playlists.is_smart(index) {
+                TrackSource::SmartPlaylist(index)
+            } else {
+                TrackSource::Playlist(index)
+            })
+        };
+        // Several lists are shown as the collection, narrowed to their tracks.
+        let (source, joined) = match &query.source {
+            Source::Collection => (TrackSource::Collection, None),
+            Source::Playlist { id } => (source_of(id)?, None),
+            Source::Playlists { ids } => match ids.as_slice() {
+                [] => (TrackSource::Collection, None),
+                [id] => (source_of(id)?, None),
+                ids => {
+                    // Each list's tracks in its own order, after the last's.
+                    let mut seen = HashSet::new();
+                    let mut rows = Vec::new();
+                    for id in ids {
+                        let part = loaded.index.open_view(&ViewSpec {
+                            source: source_of(id)?,
+                            sort: SortColumn::TrackNo,
+                            descending: false,
+                            query: query.query.trim().to_owned(),
+                            filter: Default::default(),
+                        });
+                        rows.extend(part.rows.into_iter().filter(|&row| seen.insert(row)));
+                    }
+                    (TrackSource::Collection, Some((rows, seen)))
                 }
-            }
+            },
         };
         let numbered = matches!(source, TrackSource::Playlist(_));
         let by_playlists = query.sort == Sort::Playlists;
@@ -538,8 +575,18 @@ impl Collection {
             query: query.query.trim().to_owned(),
             filter: Default::default(),
         });
+        if let Some((mut rows, members)) = joined {
+            if matches!(SortColumn::from(query.sort), SortColumn::TrackNo) {
+                if query.descending && !sorted_here {
+                    rows.reverse();
+                }
+                view.rows = rows;
+            } else {
+                view.rows.retain(|row| members.contains(row));
+            }
+        }
         let mut numbers: Option<Vec<u32>> = None;
-        if query.reviewed.is_some() || !query.genres.is_empty() {
+        if query.reviewed.is_some() || !query.genres.is_empty() || !query.ratings.is_empty() {
             let index = &loaded.index;
             let genres: HashSet<&str> = query.genres.iter().map(|genre| genre.trim()).collect();
             let keep: Vec<bool> = view
@@ -547,6 +594,7 @@ impl Collection {
                 .iter()
                 .map(|&row| {
                     (genres.is_empty() || genres.contains(index.genre_name(row).trim()))
+                        && (query.ratings.is_empty() || query.ratings.contains(&index.rating[row as usize].min(5)))
                         && query.reviewed.is_none_or(|wanted| {
                             let reviewed =
                                 self.grids.get(&index.ids[row as usize].to_string()).is_some_and(|state| state.reviewed);
@@ -626,7 +674,8 @@ impl Collection {
                 numbers = Some(order.iter().map(|&(_, number)| number).collect());
             }
         }
-        let listing = Arc::new(Listing { view, numbers });
+        let duration_secs = view.rows.iter().map(|&row| u64::from(loaded.index.length_sec[row as usize])).sum();
+        let listing = Arc::new(Listing { view, numbers, duration_secs });
         *cached = Some((reading, query.clone(), listing.clone()));
         Ok(listing)
     }
@@ -698,7 +747,7 @@ impl Collection {
                 }
             })
             .collect();
-        Ok(TrackPage { total: view.len(), offset, rows })
+        Ok(TrackPage { total: view.len(), duration_secs: listing.duration_secs, offset, rows })
     }
 }
 
@@ -708,7 +757,7 @@ pub(crate) mod tests {
     use rbl_db::fixture::Shape;
 
     pub(super) fn query(source: Source, sort: Sort) -> TrackQuery {
-        TrackQuery { source, sort, descending: false, query: String::new(), reviewed: None, genres: Vec::new() }
+        TrackQuery { source, sort, descending: false, query: String::new(), reviewed: None, genres: Vec::new(), ratings: Vec::new() }
     }
 
     /// A fixture library with rekordbox's real schema, in a temp folder.
@@ -805,6 +854,55 @@ pub(crate) mod tests {
         assert_eq!(found.total, all.rows.iter().filter(|r| r.genre.trim() == genre).count());
         assert!(found.total > 0 && found.rows.iter().all(|r| r.genre.trim() == genre));
         assert_eq!(collection.track_ids(&q).unwrap().len(), found.total);
+    }
+
+    #[test]
+    fn filters_by_rating_and_adds_up_the_lengths() {
+        let (_dir, collection) = fixture();
+        let all = collection.tracks(&query(Source::Collection, Sort::Title), 0, 100).unwrap();
+        assert_eq!(all.duration_secs, all.rows.iter().map(|r| u64::from(r.duration_secs)).sum::<u64>());
+        let id = all.rows[0].id.clone();
+        collection.edit(Edit::SetRating { track_id: id.clone(), stars: 4 }).unwrap();
+        let all = collection.tracks(&query(Source::Collection, Sort::Title), 0, 100).unwrap();
+
+        let mut q = query(Source::Collection, Sort::Title);
+        q.ratings = vec![4];
+        let found = collection.tracks(&q, 0, 100).unwrap();
+        assert!(found.rows.iter().any(|r| r.id == id) && found.rows.iter().all(|r| r.rating == 4));
+        assert_eq!(found.duration_secs, found.rows.iter().map(|r| u64::from(r.duration_secs)).sum::<u64>());
+        q.ratings = vec![0, 4];
+        let count = all.rows.iter().filter(|r| r.rating == 0 || r.rating == 4).count();
+        assert_eq!(collection.tracks(&q, 0, 100).unwrap().total, count);
+    }
+
+    #[test]
+    fn several_playlists_are_listed_as_one() {
+        let (_dir, collection) = fixture();
+        let nodes = collection.playlists().unwrap();
+        let lists: Vec<&PlaylistNode> =
+            nodes.iter().filter(|n| n.kind == PlaylistKind::Playlist && n.count.unwrap_or(0) > 0).take(2).collect();
+        assert_eq!(lists.len(), 2, "two playlists with tracks");
+        let of = |id: &str, sort| {
+            let q = query(Source::Playlist { id: id.to_owned() }, sort);
+            collection.tracks(&q, 0, 1000).unwrap().rows.into_iter().map(|r| r.id).collect::<Vec<_>>()
+        };
+        // One after the other, a track in both listed once.
+        let mut expected = of(&lists[0].id, Sort::TrackNo);
+        for id in of(&lists[1].id, Sort::TrackNo) {
+            if !expected.contains(&id) {
+                expected.push(id);
+            }
+        }
+        let ids = lists.iter().map(|n| n.id.clone()).collect::<Vec<_>>();
+        let both = collection.tracks(&query(Source::Playlists { ids: ids.clone() }, Sort::TrackNo), 0, 1000).unwrap();
+        assert_eq!(both.rows.iter().map(|r| r.id.clone()).collect::<Vec<_>>(), expected);
+        assert_eq!(both.rows.iter().map(|r| r.position).collect::<Vec<_>>(), (1..=expected.len() as u32).collect::<Vec<_>>());
+
+        let by_title = collection.tracks(&query(Source::Playlists { ids }, Sort::Title), 0, 1000).unwrap();
+        assert_eq!(by_title.total, expected.len());
+        let titles: Vec<String> = by_title.rows.iter().map(|r| r.title.to_lowercase()).collect();
+        assert!(titles.windows(2).all(|pair| pair[0] <= pair[1]));
+        assert!(by_title.rows.iter().all(|r| expected.contains(&r.id)));
     }
 
     #[test]

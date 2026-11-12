@@ -8,7 +8,6 @@ import { useLibraryStore } from '@/stores/library';
 import { usePlaylistStore } from '@/stores/playlist';
 import { useSearchStore } from '@/stores/search';
 import { useUiStore } from '@/stores/ui';
-import { shortcut } from '@/platform';
 
 /**
  * The bar under the collection. Its box filters the list as you type. On
@@ -38,7 +37,8 @@ function escape() {
 }
 
 const placeholder = computed(
-  () => `Filter ${selectedNode.value?.name ?? 'your collection'}, or press Return to find tracks online`,
+  () =>
+    `Filter ${selectedNode.value?.name ?? (browse.lists.length > 1 ? 'these playlists' : 'your collection')}, or press Return to find tracks online`,
 );
 
 // --- What's going on --------------------------------------------------------
@@ -179,6 +179,6 @@ const chipClass =
       <span class="size-2 shrink-0 rounded-full" :class="soulseek.dot" />
       <span class="max-w-40 truncate">{{ soulseek.label }}</span>
     </button>
-    <button :class="chipClass" :title="`Settings (${shortcut(',')})`" @click="ui.toggleSettings()">Settings</button>
+    <button :class="chipClass" title="Settings" @click="ui.toggleSettings()">Settings</button>
   </footer>
 </template>

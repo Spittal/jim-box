@@ -40,8 +40,10 @@ export const useBrowseStore = defineStore('browse', () => {
 
   // --- Which list -------------------------------------------------------------
 
-  /** The playlist or folder being shown; null for the whole collection. */
-  const selected = ref<string | null>(null);
+  /** The playlists and folders being shown as one list, in the order picked; none for the whole collection. */
+  const lists = ref<string[]>([]);
+  /** The one playlist or folder being shown; null for the whole collection, and for several at once. */
+  const selected = computed(() => (lists.value.length === 1 ? lists.value[0] : null));
   /** The text in the search bar, which filters the list. */
   const search = ref('');
   /**
@@ -60,12 +62,17 @@ export const useBrowseStore = defineStore('browse', () => {
   const reviewedFilter = ref<boolean | null>(null);
   /** Show only tracks of these genres; '' is tracks with none. Empty for every genre. */
   const genreFilter = ref<string[]>([]);
+  /** Show only tracks with these ratings, in stars; 0 is tracks with none. Empty for every rating. */
+  const ratingFilter = ref<number[]>([]);
   /** How many filters are narrowing the list. */
-  const filterCount = computed(() => (reviewedFilter.value === null ? 0 : 1) + genreFilter.value.length);
+  const filterCount = computed(
+    () => (reviewedFilter.value === null ? 0 : 1) + genreFilter.value.length + ratingFilter.value.length,
+  );
 
   function clearFilters() {
     reviewedFilter.value = null;
     genreFilter.value = [];
+    ratingFilter.value = [];
   }
 
   /** Show only the tracks still being fetched. */
@@ -76,20 +83,39 @@ export const useBrowseStore = defineStore('browse', () => {
   /** Where a fetched track goes besides the collection. */
   const targetPlaylist = computed(() => (inPlaylist.value ? selectedNode.value : null));
 
+  /** The playlists tracks can be taken out of here: the ones shown, unless a folder or an intelligent playlist is among them. */
+  const removableFrom = computed(() => {
+    const kinds = lists.value.map((id) => collection.playlists.find((p) => p.id === id)?.kind);
+    return kinds.length && kinds.every((kind) => kind === 'playlist') ? lists.value : [];
+  });
+
   /** A playlist opens in its own order; the collection, newest first. */
   function select(id: string | null) {
-    selected.value = id;
+    lists.value = id === null ? [] : [id];
     focus.value = null;
     const ordered = id !== null && collection.playlists.find((p) => p.id === id)?.kind === 'playlist';
     sort.value = ordered ? 'trackNo' : 'dateAdded';
     descending.value = !ordered;
   }
 
-  // A playlist deleted (here or in rekordbox) falls back to the collection.
+  /** Shows several playlists as one list, each one's tracks after the last's; one or none is as `select`. */
+  function selectSeveral(ids: string[]) {
+    if (ids.length < 2) return select(ids[0] ?? null);
+    // From the collection, they open in their own order, as one playlist does.
+    if (!lists.value.length) {
+      sort.value = 'trackNo';
+      descending.value = false;
+    }
+    lists.value = ids;
+    focus.value = null;
+  }
+
+  // A playlist deleted (here or in rekordbox) is no longer shown; the last one going falls back to the collection.
   watch(
     () => collection.playlists,
-    () => {
-      if (selected.value && !selectedNode.value) select(null);
+    (now) => {
+      const left = lists.value.filter((id) => now.some((p) => p.id === id));
+      if (left.length !== lists.value.length) selectSeveral(left);
     },
   );
 
@@ -102,7 +128,12 @@ export const useBrowseStore = defineStore('browse', () => {
   }
 
   const query = computed<TrackQuery>(() => {
-    const source: TrackSource = selected.value ? { kind: 'playlist', id: selected.value } : { kind: 'collection' };
+    const source: TrackSource =
+      lists.value.length > 1
+        ? { kind: 'playlists', ids: lists.value }
+        : selected.value
+          ? { kind: 'playlist', id: selected.value }
+          : { kind: 'collection' };
     // Keys sort the way they're shown: by name, or round the Camelot wheel.
     const camelot = sort.value === 'key' && settings.settings?.keyNotation === 'camelot';
     return {
@@ -113,12 +144,15 @@ export const useBrowseStore = defineStore('browse', () => {
       reviewed: reviewedFilter.value,
       // In one order, so picking the same genres another way round isn't a different list.
       genres: [...genreFilter.value].sort(),
+      ratings: [...ratingFilter.value].sort(),
     };
   });
 
   // --- Its rows, a page at a time ---------------------------------------------
 
   const total = ref(0);
+  /** How long the list's tracks are together, in seconds. */
+  const totalSecs = ref(0);
   const pages = shallowRef(new Map<number, CollectionTrack[]>());
   const listError = ref<string | null>(null);
   /** Bumped when a different list is shown, so the view scrolls back to its top. */
@@ -142,6 +176,7 @@ export const useBrowseStore = defineStore('browse', () => {
       const result = await collection.tracks(query.value, page * PAGE, PAGE);
       if (version !== listVersion) return;
       total.value = result.total;
+      totalSecs.value = result.durationSecs;
       const next = new Map(stale ? [] : pages.value);
       stale = false;
       next.set(page, result.rows);
@@ -164,6 +199,7 @@ export const useBrowseStore = defineStore('browse', () => {
         stale = false;
         pages.value = new Map();
         total.value = 0;
+        totalSecs.value = 0;
       }
       listError.value = String(e);
     }
@@ -267,6 +303,28 @@ export const useBrowseStore = defineStore('browse', () => {
     return (await collection.tracks(asked, index + 1, 1)).rows[0] ?? null;
   }
 
+  /**
+   * The first track under this one that isn't among `going`, which are about
+   * to leave the list; null if there's none, or this one isn't in the list.
+   */
+  async function trackPast(id: string, going: Set<string>): Promise<CollectionTrack | null> {
+    if (going.size <= 1) return trackAfter(id);
+    const asked = query.value;
+    const ids = await collection.trackIds(asked);
+    let at = ids.indexOf(id);
+    if (at === -1) return null;
+    do at++;
+    while (at < ids.length && going.has(ids[at]));
+    return at < ids.length ? ((await collection.tracks(asked, at, 1)).rows[0] ?? null) : null;
+  }
+
+  // --- What's in the player -----------------------------------------------------
+
+  /** The track in the player, as it was when opened; null when the player is closed. */
+  const opened = shallowRef<CollectionTrack | null>(null);
+  /** Whether the player is playing it, as the player says. */
+  const playing = ref(false);
+
   // --- What's picked ----------------------------------------------------------
 
   const selection = ref(new Set<string>());
@@ -353,7 +411,7 @@ export const useBrowseStore = defineStore('browse', () => {
     }
     for (const job of jobs.pending) {
       if (listed.has(job.id)) continue;
-      if (selected.value && job.playlistId !== selected.value) continue;
+      if (lists.value.length && !lists.value.includes(job.playlistId ?? '')) continue;
       rows.push({
         key: `job:${job.id}`,
         title: job.metadata?.title ?? job.request.title,
@@ -401,7 +459,15 @@ export const useBrowseStore = defineStore('browse', () => {
   );
 
   return {
+    lists,
     selected,
+    removableFrom,
+    selectSeveral,
+    ratingFilter,
+    totalSecs,
+    trackPast,
+    opened,
+    playing,
     search,
     filter,
     sort,

@@ -19,7 +19,11 @@ export interface PlaylistNode {
   count: number | null;
 }
 
-export type TrackSource = { kind: 'collection' } | { kind: 'playlist'; id: string };
+export type TrackSource =
+  | { kind: 'collection' }
+  | { kind: 'playlist'; id: string }
+  /** Several playlists or folders as one list, a track in more than one listed once. */
+  | { kind: 'playlists'; ids: string[] };
 
 export type TrackSort =
   | 'trackNo'
@@ -46,6 +50,8 @@ export interface TrackQuery {
   reviewed: boolean | null;
   /** Only tracks of one of these genres; '' is tracks with none. Empty for every genre. */
   genres: string[];
+  /** Only tracks with one of these ratings, in stars; 0 is tracks with none. Empty for every rating. */
+  ratings: number[];
 }
 
 /** What the two beat detectors disagreed about; see `Issue` in src-tauri/src/rekordbox/grid.rs. */
@@ -131,6 +137,8 @@ export interface CollectionTrack {
 export interface TrackPage {
   /** Tracks in the whole list, not just this page. */
   total: number;
+  /** How long the whole list's tracks are together, in seconds. */
+  durationSecs: number;
   offset: number;
   rows: CollectionTrack[];
 }
@@ -230,6 +238,16 @@ export interface EditOutcome {
   createdId: string | null;
   /** Something the change couldn't finish, though the library was changed. */
   warning: string | null;
+}
+
+/** The library after an undo or redo; see `UndoOutcome` in src-tauri/src/rekordbox/edit.rs. */
+export interface UndoOutcome {
+  status: CollectionStatus;
+  playlists: PlaylistNode[];
+  /** What was undone or redone, to follow "Undid"; null when there was nothing. */
+  what: string | null;
+  /** The tracks whose cues, grid or analysis lock it changed. */
+  trackIds: string[];
 }
 
 /** Files waiting to join the collection, which rekordbox being open holds up. */

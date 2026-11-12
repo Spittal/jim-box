@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
-import { formatAgo } from '@/composables/useFormat';
+import { formatAgo, formatLength } from '@/composables/useFormat';
 import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
 import { isActive, useJobsStore } from '@/stores/jobs';
@@ -26,13 +26,24 @@ const {
   selectedPending,
   reviewedFilter,
   genreFilter,
+  ratingFilter,
   filterCount,
+  lists,
+  totalSecs,
 } = storeToRefs(browse);
 const playlistStore = usePlaylistStore();
 const jobs = useJobsStore();
 
-const heading = computed(() => selectedNode.value?.name ?? 'Collection');
-const countLabel = computed(() => `${total.value} ${total.value === 1 ? 'track' : 'tracks'}`);
+/** The names of the lists being shown together, when there are several. */
+const listNames = computed(() =>
+  lists.value.length > 1 ? lists.value.map((id) => store.playlists.find((p) => p.id === id)?.name ?? '').join(', ') : '',
+);
+const heading = computed(() => selectedNode.value?.name ?? (listNames.value || 'Collection'));
+/** How many tracks, and how long they'd play one after another. */
+const countLabel = computed(() => {
+  const count = `${total.value} ${total.value === 1 ? 'track' : 'tracks'}`;
+  return total.value && totalSecs.value ? `${count} · ${formatLength(totalSecs.value)}` : count;
+});
 
 /** Runs something that reports failure by throwing, showing why it failed. */
 async function run(action: () => Promise<unknown>) {
@@ -70,6 +81,12 @@ async function toggleFilterMenu() {
   if (!filterMenu.value) return;
   genreSearch.value = '';
   genres.value = await store.namesOf('genre');
+}
+
+function toggleRating(stars: number) {
+  ratingFilter.value = ratingFilter.value.includes(stars)
+    ? ratingFilter.value.filter((r) => r !== stars)
+    : [...ratingFilter.value, stars];
 }
 
 function toggleGenre(name: string) {
@@ -223,7 +240,7 @@ const buttonClass =
         </template>
       </div>
       <div class="min-w-0 flex-1">
-        <h1 class="truncate text-sm font-medium">{{ heading }}</h1>
+        <h1 class="truncate text-sm font-medium" :title="listNames || undefined">{{ heading }}</h1>
         <p class="truncate font-mono text-xs text-text-muted">
           <template v-if="status">{{ countLabel }} · {{ status.masterDb }}</template>
           <template v-else-if="loading">Reading your rekordbox library…</template>
@@ -320,6 +337,21 @@ const buttonClass =
                   @change="reviewedFilter = choice.value"
                 />
                 {{ choice.label }}
+              </label>
+              <p class="mt-1 border-t border-border px-3 pt-2 pb-0.5 text-[10px] tracking-wide text-text-muted uppercase">
+                Rating
+              </p>
+              <label
+                v-for="stars in [5, 4, 3, 2, 1, 0]"
+                :key="stars"
+                class="flex cursor-default items-center gap-2 px-3 py-0.5 hover:bg-surface-2"
+                :class="stars ? '' : 'text-text-secondary'"
+              >
+                <input type="checkbox" :checked="ratingFilter.includes(stars)" @change="toggleRating(stars)" />
+                <span v-if="stars" :aria-label="`${stars} ${stars === 1 ? 'star' : 'stars'}`">
+                  {{ '★'.repeat(stars) }}<span class="text-text-muted/40">{{ '★'.repeat(5 - stars) }}</span>
+                </span>
+                <template v-else>No stars</template>
               </label>
               <p class="mt-1 border-t border-border px-3 pt-2 pb-0.5 text-[10px] tracking-wide text-text-muted uppercase">
                 Genre

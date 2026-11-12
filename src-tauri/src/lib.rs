@@ -85,6 +85,17 @@ pub fn run() {
             // With no library to open, the window asks for one, and the
             // rest is set up when it's chosen (see `libraries::open`).
             libraries::open_at_launch(app.handle());
+
+            // The window is created hidden (`visible: false`) so it first
+            // appears at its remembered size and position, not at the
+            // defaults. On macOS the window-state plugin's resize and move
+            // are still waiting on the main queue, so the show waits behind
+            // them there.
+            let handle = app.handle().clone();
+            #[cfg(target_os = "macos")]
+            dispatch2::DispatchQueue::main().exec_async(move || menu::show_main(&handle));
+            #[cfg(not(target_os = "macos"))]
+            menu::show_main(&handle);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -132,6 +143,7 @@ pub fn run() {
             commands::collection::collection_field_values,
             commands::collection::find_in_collection,
             commands::collection::edit_collection,
+            commands::collection::undo_collection,
             commands::collection::review_grids,
             commands::collection::import_to_collection,
             commands::collection::analyse_tracks,

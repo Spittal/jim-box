@@ -69,9 +69,30 @@ async function focusSearchBar() {
   input?.select();
 }
 
+/** Whether the keyboard is in something being typed, which has an undo of its own. */
+function typing() {
+  const at = document.activeElement;
+  if (at instanceof HTMLInputElement) return !['checkbox', 'radio', 'range', 'button', 'color', 'file'].includes(at.type);
+  return at instanceof HTMLTextAreaElement || (at instanceof HTMLElement && at.isContentEditable);
+}
+
+/** Undoes or redoes the last change to the library, and says what it was. */
+async function undo(redo: boolean) {
+  const what = await useCollectionStore().undo(redo);
+  // A failure says so itself.
+  if (what === undefined) return;
+  useBrowseStore().notice = what
+    ? `${redo ? 'Redid' : 'Undid'} ${what}.`
+    : `Nothing to ${redo ? 'redo' : 'undo'}: only changes made to the library since the app opened can be.`;
+}
+
 function runCommand(command: string) {
   if (!loaded.value) return;
-  if (command === 'settings') ui.toggleSettings();
+  if (command === 'undo' || command === 'redo') {
+    // The menu took the keys from the text field; this is what they'd have done there.
+    if (typing()) document.execCommand(command);
+    else void undo(command === 'redo');
+  } else if (command === 'settings') ui.toggleSettings();
   else if (command === 'shortcuts') ui.toggleShortcuts();
   else if (command === 'consolidate') ui.showConsolidate();
   else if (command === 'find') void focusSearchBar();
@@ -92,8 +113,18 @@ function onShortcut(event: KeyboardEvent) {
   if (!commandKey(event) || event.altKey) return;
   const key = event.key.toLowerCase();
   const command =
-    key === ',' ? 'settings' : key === '/' ? 'shortcuts' : key === 'f' ? (event.shiftKey ? 'find-online' : 'find') : null;
+    key === '/'
+      ? 'shortcuts'
+      : key === 'f'
+        ? event.shiftKey ? 'find-online' : 'find'
+        : key === 'z'
+          ? event.shiftKey ? 'redo' : 'undo'
+          : key === 'y'
+            ? 'redo'
+            : null;
   if (!command) return;
+  // A text field undoes its own typing.
+  if ((command === 'undo' || command === 'redo') && typing()) return;
   // Also keeps the web view's own find bar from opening.
   event.preventDefault();
   runCommand(command);

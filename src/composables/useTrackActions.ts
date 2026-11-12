@@ -70,13 +70,38 @@ export function useTrackActions() {
     if (trackIds.length) await collection.edit({ kind: 'addTracks', playlistId, trackIds });
   }
 
-  /** Takes the selected tracks out of the playlist being shown. They stay in the collection. */
+  /**
+   * What to play once these tracks have left the list, when the one playing
+   * is among them: the first under it that's staying. Asked before they go.
+   */
+  async function successor(trackIds: string[]) {
+    const playing = browse.opened;
+    if (!playing || !browse.playing || !trackIds.includes(playing.id)) return null;
+    const next = await browse.trackPast(playing.id, new Set(trackIds)).catch(() => null);
+    // Unless another track was opened, or the player closed, meanwhile.
+    return () => {
+      if (!next || browse.opened !== playing) return;
+      browse.opened = next;
+      browse.selectTracks([next.id]);
+    };
+  }
+
+  /** Takes the selected tracks out of the playlists being shown. They stay in the collection. */
   async function removeFromPlaylist() {
     const trackIds = browse.selectedIds;
-    const playlistId = browse.selected;
-    if (!browse.inPlaylist || !playlistId || !trackIds.length) return;
+    const playlists = browse.removableFrom;
+    if (!playlists.length || !trackIds.length) return;
+    const playNext = await successor(trackIds);
     browse.clearSelection();
-    await collection.edit({ kind: 'removeTracks', playlistId, trackIds });
+    let done = true;
+    // One thing to undo, however many playlists.
+    const group = crypto.randomUUID();
+    for (const [at, playlistId] of playlists.entries()) {
+      // The lists are read again once, after the last.
+      const quiet = at < playlists.length - 1;
+      done &&= (await collection.edit({ kind: 'removeTracks', playlistId, trackIds }, { quiet, group })) !== undefined;
+    }
+    if (done) playNext?.();
   }
 
   /**
@@ -107,8 +132,10 @@ export function useTrackActions() {
     if (!answer) return;
     // What was ticked is remembered; a delete that didn't ask says nothing of it.
     if (!trash) localStorage.setItem(TRASH_KEY, String(answer.option));
+    const playNext = await successor(trackIds);
     browse.clearSelection();
-    await collection.edit({ kind: 'deleteTracks', trackIds, trashFiles: trash || answer.option });
+    const done = await collection.edit({ kind: 'deleteTracks', trackIds, trashFiles: trash || answer.option });
+    if (done !== undefined) playNext?.();
   }
 
   return { identify, analyse, review, reviewable, allReviewed, addToPlaylist, removeFromPlaylist, remove };

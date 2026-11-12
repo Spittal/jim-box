@@ -8,6 +8,7 @@ import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
 import { useJobsStore } from '@/stores/jobs';
 import { isPlaylistLink, usePlaylistStore } from '@/stores/playlist';
+import { commandKey } from '@/platform';
 import type { PlaylistNode } from '@/types/collection';
 import type { SyncSettings } from '@/types/playlist';
 
@@ -19,12 +20,20 @@ import type { SyncSettings } from '@/types/playlist';
 const store = useCollectionStore();
 const { status, playlists } = storeToRefs(store);
 const browse = useBrowseStore();
-const { selected, selectedNode } = storeToRefs(browse);
+const { selected, selectedNode, lists } = storeToRefs(browse);
 const jobs = useJobsStore();
 const playlistStore = usePlaylistStore();
 const { watched } = storeToRefs(playlistStore);
 
 const collapsed = ref(new Set<string>());
+
+/** Shift- and ⌘-clicks pick lists; they don't select text. */
+function keepTextUnselected(event: MouseEvent) {
+  if (!event.shiftKey && !commandKey(event)) return;
+  if ((event.target as HTMLElement).closest('input')) return;
+  event.preventDefault();
+  window.getSelection()?.removeAllRanges();
+}
 
 /** Tree rows, without the descendants of collapsed folders. */
 const treeRows = computed(() => {
@@ -40,6 +49,33 @@ const treeRows = computed(() => {
   }
   return rows;
 });
+
+// Picking lists: a click picks one; with ⌘ (Ctrl on Windows) or Shift, several, shown as one list.
+
+/** Where a Shift-click's range starts: the list last clicked without Shift. */
+let anchor: string | null = null;
+/** The list last clicked, which ↑ and ↓ move from. */
+const clicked = ref<string | null>(null);
+const lead = computed(() =>
+  clicked.value && lists.value.includes(clicked.value) ? clicked.value : (lists.value[lists.value.length - 1] ?? null),
+);
+
+function clickNode(node: PlaylistNode, event: MouseEvent) {
+  clicked.value = node.id;
+  if (event.shiftKey) {
+    const ids = treeRows.value.map((row) => row.id);
+    const from = ids.indexOf(anchor ?? node.id);
+    const to = ids.indexOf(node.id);
+    // The anchor has gone, or is folded away: just this one.
+    if (from === -1) browse.select((anchor = node.id));
+    else browse.selectSeveral(ids.slice(Math.min(from, to), Math.max(from, to) + 1));
+  } else if (commandKey(event)) {
+    anchor = node.id;
+    browse.selectSeveral(
+      lists.value.includes(node.id) ? lists.value.filter((id) => id !== node.id) : [...lists.value, node.id],
+    );
+  } else browse.select((anchor = node.id));
+}
 
 function toggleFolder(id: string) {
   const next = new Set(collapsed.value);
@@ -191,9 +227,9 @@ function onKey(event: KeyboardEvent) {
   if ((event.target as HTMLElement).closest('input')) return;
   if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
     const ids: (string | null)[] = [null, ...treeRows.value.map((node) => node.id)];
-    const at = ids.indexOf(selected.value) + (event.key === 'ArrowDown' ? 1 : -1);
+    const at = ids.indexOf(lead.value) + (event.key === 'ArrowDown' ? 1 : -1);
     if (at >= 0 && at < ids.length) {
-      browse.select(ids[at]);
+      browse.select((anchor = ids[at]));
       void nextTick(() => pane.value?.querySelector('[aria-current="true"]')?.scrollIntoView({ block: 'nearest' }));
     }
   } else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
@@ -226,7 +262,8 @@ async function deletePlaylist(node: PlaylistNode) {
 
 /** A tree row's context menu; the Collection row's and the empty space's make new playlists at the top. */
 function treeMenu(node: PlaylistNode | null) {
-  if (node) browse.select(node.id);
+  // A right-click on one of several being shown leaves them showing.
+  if (node && !lists.value.includes(node.id)) browse.select((anchor = node.id));
   const lines: MenuLine[] = [
     { text: 'New Playlist', action: () => startCreate(false) },
     { text: 'New Folder', action: () => startCreate(true) },
@@ -334,9 +371,9 @@ const nameInputClass =
     <ul class="min-h-0 flex-1 overflow-y-auto py-1 text-xs select-none" @contextmenu.prevent="treeMenu(null)">
       <li
         class="flex cursor-default items-center gap-1 py-1 pr-2 pl-4"
-        :class="selected === null ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:bg-surface-1'"
-        :aria-current="selected === null"
-        @click="browse.select(null)"
+        :class="!lists.length ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:bg-surface-1'"
+        :aria-current="!lists.length"
+        @click="browse.select((anchor = null))"
       >
         <span class="min-w-0 flex-1 truncate">Collection</span>
         <span class="shrink-0 font-mono text-[10px] text-text-muted">{{ status?.tracks }}</span>
@@ -349,13 +386,15 @@ const nameInputClass =
         <li
           class="group flex cursor-default items-center gap-1 py-1 pr-2"
           :class="[
-            selected === node.id ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:bg-surface-1',
+            lists.includes(node.id) ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:bg-surface-1',
             dropTree === node.id ? 'outline outline-1 -outline-offset-1 outline-accent' : '',
           ]"
           :style="{ paddingLeft: `${node.depth * 12 + 4}px` }"
-          :aria-current="selected === node.id"
+          :aria-current="lead === node.id"
+          :aria-selected="lists.includes(node.id)"
           :draggable="naming?.id !== node.id"
-          @click="browse.select(node.id)"
+          @mousedown="keepTextUnselected"
+          @click="clickNode(node, $event)"
           @dblclick="startRename(node)"
           @contextmenu.prevent.stop="treeMenu(node)"
           @dragstart="startDrag($event, { kind: 'playlist', id: node.id })"

@@ -24,8 +24,16 @@ const groups: { title: string; note?: string; lines: Line[] }[] = [
       { does: 'Analyse the track again: opens the form, then ' + enter + ' goes ahead', keys: [[cmd, 'L']] },
       { does: 'Identify the track on MusicBrainz', keys: [[cmd, 'I']] },
       { does: 'Download the track again, or a lossless copy', keys: [[cmd, 'R']] },
-      { does: 'Remove the track; from a playlist, only from that', keys: [[del]] },
+      { does: 'Remove the track; from a playlist, only from that. One that\'s playing gives way to the next', keys: [[del]] },
       { does: 'Delete the track and its file', keys: [[cmd, del]] },
+    ],
+  },
+  {
+    title: 'Changes',
+    note: 'To the rekordbox library, made since the app opened: playlists, ratings and other details, cues, beat grids, and tracks deleted without their files. In a text field, the typing instead.',
+    lines: [
+      { does: 'Undo the last change', keys: [[cmd, 'Z']] },
+      { does: 'Redo it', keys: isMac ? [[cmd, shift, 'Z']] : [[cmd, shift, 'Z'], [cmd, 'Y']] },
     ],
   },
   {
@@ -35,6 +43,7 @@ const groups: { title: string; note?: string; lines: Line[] }[] = [
       { does: 'Between the playlists, the tracks and the sidebar', keys: [[cmd, '←'], [cmd, '→']] },
       { does: 'Pick the playlist or track above or below', keys: [['↑'], ['↓']] },
       { does: 'Close or open a folder of playlists', keys: [['←'], ['→']] },
+      { does: 'Show several playlists as one list', keys: [[cmd, 'Click'], [shift, 'Click']] },
     ],
   },
   {
@@ -53,12 +62,13 @@ const groups: { title: string; note?: string; lines: Line[] }[] = [
     lines: [
       { does: 'Play or pause', keys: [['Space']] },
       { does: 'Back or forward a beat', keys: [[','], ['.']] },
-      { does: 'Back or forward 8 bars', keys: [[cmd, ','], [cmd, '.']] },
-      { does: 'Back or forward 16 bars', keys: [[shift, ','], [shift, '.']] },
+      { does: 'Back or forward a bar', keys: [[cmd, ','], [cmd, '.']] },
+      { does: 'Back or forward 8 bars', keys: [[shift, ','], [shift, '.']] },
       { does: 'Go to a hot cue, or set it where there is none', keys: [['1'], ['…'], ['8']] },
       { does: 'Delete a hot cue', keys: [[shift, '1'], ['…'], [shift, '8']] },
       { does: 'Set a memory cue', keys: [['M'], [cmd, 'M']] },
       { does: 'Turn quantize on or off', keys: [['Q']] },
+      { does: 'Show or hide the beat grid\'s tools', keys: [['G']] },
       { does: 'Set the downbeat: the beat at the playhead starts its bar', keys: [[cmd, 'B']] },
     ],
   },
@@ -81,7 +91,6 @@ const groups: { title: string; note?: string; lines: Line[] }[] = [
     lines: [
       { does: 'Find in the collection', keys: [[cmd, 'F']] },
       { does: 'Find online', keys: [[cmd, shift, 'F']] },
-      { does: 'Settings', keys: [[cmd, ',']] },
       { does: 'These shortcuts', keys: [[cmd, '/'], ['?']] },
       { does: 'Close settings or a dialog', keys: [['Esc']] },
     ],

@@ -11,7 +11,7 @@ use crate::library;
 use crate::state::SettingsState;
 use crate::rekordbox::{GridHint, 
     Audio, Collection, CollectionStatus, Edit, EditOutcome, ImportReport, PlaylistNode, Preparation, Preview, TrackPage,
-    TrackQuery,
+    TrackQuery, UndoOutcome,
 };
 
 /// The collection as last read, and the files waiting to join it.
@@ -88,9 +88,21 @@ pub async fn find_in_collection(app: AppHandle, tracks: Vec<TrackName>) -> AppRe
 }
 
 /// Makes one change to rekordbox's library. Refused while rekordbox is open.
+/// Changes made in a row under the same `group` are undone as one.
 #[tauri::command]
-pub async fn edit_collection(app: AppHandle, edit: Edit) -> AppResult<EditOutcome> {
-    library::blocking(move || app.state::<Collection>().edit(edit)).await
+pub async fn edit_collection(app: AppHandle, edit: Edit, group: Option<String>) -> AppResult<EditOutcome> {
+    library::blocking(move || app.state::<Collection>().edit_in(edit, group)).await
+}
+
+/// Undoes the last change made to rekordbox's library this session, or
+/// (`redo`) makes the last one undone again. Refused while rekordbox is open.
+#[tauri::command]
+pub async fn undo_collection(app: AppHandle, redo: bool) -> AppResult<UndoOutcome> {
+    library::blocking(move || {
+        let collection = app.state::<Collection>();
+        if redo { collection.redo() } else { collection.undo() }
+    })
+    .await
 }
 
 /// Marks tracks' beat grids as reviewed, or takes that back. Only the

@@ -283,17 +283,6 @@ const inputClass =
       <PlaylistPills :track="track" />
     </div>
 
-    <label class="flex flex-col gap-1">
-      <span class="text-[11px] text-text-muted">Comment</span>
-      <textarea
-        :key="track.id"
-        :value="track.comment"
-        :class="inputClass"
-        rows="3"
-        @change="commitComment"
-      />
-    </label>
-
     <div class="flex flex-col gap-1">
       <span class="text-[11px] text-text-muted">Rating</span>
       <div data-keys-group class="flex gap-0.5 text-base leading-none">
@@ -308,33 +297,46 @@ const inputClass =
       </div>
     </div>
 
-    <div class="flex flex-col gap-1">
-      <span class="text-[11px] text-text-muted">Colour</span>
-      <div data-keys-group class="flex items-center gap-1.5">
-        <button
-          v-for="(color, id) in TRACK_COLORS"
-          :key="id"
-          :data-keys-current="track.color === id ? '' : undefined"
-          class="size-4 rounded-full border"
-          :class="track.color === id ? 'border-text-primary' : 'border-border'"
-          :style="{ backgroundColor: color.hex || 'transparent' }"
-          :title="color.name"
-          @click="colour(id)"
-        />
-      </div>
-    </div>
-
-    <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
-      <dt class="text-text-muted">Time</dt>
-      <dd class="font-mono">{{ track.durationSecs ? formatDuration(track.durationSecs) : '–' }}</dd>
-      <dt class="text-text-muted">Format</dt>
-      <dd class="font-mono">{{ track.format.toUpperCase() }} {{ track.bitrate ? `${track.bitrate}k` : '' }}</dd>
-    </dl>
-
     <BeatGridSection ref="beatGrid" :track="track" />
 
-    <div class="flex flex-col gap-1.5 border-t border-border pt-3">
+    <div class="flex flex-col gap-3 border-t border-border pt-3">
       <span class="section-label">File</span>
+
+      <label class="flex flex-col gap-1">
+        <span class="text-[11px] text-text-muted">Comment</span>
+        <textarea
+          :key="track.id"
+          :value="track.comment"
+          :class="inputClass"
+          rows="3"
+          @change="commitComment"
+        />
+      </label>
+
+      <div class="flex flex-col gap-1">
+        <span class="text-[11px] text-text-muted">Colour</span>
+        <div data-keys-group class="flex items-center gap-1.5">
+          <button
+            v-for="(color, id) in TRACK_COLORS"
+            :key="id"
+            :data-keys-current="track.color === id ? '' : undefined"
+            class="size-4 rounded-full border"
+            :class="track.color === id ? 'border-text-primary' : 'border-border'"
+            :style="{ backgroundColor: color.hex || 'transparent' }"
+            :title="color.name"
+            @click="colour(id)"
+          />
+        </div>
+      </div>
+
+      <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
+        <dt class="text-text-muted">Time</dt>
+        <dd class="font-mono">{{ track.durationSecs ? formatDuration(track.durationSecs) : '–' }}</dd>
+        <dt class="text-text-muted">Format</dt>
+        <dd class="font-mono">{{ track.format.toUpperCase() }} {{ track.bitrate ? `${track.bitrate}k` : '' }}</dd>
+      </dl>
+
+      <div class="flex flex-col gap-1.5">
       <p class="font-mono text-[10px] break-all text-text-secondary">{{ track.path }}</p>
       <div data-keys-group class="flex flex-wrap gap-1.5">
         <button :class="actionClass" @click="run(() => revealItemInDir(track.path))">{{ revealLabel }}</button>
@@ -366,6 +368,7 @@ const inputClass =
         <JobStatusBadge :job="job" />
       </button>
       <p v-if="actionError" class="error-box">{{ actionError }}</p>
+      </div>
     </div>
   </aside>
 </template>

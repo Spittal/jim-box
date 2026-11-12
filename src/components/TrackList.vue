@@ -227,7 +227,8 @@ function rowMenu(index: number, track: CollectionTrack) {
     },
     'separator',
   ];
-  if (inPlaylist.value) lines.push({ text: 'Remove from Playlist', action: () => void actions.removeFromPlaylist() });
+  const shown = browse.removableFrom.length;
+  if (shown) lines.push({ text: shown > 1 ? 'Remove from These Playlists' : 'Remove from Playlist', action: () => void actions.removeFromPlaylist() });
   lines.push({ text: 'Delete from Collection…', action: () => void actions.remove() });
   void showContextMenu(lines);
 }
@@ -360,7 +361,7 @@ function onKey(event: KeyboardEvent) {
     // With ⌘, out of the collection and its file to the Trash, wherever it's shown.
     // Else out of a playlist at once, as its button does; out of the collection once that's been asked.
     if (command) void actions.remove(true);
-    else if (inPlaylist.value) void actions.removeFromPlaylist();
+    else if (browse.removableFrom.length) void actions.removeFromPlaylist();
     else void actions.remove();
   } else return;
   event.preventDefault();
@@ -802,7 +803,7 @@ const smallButtonClass =
         ]"
         :title="sortable(column.id)
           ? 'Click to sort by this. Drag to move the column.'
-          : `${column.name}. Drag to move the column.`"
+          : `${column.name}. Drag to move the column; right-click to hide it.`"
         draggable="true"
         @click="sortable(column.id) && browse.sortBy(column.id)"
         @dragstart="dragColumn($event, column.id)"
@@ -810,7 +811,12 @@ const smallButtonClass =
         @drop.prevent="dropColumn(column.id)"
         @dragend="endColumnDrag"
       >
-        {{ column.label || '\u00a0' }}<span v-if="sort === column.id">{{ descending ? ' ↓' : ' ↑' }}</span>
+        <!-- The artwork's column is too narrow for a name: a small picture says what it is, and is something to drag. -->
+        <svg v-if="column.id === 'art'" viewBox="0 0 16 16" class="mx-auto size-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-label="Artwork">
+          <rect x="2" y="2" width="12" height="12" rx="1.5" />
+          <path d="M2 11l3.5-3.5 3 3 2-2L14 12" />
+        </svg>
+        <template v-else>{{ column.label || '\u00a0' }}<span v-if="sort === column.id">{{ descending ? ' ↓' : ' ↑' }}</span></template>
       </button>
         <!-- The column's right edge, in the gap after it: drag to resize. -->
         <span

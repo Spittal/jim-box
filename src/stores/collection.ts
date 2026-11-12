@@ -15,6 +15,7 @@ import type {
   TrackPage,
   TrackPreview,
   TrackQuery,
+  UndoOutcome,
   Waiting,
 } from '@/types/collection';
 
@@ -111,12 +112,16 @@ export const useCollectionStore = defineStore('collection', () => {
    * created, if anything; on failure sets `error` and returns undefined.
    * A `quiet` change is one of several being made in a row to a track's cues
    * or grid: the lists aren't read again for each, and `touch` is called
-   * after the last.
+   * after the last. Changes made in a row under the same `group` are undone
+   * as one.
    */
-  async function edit(change: CollectionEdit, { quiet = false } = {}): Promise<string | null | undefined> {
+  async function edit(
+    change: CollectionEdit,
+    { quiet = false, group = null }: { quiet?: boolean; group?: string | null } = {},
+  ): Promise<string | null | undefined> {
     error.value = null;
     try {
-      const outcome = await invoke<EditOutcome>('edit_collection', { edit: change });
+      const outcome = await invoke<EditOutcome>('edit_collection', { edit: change, group });
       status.value = outcome.status;
       // Done, though not all of it: say what wasn't.
       error.value = outcome.warning;
@@ -129,6 +134,42 @@ export const useCollectionStore = defineStore('collection', () => {
       error.value = String(e);
       // The backend read the library again; show what is really there.
       if (!quiet) generation.value++;
+      return undefined;
+    }
+  }
+
+  /** What waits for changes that are shown before they're written (the player's). */
+  const settling = new Set<() => Promise<void>>();
+
+  /** Has undo wait for `wait` first; returns what stops that. */
+  function onSettle(wait: () => Promise<void>) {
+    settling.add(wait);
+    return () => settling.delete(wait);
+  }
+
+  /** The tracks whose cues, grid or lock the last undo or redo changed; new each time. */
+  const undone = ref<{ trackIds: string[] } | null>(null);
+
+  /**
+   * Undoes the last change made to the library this session, or with `redo`
+   * makes the last one undone again. Returns what it was, null when there
+   * was nothing; on failure sets `error` and returns undefined.
+   */
+  async function undo(redo = false): Promise<string | null | undefined> {
+    error.value = null;
+    try {
+      // The last change made may not have been written yet.
+      await Promise.all([...settling].map((wait) => wait()));
+      const outcome = await invoke<UndoOutcome>('undo_collection', { redo });
+      status.value = outcome.status;
+      playlists.value = outcome.playlists;
+      generation.value++;
+      if (outcome.what) undone.value = { trackIds: outcome.trackIds };
+      return outcome.what;
+    } catch (e) {
+      error.value = String(e);
+      // The backend read the library again; show what is really there.
+      generation.value++;
       return undefined;
     }
   }
@@ -232,6 +273,9 @@ export const useCollectionStore = defineStore('collection', () => {
     trackIds,
     namesOf,
     edit,
+    undo,
+    undone,
+    onSettle,
     touch,
     importPaths,
     analyse,

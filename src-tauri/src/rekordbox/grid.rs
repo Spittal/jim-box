@@ -397,6 +397,19 @@ impl States {
         self.save();
     }
 
+    /// Puts back what was known of a track's grid at another moment, for
+    /// undo; None when nothing was.
+    pub fn put(&self, track_id: &str, state: Option<State>) {
+        {
+            let mut by_track = self.by_track.write().expect("grids lock poisoned");
+            match state {
+                Some(state) => by_track.insert(track_id.to_owned(), state),
+                None => by_track.remove(track_id),
+            };
+        }
+        self.save();
+    }
+
     /// Forgets tracks that have left the collection, and their grids to choose from.
     pub fn forget(&self, track_ids: &[String]) {
         let known = {

@@ -32,7 +32,8 @@
         },
         "allowLinkPreview": false,
         "dragDropEnabled": false,
-        "center": true
+        "center": true,
+        "visible": false
       }
     ],
     "security": {
