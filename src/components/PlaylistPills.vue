@@ -198,12 +198,12 @@ function onKey(event: KeyboardEvent) {
     <span
       v-for="playlist in members"
       :key="playlist.id"
-      class="flex max-w-full items-center gap-0.5 rounded bg-surface-2 py-0.5 pr-0.5 pl-1.5 text-[11px] text-text-secondary"
+      class="flex max-w-full items-center gap-0.5 rounded bg-surface-2 py-0.5 pr-0.5 pl-1.5 text-[11px] text-text-secondary outline-accent has-[:focus]:bg-surface-3 has-[:focus]:text-text-primary has-[:focus]:outline-2"
       :title="playlist.folder ? `${playlist.folder} / ${playlist.name}` : playlist.name"
     >
       <span class="truncate">{{ playlist.name }}</span>
       <button
-        class="shrink-0 rounded px-1 leading-none text-text-muted transition-colors hover:bg-surface-3 hover:text-text-primary"
+        class="shrink-0 rounded px-1 leading-none text-text-muted outline-none transition-colors hover:bg-surface-3 hover:text-text-primary focus:text-text-primary"
         :title="`Take it out of ${playlist.name}. It stays in the collection.`"
         :aria-label="`Remove from ${playlist.name}`"
         @mousedown.stop.prevent

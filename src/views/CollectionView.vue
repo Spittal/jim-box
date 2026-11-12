@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, shallowRef } from 'vue';
+import { computed, onMounted, onUnmounted, ref, shallowRef } from 'vue';
 import { storeToRefs } from 'pinia';
 import CollectionToolbar from '@/components/CollectionToolbar.vue';
 import CollectionTrackDetail from '@/components/CollectionTrackDetail.vue';
@@ -12,6 +12,9 @@ import TrackPlayer from '@/components/TrackPlayer.vue';
 import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
 import { useLibraryStore } from '@/stores/library';
+import { stepPane } from '@/composables/useDetailKeys';
+import { useUiStore } from '@/stores/ui';
+import { commandKey } from '@/platform';
 import type { CollectionTrack } from '@/types/collection';
 import type { LibraryItem } from '@/types/library';
 
@@ -50,6 +53,42 @@ const identified = computed(() => {
   }
   return items;
 });
+
+// --- The keyboard's pane --------------------------------------------------------
+
+const ui = useUiStore();
+
+/**
+ * ⌘← and ⌘→ take the keyboard from pane to pane: playlists, tracks, sidebar.
+ * And Tab stays in the pane it's in: the sidebar takes it round its entries,
+ * and in the other two, which have nothing to type in, it does nothing rather
+ * than wander off to a button somewhere else.
+ */
+function onKey(event: KeyboardEvent) {
+  if (event.defaultPrevented || event.altKey || ui.settings) return;
+  const target = event.target as HTMLElement | null;
+  const pane = target?.closest('[data-pane]');
+  const field = target?.closest<HTMLElement>('input, textarea, select, [contenteditable="true"]');
+  if (event.key === 'Tab') {
+    if (event.metaKey || event.ctrlKey || field || !(pane || target === document.body)) return;
+  } else if (commandKey(event) && !event.shiftKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+    const left = event.key === 'ArrowLeft';
+    if (field) {
+      // A field elsewhere keeps the keys. One in a pane gives them up at the end of
+      // its text they'd go to anyway, or with all of it selected, as it is when come to.
+      if (!pane) return;
+      if (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement) {
+        const { selectionStart: start, selectionEnd: end, value } = field;
+        const all = start === 0 && end === value.length;
+        if (!all && (left ? end !== 0 : start !== value.length)) return;
+      }
+    }
+    stepPane(target, left ? -1 : 1);
+  } else return;
+  event.preventDefault();
+}
+onMounted(() => window.addEventListener('keydown', onKey));
+onUnmounted(() => window.removeEventListener('keydown', onKey));
 
 const analysisPercent = computed(() =>
   analysis.value?.total ? (analysis.value.done / analysis.value.total) * 100 : 0,

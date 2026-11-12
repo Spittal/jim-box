@@ -18,7 +18,7 @@ pub use ingest::{Arrival, ImportReport};
 pub use prepare::{Audio, GridChange, Preparation, Preview};
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
@@ -135,6 +135,30 @@ pub struct TrackQuery {
     pub descending: bool,
     #[serde(default)]
     pub query: String,
+    /// Only tracks whose grid has been reviewed, or only those whose hasn't.
+    #[serde(default)]
+    pub reviewed: Option<bool>,
+    /// Only tracks of one of these genres, named as the library names them;
+    /// the empty name is tracks with no genre. Empty for every genre.
+    #[serde(default)]
+    pub genres: Vec<String>,
+}
+
+/// A list as it's shown: its rows in order, filtered.
+struct Listing {
+    view: View,
+    /// Each row's place in its playlist, where filtering took rows out from
+    /// between them; None where the view's own numbering still holds.
+    numbers: Option<Vec<u32>>,
+}
+
+impl Listing {
+    fn track_no_at(&self, position: usize) -> u32 {
+        match &self.numbers {
+            Some(numbers) => numbers.get(position).copied().unwrap_or(0),
+            None => self.view.track_no_at(position),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -226,7 +250,7 @@ impl Loaded {
 pub struct Collection {
     loaded: RwLock<Option<Arc<Loaded>>>,
     /// The last list opened, so scrolling it doesn't sort it again per page.
-    view: Mutex<Option<(TrackQuery, Arc<View>)>>,
+    view: Mutex<Option<(TrackQuery, Arc<Listing>)>>,
     /// The `master.db` to read; None for the one rekordbox is set to use.
     master_db: Option<PathBuf>,
     /// Where `master.db` is copied before the first change of a session.
@@ -265,6 +289,8 @@ impl Collection {
     /// Nothing of rekordbox's changes.
     pub fn review_grids(&self, track_ids: &[String], reviewed: bool) {
         self.grids.review(track_ids, reviewed);
+        // A list filtered or sorted by it is out of date.
+        *self.view.lock().expect("view lock poisoned") = None;
     }
 
     /// Of `track_ids`, those whose grid has been reviewed.
@@ -431,7 +457,7 @@ impl Collection {
         Ok(nodes)
     }
 
-    fn open_view(&self, loaded: &Loaded, query: &TrackQuery) -> AppResult<Arc<View>> {
+    fn open_view(&self, loaded: &Loaded, query: &TrackQuery) -> AppResult<Arc<Listing>> {
         let mut cached = self.view.lock().expect("view lock poisoned");
         if let Some((key, view)) = cached.as_ref() {
             if key == query {
@@ -456,6 +482,7 @@ impl Collection {
                 }
             }
         };
+        let numbered = matches!(source, TrackSource::Playlist(_));
         let by_playlists = query.sort == Sort::Playlists;
         let by_key = matches!(query.sort, Sort::Key | Sort::KeyCamelot);
         let by_confidence = query.sort == Sort::Confidence;
@@ -468,6 +495,28 @@ impl Collection {
             query: query.query.trim().to_owned(),
             filter: Default::default(),
         });
+        let mut numbers = None;
+        if query.reviewed.is_some() || !query.genres.is_empty() {
+            let index = &loaded.index;
+            let genres: HashSet<&str> = query.genres.iter().map(|genre| genre.trim()).collect();
+            let keep: Vec<bool> = view
+                .rows
+                .iter()
+                .map(|&row| {
+                    (genres.is_empty() || genres.contains(index.genre_name(row).trim()))
+                        && query.reviewed.is_none_or(|wanted| {
+                            let reviewed =
+                                self.grids.get(&index.ids[row as usize].to_string()).is_some_and(|state| state.reviewed);
+                            reviewed == wanted
+                        })
+                })
+                .collect();
+            if numbered {
+                numbers = Some((0..keep.len()).filter(|&at| keep[at]).map(|at| view.track_no_at(at)).collect());
+            }
+            let mut kept = keep.iter();
+            view.rows.retain(|_| *kept.next().expect("one for each row"));
+        }
         if by_playlists {
             let keys: HashMap<u32, String> = view
                 .rows
@@ -515,15 +564,15 @@ impl Collection {
                 a.is_empty().cmp(&b.is_empty()).then(known).then(ordered)
             });
         }
-        let view = Arc::new(view);
-        *cached = Some((query.clone(), view.clone()));
-        Ok(view)
+        let listing = Arc::new(Listing { view, numbers });
+        *cached = Some((query.clone(), listing.clone()));
+        Ok(listing)
     }
 
     /// The id of every track in a list, in its order: for selecting them all.
     pub fn track_ids(&self, query: &TrackQuery) -> AppResult<Vec<String>> {
         let loaded = self.loaded()?;
-        let view = self.open_view(&loaded, query)?;
+        let view = &self.open_view(&loaded, query)?.view;
         Ok(view.window(0, view.len()).iter().map(|&row| loaded.index.ids[row as usize].to_string()).collect())
     }
 
@@ -553,7 +602,8 @@ impl Collection {
     /// `limit` rows of a list from `offset`.
     pub fn tracks(&self, query: &TrackQuery, offset: usize, limit: usize) -> AppResult<TrackPage> {
         let loaded = self.loaded()?;
-        let view = self.open_view(&loaded, query)?;
+        let listing = self.open_view(&loaded, query)?;
+        let view = &listing.view;
         let index = &loaded.index;
         let rows = view
             .window(offset, limit)
@@ -564,7 +614,7 @@ impl Collection {
                 let bpm = index.bpm_x100[r];
                 TrackRow {
                     id: index.ids[r].to_string(),
-                    position: view.track_no_at(offset + i),
+                    position: listing.track_no_at(offset + i),
                     title: index.title.get(r).to_owned(),
                     artist: index.artist_name(row).to_owned(),
                     album: index.album_name(row).to_owned(),
@@ -596,7 +646,7 @@ pub(crate) mod tests {
     use rbl_db::fixture::Shape;
 
     pub(super) fn query(source: Source, sort: Sort) -> TrackQuery {
-        TrackQuery { source, sort, descending: false, query: String::new() }
+        TrackQuery { source, sort, descending: false, query: String::new(), reviewed: None, genres: Vec::new() }
     }
 
     /// A fixture library with rekordbox's real schema, in a temp folder.
@@ -667,6 +717,47 @@ pub(crate) mod tests {
         let found = collection.tracks(&q, 0, 100).unwrap();
         assert!(found.total >= 1 && found.total <= all.total);
         assert!(found.rows.iter().any(|r| r.title == title));
+    }
+
+    #[test]
+    fn filters_by_review_and_genre() {
+        let (_dir, collection) = fixture();
+        let all = collection.tracks(&query(Source::Collection, Sort::Title), 0, 100).unwrap();
+        let picked: Vec<String> = all.rows.iter().take(3).map(|r| r.id.clone()).collect();
+        collection.review_grids(&picked, true);
+
+        let mut q = query(Source::Collection, Sort::Title);
+        q.reviewed = Some(true);
+        let reviewed = collection.tracks(&q, 0, 100).unwrap();
+        assert_eq!(reviewed.rows.iter().map(|r| r.id.clone()).collect::<Vec<_>>(), picked);
+        q.reviewed = Some(false);
+        assert_eq!(collection.tracks(&q, 0, 100).unwrap().total, all.total - 3);
+        // Taking a review back shows at once, in a list already open.
+        collection.review_grids(&picked[..1], false);
+        assert_eq!(collection.tracks(&q, 0, 100).unwrap().total, all.total - 2);
+
+        let genre = all.rows[0].genre.trim().to_owned();
+        let mut q = query(Source::Collection, Sort::Title);
+        q.genres = vec![genre.clone()];
+        let found = collection.tracks(&q, 0, 100).unwrap();
+        assert_eq!(found.total, all.rows.iter().filter(|r| r.genre.trim() == genre).count());
+        assert!(found.total > 0 && found.rows.iter().all(|r| r.genre.trim() == genre));
+        assert_eq!(collection.track_ids(&q).unwrap().len(), found.total);
+    }
+
+    #[test]
+    fn a_filtered_playlist_keeps_its_track_numbers() {
+        let (_dir, collection) = fixture();
+        let nodes = collection.playlists().unwrap();
+        let node = nodes.iter().find(|n| n.kind == PlaylistKind::Playlist && n.count.unwrap_or(0) > 1).expect("a playlist with tracks");
+        let mut q = query(Source::Playlist { id: node.id.clone() }, Sort::TrackNo);
+        let all = collection.tracks(&q, 0, 1000).unwrap().rows;
+        let last = all.last().unwrap();
+        collection.review_grids(std::slice::from_ref(&last.id), true);
+        q.reviewed = Some(true);
+        let found = collection.tracks(&q, 0, 1000).unwrap().rows;
+        assert!(found.iter().any(|r| r.id == last.id && r.position == last.position));
+        assert!(found.iter().all(|r| r.id == last.id));
     }
 
     #[test]

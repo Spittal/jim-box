@@ -7,7 +7,7 @@ import FixCard from '@/components/FixCard.vue';
 import JobStatusBadge from '@/components/JobStatusBadge.vue';
 import LibraryCover from '@/components/LibraryCover.vue';
 import PlaylistPills from '@/components/PlaylistPills.vue';
-import { focusDetail, focusList, stepEntry, stepInGroup } from '@/composables/useDetailKeys';
+import { stepEntry, stepInGroup } from '@/composables/useDetailKeys';
 import { TRACK_COLORS } from '@/composables/useTrackColors';
 import { formatDuration } from '@/composables/useFormat';
 import { formatKey as keyIn, useKeyNotation } from '@/composables/useKeyNotation';
@@ -153,15 +153,15 @@ function colour(color: number) {
 const ui = useUiStore();
 
 /**
- * Keys pressed in the sidebar: ↑ and ↓ go round its entries, ← and → along a
- * row of buttons, and Tab goes back to the track list. A field showing
- * suggestions has taken ↑ and ↓ for those before this hears them.
+ * Keys pressed in the sidebar: Tab and ↑ ↓ go round its entries, ← and → along
+ * a row of buttons. A field showing suggestions has taken ↑ and ↓ for those
+ * before this hears them.
  */
 function onKey(event: KeyboardEvent) {
   if (event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey) return;
   const panel = event.currentTarget as HTMLElement;
   const target = event.target as HTMLElement;
-  if (event.key === 'Tab') focusList();
+  if (event.key === 'Tab') stepEntry(panel, target, event.shiftKey ? -1 : 1);
   else if (event.shiftKey) return;
   else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
     const up = event.key === 'ArrowUp';
@@ -194,24 +194,15 @@ function identify() {
   if (!libraryStore.busy) run(() => libraryStore.identify([props.track.id]));
 }
 
-/**
- * Keys pressed anywhere: Tab comes into the sidebar from the list; ⌘L starts analysing the
- * track again, ⌘I identifies it and ⌘R downloads it again, from a text field too.
- */
+/** Keys pressed anywhere: ⌘L starts analysing the track again, ⌘I identifies it and ⌘R downloads it again, from a text field too. */
 function onWindowKey(event: KeyboardEvent) {
   if (event.defaultPrevented || event.altKey || ui.settings) return;
-  const target = event.target as HTMLElement | null;
-  if (commandKey(event)) {
-    const key = event.shiftKey ? '' : event.key.toLowerCase();
-    if (key === 'l') beatGrid.value?.startAnalyse();
-    else if (key === 'i') identify();
-    else if (key === 'r') {
-      if (!downloading.value && !starting.value && !event.repeat) redownload();
-    } else return;
-  } else if (event.key === 'Tab' && !event.metaKey && !event.ctrlKey) {
-    // Tab out of a text field elsewhere goes where it always has.
-    if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
-    focusDetail(event.shiftKey ? 'last' : 'first');
+  if (!commandKey(event) || event.shiftKey) return;
+  const key = event.key.toLowerCase();
+  if (key === 'l') beatGrid.value?.startAnalyse();
+  else if (key === 'i') identify();
+  else if (key === 'r') {
+    if (!downloading.value && !starting.value && !event.repeat) redownload();
   } else return;
   event.preventDefault();
 }
@@ -223,10 +214,10 @@ const inputClass =
 </script>
 
 <template>
-  <!-- Takes the keyboard itself (see `focusDetail`). Scrolls an entry given the keyboard clear of its edges. -->
+  <!-- Takes the keyboard itself (see `focusPane`). Scrolls an entry given the keyboard clear of its edges. -->
   <aside
     data-track-detail
-    data-track-pane
+    data-pane="detail"
     tabindex="-1"
     class="flex w-64 shrink-0 flex-col gap-3 overflow-y-auto scroll-py-8 border-l border-border p-3 text-xs outline-none"
     @keydown="onKey"

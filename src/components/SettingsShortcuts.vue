@@ -19,18 +19,27 @@ const groups: { title: string; note?: string; lines: Line[] }[] = [
   {
     title: 'Reviewing',
     lines: [
-      { does: 'Mark the grid reviewed and load the next track', keys: [[cmd, enter]] },
-      { does: 'Load the picked track into the player, and go to its Genre', keys: [[enter]] },
+      { does: 'Mark the grid reviewed and load the next track', keys: [[cmd, 'S']] },
+      { does: 'Load the picked track into the player, and go to its sidebar', keys: [[enter]] },
       { does: 'Analyse the track again: opens the form, then ' + enter + ' goes ahead', keys: [[cmd, 'L']] },
       { does: 'Identify the track on MusicBrainz', keys: [[cmd, 'I']] },
       { does: 'Download the track again, or a lossless copy', keys: [[cmd, 'R']] },
-      { does: 'Remove the track', keys: [[cmd, del], [del]] },
+      { does: 'Remove the track; from a playlist, only from that', keys: [[del]] },
+      { does: 'Delete the track and its file', keys: [[cmd, del]] },
+    ],
+  },
+  {
+    title: 'Panes',
+    note: 'A line along the top shows which has the keyboard.',
+    lines: [
+      { does: 'Between the playlists, the tracks and the sidebar', keys: [[cmd, '←'], [cmd, '→']] },
+      { does: 'Pick the playlist or track above or below', keys: [['↑'], ['↓']] },
+      { does: 'Close or open a folder of playlists', keys: [['←'], ['→']] },
     ],
   },
   {
     title: 'Track list',
     lines: [
-      { does: 'Pick the track above or below', keys: [['↑'], ['↓']] },
       { does: 'Pick more tracks', keys: [[shift, '↑'], [shift, '↓']] },
       { does: 'First or last track', keys: [[cmd, '↑'], [cmd, '↓']] },
       { does: 'A screenful up or down', keys: [['Page Up'], ['Page Down']] },
@@ -47,7 +56,7 @@ const groups: { title: string; note?: string; lines: Line[] }[] = [
       { does: 'Back or forward 8 bars', keys: [[cmd, ','], [cmd, '.']] },
       { does: 'Back or forward 16 bars', keys: [[shift, ','], [shift, '.']] },
       { does: 'Go to a hot cue, or set it where there is none', keys: [['1'], ['…'], ['8']] },
-      { does: 'Delete a hot cue', keys: [[cmd, '1'], ['…'], [cmd, '8']] },
+      { does: 'Delete a hot cue', keys: [[shift, '1'], ['…'], [shift, '8']] },
       { does: 'Set a memory cue', keys: [['M'], [cmd, 'M']] },
       { does: 'Set the downbeat: the beat at the playhead starts its bar', keys: [[cmd, 'B']] },
     ],
@@ -55,7 +64,7 @@ const groups: { title: string; note?: string; lines: Line[] }[] = [
   {
     title: 'Track sidebar',
     lines: [
-      { does: 'Between the track list and the sidebar, at Genre', keys: [['Tab']] },
+      { does: 'The next entry, from Genre on; or the one before', keys: [['Tab'], [shift, 'Tab']] },
       { does: 'The entry above or below', keys: [['↑'], ['↓']] },
       { does: 'Along the genres, playlists, stars or colours', keys: [['←'], ['→']] },
       { does: 'Choose the one the keyboard is on, or open the Key menu', keys: [[enter]] },

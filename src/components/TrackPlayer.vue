@@ -315,13 +315,15 @@ function onKey(event: KeyboardEvent) {
     } else return;
   } else if (event.code === 'Comma') jumpBeats(event.shiftKey ? (-BIG_JUMP_BARS * 4) + 1 : -2);
   else if (event.code === 'Period') jumpBeats(event.shiftKey ? BIG_JUMP_BARS * 4 : 1);
-  else if (!props.track || event.shiftKey) return;
+  else if (!props.track) return;
   else if (pad >= 0) {
-    // As pressing the pad: to its cue, or a cue set on it where it has none.
+    // As pressing the pad: to its cue, or a cue set on it where it has none. With Shift, as Shift-clicking it: the cue goes.
     const cue = hotCues.value[pad];
-    if (cue) goToCue(cue);
+    if (event.shiftKey) {
+      if (cue && !event.repeat) deleteCue(cue);
+    } else if (cue) goToCue(cue);
     else if (!event.repeat) setCue(pad);
-  } else if (event.code === 'KeyM') {
+  } else if (event.code === 'KeyM' && !event.shiftKey) {
     if (!event.repeat) setCue(null);
   } else return;
   event.preventDefault();
@@ -1049,7 +1051,7 @@ const tabClass = 'px-2 py-0.5 text-[11px] disabled:opacity-30';
             :class="hotCues[slot] ? 'text-black' : 'bg-surface-2 text-text-muted hover:bg-surface-3'"
             :style="hotCues[slot] ? { backgroundColor: cueColor(hotCues[slot]!) } : {}"
             :title="hotCues[slot]
-              ? `Hot cue ${letter} at ${formatTime(hotCues[slot]!.positionMs)}. Click (${slot + 1}) to go there, Shift-click (${shortcut(String(slot + 1))}) to delete.`
+              ? `Hot cue ${letter} at ${formatTime(hotCues[slot]!.positionMs)}. Click (${slot + 1}) to go there, Shift-click (Shift+${slot + 1}) to delete.`
               : `Set hot cue ${letter} at the playhead (${slot + 1})`"
             @click="pressPad(slot, $event)"
           >

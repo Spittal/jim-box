@@ -7,7 +7,7 @@ import JobStatusBadge from '@/components/JobStatusBadge.vue';
 import LibraryCover from '@/components/LibraryCover.vue';
 import ProgressBar from '@/components/ProgressBar.vue';
 import TrackPreview from '@/components/TrackPreview.vue';
-import { focusDetail } from '@/composables/useDetailKeys';
+import { focusPane, paneOf } from '@/composables/useDetailKeys';
 import { dragging, dropRow, endDrag, startDrag } from '@/composables/useDrag';
 import { formatDuration } from '@/composables/useFormat';
 import { gridClass, gridLabel, gridSummary } from '@/composables/useGridReport';
@@ -197,7 +197,7 @@ function clickRow(index: number, track: CollectionTrack, event: MouseEvent) {
   else pick(spot, commandKey(event));
 }
 
-/** A row's context menu: what the toolbar does to the selection, which a right-click on a row outside it moves there. */
+/** A row's context menu: what can be done to the selection, which a right-click on a row outside it moves there. */
 function rowMenu(index: number, track: CollectionTrack) {
   if (!selection.value.has(track.id)) pick({ index, id: track.id });
   const one = selection.value.size === 1;
@@ -316,20 +316,22 @@ async function reviewAndNext() {
   pick({ index, id: next.id });
   emit('open', next);
   await nextTick();
-  focusDetail('panel');
+  focusPane('detail');
 }
 
 function onKey(event: KeyboardEvent) {
   if (event.defaultPrevented || event.altKey || ui.settings) return;
   const target = event.target as HTMLElement | null;
   // From anywhere, a text field included: it's how a track being edited is finished with.
-  if (commandKey(event) && event.key === 'Enter' && !event.shiftKey) {
+  if (commandKey(event) && event.key.toLowerCase() === 's' && !event.shiftKey) {
     event.preventDefault();
     if (!event.repeat) void reviewAndNext();
     return;
   }
   // Text fields keep their own keys: ⌘A selects their text, arrows move their caret.
   if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
+  // With the keyboard in the playlists, the keys are theirs: Delete there isn't to delete tracks.
+  if (paneOf(target) === 'playlists') return;
   const command = commandKey(event);
   const page = Math.max(1, Math.floor(viewportHeight.value / ROW_HEIGHT) - 1);
   const picked = selection.value.size || pendingSelection.value.size;
@@ -343,13 +345,15 @@ function onKey(event: KeyboardEvent) {
   else if (event.key === 'End') void move('last', event.shiftKey);
   else if (event.key === 'Escape' && picked) browse.clearSelection();
   else if (event.key === 'Enter' && detailTrack.value && !target?.closest('button, a')) {
-    // Loaded to be worked on: the keyboard goes to its sidebar, as Tab would take it.
+    // Loaded to be worked on: the keyboard goes to its sidebar.
     emit('open', detailTrack.value);
-    focusDetail('first');
+    focusPane('detail');
   }
   else if ((event.key === 'Delete' || event.key === 'Backspace') && selection.value.size) {
-    // Out of a playlist at once, as its button does; out of the collection once that's been asked.
-    if (inPlaylist.value) void actions.removeFromPlaylist();
+    // With ⌘, out of the collection and its file to the Trash, wherever it's shown.
+    // Else out of a playlist at once, as its button does; out of the collection once that's been asked.
+    if (command) void actions.remove(true);
+    else if (inPlaylist.value) void actions.removeFromPlaylist();
     else void actions.remove();
   } else return;
   event.preventDefault();
@@ -769,7 +773,7 @@ const smallButtonClass =
 </script>
 
 <template>
-  <div data-track-pane class="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-auto">
+  <div data-pane="list" class="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-auto">
   <div class="flex min-h-0 flex-1 flex-col" :style="{ minWidth: `${minListWidth}px` }">
     <div
       class="relative flex shrink-0 items-center gap-3 border-b border-border py-1.5 pr-7 pl-4 text-[11px] text-text-muted"
@@ -1047,6 +1051,7 @@ const smallButtonClass =
               @dblclick.stop
             >
               <button
+                tabindex="-1"
                 v-for="star in 5"
                 :key="star"
                 :class="star <= row.track.rating ? 'text-text-secondary hover:text-text-primary' : 'text-text-muted/50 hover:text-text-secondary'"

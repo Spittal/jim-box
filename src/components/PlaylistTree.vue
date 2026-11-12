@@ -153,6 +153,32 @@ function unlinkSpotify() {
   if (id) act(() => playlistStore.unlink(id));
 }
 
+// The keyboard, when the pane has it (see useDetailKeys.ts).
+
+const pane = ref<HTMLElement | null>(null);
+
+/** ↑ and ↓ pick the list above or below; ← and → close and open a folder. */
+function onKey(event: KeyboardEvent) {
+  if (event.defaultPrevented || event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return;
+  // A name being typed keeps its keys.
+  if ((event.target as HTMLElement).closest('input')) return;
+  if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+    const ids: (string | null)[] = [null, ...treeRows.value.map((node) => node.id)];
+    const at = ids.indexOf(selected.value) + (event.key === 'ArrowDown' ? 1 : -1);
+    if (at >= 0 && at < ids.length) {
+      browse.select(ids[at]);
+      void nextTick(() => pane.value?.querySelector('[aria-current="true"]')?.scrollIntoView({ block: 'nearest' }));
+    }
+  } else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+    // On anything but a folder, they're the player's.
+    const node = selectedNode.value;
+    if (node?.kind !== 'folder') return;
+    if (collapsed.value.has(node.id) === (event.key === 'ArrowRight')) toggleFolder(node.id);
+  } else return;
+  event.preventDefault();
+  event.stopPropagation();
+}
+
 const closeOnEscape = (event: KeyboardEvent) => event.key === 'Escape' && (settingsOf.value = null);
 onMounted(() => window.addEventListener('keydown', closeOnEscape));
 onUnmounted(() => window.removeEventListener('keydown', closeOnEscape));
@@ -271,11 +297,18 @@ const nameInputClass =
 </script>
 
 <template>
-  <div class="flex w-56 shrink-0 flex-col border-r border-border">
+  <div
+    ref="pane"
+    data-pane="playlists"
+    tabindex="-1"
+    class="flex w-56 shrink-0 flex-col border-r border-border outline-none"
+    @keydown="onKey"
+  >
     <ul class="min-h-0 flex-1 overflow-y-auto py-1 text-xs select-none" @contextmenu.prevent="treeMenu(null)">
       <li
         class="flex cursor-default items-center gap-1 py-1 pr-2 pl-4"
         :class="selected === null ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:bg-surface-1'"
+        :aria-current="selected === null"
         @click="browse.select(null)"
       >
         <span class="min-w-0 flex-1 truncate">Collection</span>
@@ -293,6 +326,7 @@ const nameInputClass =
             dropTree === node.id ? 'outline outline-1 -outline-offset-1 outline-accent' : '',
           ]"
           :style="{ paddingLeft: `${node.depth * 12 + 4}px` }"
+          :aria-current="selected === node.id"
           :draggable="naming?.id !== node.id"
           @click="browse.select(node.id)"
           @dblclick="startRename(node)"
@@ -304,6 +338,7 @@ const nameInputClass =
           @drop.prevent="dropOnTree(node)"
         >
           <button
+            tabindex="-1"
             class="w-3 shrink-0 text-[9px] text-text-muted"
             :class="{ invisible: node.kind !== 'folder' }"
             @click.stop="toggleFolder(node.id)"
@@ -328,6 +363,7 @@ const nameInputClass =
             </span>
             <button
               v-if="node.kind === 'playlist'"
+              tabindex="-1"
               class="shrink-0 rounded p-0.5 hover:bg-surface-3"
               :class="watched.has(node.id) ? 'text-accent' : 'text-text-muted opacity-0 group-hover:opacity-100 focus:opacity-100'"
               :title="watched.has(node.id) ? `Playlist settings. Follows “${watched.get(node.id)!.name}” on Spotify.` : 'Playlist settings'"

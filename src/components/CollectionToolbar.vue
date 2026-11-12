@@ -3,24 +3,33 @@ import { computed, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { formatAgo } from '@/composables/useFormat';
-import { useTrackActions } from '@/composables/useTrackActions';
 import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
 import { isActive, useJobsStore } from '@/stores/jobs';
-import { useLibraryStore } from '@/stores/library';
 import { usePlaylistStore } from '@/stores/playlist';
 import { shortcut } from '@/platform';
 
-/** The heading of the list being shown, and what can be done to it or the tracks selected in it. */
+/** The heading of the list being shown, what narrows it, and what can be added to it. */
 const store = useCollectionStore();
-const { status, playlists, waiting, analysis, loading, error } = storeToRefs(store);
+const { status, waiting, analysis, loading, error } = storeToRefs(store);
 const browse = useBrowseStore();
-const { selected, selectedNode, inPlaylist, selection, total, notice, link, pendingRows, pendingSelection, selectedPending } =
-  storeToRefs(browse);
-const libraryStore = useLibraryStore();
+const {
+  selected,
+  selectedNode,
+  inPlaylist,
+  selection,
+  total,
+  notice,
+  link,
+  pendingRows,
+  pendingSelection,
+  selectedPending,
+  reviewedFilter,
+  genreFilter,
+  filterCount,
+} = storeToRefs(browse);
 const playlistStore = usePlaylistStore();
 const jobs = useJobsStore();
-const actions = useTrackActions();
 
 const heading = computed(() => selectedNode.value?.name ?? 'Collection');
 const countLabel = computed(() => `${total.value} ${total.value === 1 ? 'track' : 'tracks'}`);
@@ -35,16 +44,38 @@ async function run(action: () => Promise<unknown>) {
   }
 }
 
-// --- The selected tracks ----------------------------------------------------
+// --- Filtering the list -------------------------------------------------------
 
-const targetPlaylists = computed(() =>
-  playlists.value.filter((p) => p.kind === 'playlist' && p.id !== selected.value),
-);
+const filterMenu = ref(false);
+/** Every genre in the collection, the most used first; read as the menu opens. */
+const genres = ref<string[]>([]);
+/** Narrows the genres on offer. */
+const genreSearch = ref('');
 
-function addToChosen(event: Event) {
-  const select = event.target as HTMLSelectElement;
-  if (select.value) actions.addToPlaylist(select.value);
-  select.value = '';
+const reviewChoices: { label: string; value: boolean | null }[] = [
+  { label: 'All', value: null },
+  { label: 'Reviewed', value: true },
+  { label: 'Not reviewed', value: false },
+];
+
+/** The genres to tick: the ones picked (still listed if no track has them now), then the rest. */
+const offeredGenres = computed(() => {
+  const typed = genreSearch.value.trim().toLowerCase();
+  const all = [...new Set([...genreFilter.value.filter(Boolean), ...genres.value])];
+  return typed ? all.filter((name) => name.toLowerCase().includes(typed)) : all;
+});
+
+async function toggleFilterMenu() {
+  filterMenu.value = !filterMenu.value;
+  if (!filterMenu.value) return;
+  genreSearch.value = '';
+  genres.value = await store.namesOf('genre');
+}
+
+function toggleGenre(name: string) {
+  genreFilter.value = genreFilter.value.includes(name)
+    ? genreFilter.value.filter((g) => g !== name)
+    : [...genreFilter.value, name];
 }
 
 // --- The selected pending rows -----------------------------------------------
@@ -167,56 +198,6 @@ const buttonClass =
             Select all {{ total }}
           </button>
           <button :class="linkClass" title="Select nothing" @click="browse.clearSelection()">Clear</button>
-          <button
-            :class="buttonClass"
-            :disabled="libraryStore.busy"
-            title="Look the selected tracks up on MusicBrainz and propose tags and file names to review"
-            @click="actions.identify()"
-          >
-            Identify
-          </button>
-          <button
-            :class="buttonClass"
-            title="Work out the BPM, beat grid, key and waveforms of the selected tracks that don't have them"
-            @click="actions.analyse()"
-          >
-            Analyse
-          </button>
-          <button
-            :class="buttonClass"
-            :disabled="!actions.reviewable().length"
-            :title="
-              actions.allReviewed()
-                ? 'Take the review back: the Grid column shows how sure the analysis was again'
-                : 'You\'ve checked the selected tracks\' beat grids against the music and they\'re right. Analysing a batch of tracks again leaves reviewed grids alone.'
-            "
-            @click="actions.review()"
-          >
-            {{ actions.allReviewed() ? 'Not reviewed' : 'Reviewed' }}
-          </button>
-          <select
-            v-if="targetPlaylists.length"
-            class="max-w-40 rounded border border-border bg-surface-1 px-2 py-1 text-xs outline-none"
-            @change="addToChosen"
-          >
-            <option value="">Add to playlist…</option>
-            <option v-for="p in targetPlaylists" :key="p.id" :value="p.id">{{ p.name }}</option>
-          </select>
-          <button
-            v-if="inPlaylist"
-            :class="buttonClass"
-            title="Take the selected tracks out of this playlist. They stay in the collection."
-            @click="actions.removeFromPlaylist()"
-          >
-            Remove from playlist
-          </button>
-          <button
-            :class="buttonClass"
-            title="Take the selected tracks out of the collection and every playlist. You're asked first, and whether their files go too."
-            @click="actions.remove()"
-          >
-            Delete…
-          </button>
         </template>
         <template v-else-if="pendingSelection.size">
           <span class="text-[11px] text-text-muted">{{ selectedPending.length }} selected</span>
@@ -257,30 +238,95 @@ const buttonClass =
             Remove {{ pickedFetches.length }}
           </button>
         </template>
-        <template v-else>
+        <div class="relative">
           <button
-            :class="buttonClass"
-            :disabled="analysis?.active"
-            title="Work out the BPM, beat grid, key and waveforms of every track in the collection that doesn't have them"
-            @click="analyseAll"
+            :class="[buttonClass, filterCount ? 'text-accent' : '']"
+            title="Show only some of this list's tracks"
+            @click="toggleFilterMenu"
           >
-            Analyse new
+            Filter<template v-if="filterCount"> · {{ filterCount }}</template> ▾
           </button>
-          <button
-            :class="buttonClass"
-            :title="inPlaylist ? 'Add music files to the collection and this playlist' : 'Add music files to the collection'"
-            @click="addFromDisk(false)"
-          >
-            Add files…
-          </button>
-          <button
-            :class="buttonClass"
-            :title="inPlaylist ? 'Add all the music in a folder to the collection and this playlist' : 'Add all the music in a folder to the collection'"
-            @click="addFromDisk(true)"
-          >
-            Add folder…
-          </button>
-        </template>
+          <template v-if="filterMenu">
+            <div class="fixed inset-0 z-10" @click="filterMenu = false" @contextmenu.prevent.stop="filterMenu = false" />
+            <div
+              class="absolute top-full left-0 z-20 mt-1 flex w-52 flex-col rounded border border-border bg-surface-1 py-1 text-xs text-text-primary shadow-lg"
+              @contextmenu.prevent.stop
+              @keydown.esc.stop="filterMenu = false"
+            >
+              <p class="px-3 pt-1 pb-0.5 text-[10px] tracking-wide text-text-muted uppercase">Beat grid</p>
+              <label
+                v-for="choice in reviewChoices"
+                :key="choice.label"
+                class="flex cursor-default items-center gap-2 px-3 py-1 hover:bg-surface-2"
+              >
+                <input
+                  type="radio"
+                  name="filter-reviewed"
+                  :checked="reviewedFilter === choice.value"
+                  @change="reviewedFilter = choice.value"
+                />
+                {{ choice.label }}
+              </label>
+              <p class="mt-1 border-t border-border px-3 pt-2 pb-0.5 text-[10px] tracking-wide text-text-muted uppercase">
+                Genre
+              </p>
+              <input
+                v-if="genres.length > 8"
+                v-model="genreSearch"
+                class="mx-3 my-1 rounded border border-border bg-surface-1 px-2 py-1 text-xs outline-none placeholder:text-text-muted focus:border-border-active"
+                placeholder="Find a genre…"
+                spellcheck="false"
+                autocomplete="off"
+              />
+              <div class="max-h-64 overflow-y-auto">
+                <label
+                  v-if="!genreSearch.trim()"
+                  class="flex cursor-default items-center gap-2 px-3 py-1 text-text-secondary hover:bg-surface-2"
+                >
+                  <input type="checkbox" :checked="genreFilter.includes('')" @change="toggleGenre('')" />
+                  No genre
+                </label>
+                <label
+                  v-for="name in offeredGenres"
+                  :key="name"
+                  class="flex cursor-default items-center gap-2 px-3 py-1 hover:bg-surface-2"
+                >
+                  <input type="checkbox" :checked="genreFilter.includes(name)" @change="toggleGenre(name)" />
+                  <span class="truncate">{{ name }}</span>
+                </label>
+              </div>
+              <button
+                class="mt-1 border-t border-border px-3 pt-1.5 pb-0.5 text-left text-text-muted hover:text-text-primary disabled:opacity-50"
+                :disabled="!filterCount"
+                @click="browse.clearFilters()"
+              >
+                Clear filters
+              </button>
+            </div>
+          </template>
+        </div>
+        <button
+          :class="buttonClass"
+          :disabled="analysis?.active"
+          title="Work out the BPM, beat grid, key and waveforms of every track in the collection that doesn't have them"
+          @click="analyseAll"
+        >
+          Analyse new
+        </button>
+        <button
+          :class="buttonClass"
+          :title="inPlaylist ? 'Add music files to the collection and this playlist' : 'Add music files to the collection'"
+          @click="addFromDisk(false)"
+        >
+          Add files…
+        </button>
+        <button
+          :class="buttonClass"
+          :title="inPlaylist ? 'Add all the music in a folder to the collection and this playlist' : 'Add all the music in a folder to the collection'"
+          @click="addFromDisk(true)"
+        >
+          Add folder…
+        </button>
         <button
           :class="buttonClass"
           :disabled="loading"

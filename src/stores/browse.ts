@@ -54,6 +54,18 @@ export const useBrowseStore = defineStore('browse', () => {
   });
   const sort = ref<TrackSort>('dateAdded');
   const descending = ref(true);
+  /** Show only tracks whose beat grid has been reviewed (true) or hasn't (false); null for both. */
+  const reviewedFilter = ref<boolean | null>(null);
+  /** Show only tracks of these genres; '' is tracks with none. Empty for every genre. */
+  const genreFilter = ref<string[]>([]);
+  /** How many filters are narrowing the list. */
+  const filterCount = computed(() => (reviewedFilter.value === null ? 0 : 1) + genreFilter.value.length);
+
+  function clearFilters() {
+    reviewedFilter.value = null;
+    genreFilter.value = [];
+  }
+
   /** Show only the tracks still being fetched. */
   const pendingOnly = ref(false);
 
@@ -91,7 +103,15 @@ export const useBrowseStore = defineStore('browse', () => {
     const source: TrackSource = selected.value ? { kind: 'playlist', id: selected.value } : { kind: 'collection' };
     // Keys sort the way they're shown: by name, or round the Camelot wheel.
     const camelot = sort.value === 'key' && settings.settings?.keyNotation === 'camelot';
-    return { source, sort: camelot ? 'keyCamelot' : sort.value, descending: descending.value, query: filter.value };
+    return {
+      source,
+      sort: camelot ? 'keyCamelot' : sort.value,
+      descending: descending.value,
+      query: filter.value,
+      reviewed: reviewedFilter.value,
+      // In one order, so picking the same genres another way round isn't a different list.
+      genres: [...genreFilter.value].sort(),
+    };
   });
 
   // --- Its rows, a page at a time ---------------------------------------------
@@ -307,6 +327,8 @@ export const useBrowseStore = defineStore('browse', () => {
 
   const pendingRows = computed<PendingRow[]>(() => {
     const rows: PendingRow[] = [];
+    // Tracks not in the collection yet have no grid or genre to pass a filter by.
+    if (filterCount.value) return rows;
     const listed = new Set<string>();
     for (const entry of link.value?.missing ?? []) {
       const found = entry.request ? jobs.jobFor(entry.request) : undefined;
@@ -379,6 +401,10 @@ export const useBrowseStore = defineStore('browse', () => {
     sort,
     descending,
     pendingOnly,
+    reviewedFilter,
+    genreFilter,
+    filterCount,
+    clearFilters,
     selectedNode,
     inPlaylist,
     targetPlaylist,

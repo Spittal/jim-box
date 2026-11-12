@@ -156,7 +156,7 @@ const primary =
   'rounded bg-accent px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50';
 // The row they're in clips what's outside them, so the keyboard's ring goes inside.
 const segment =
-  'flex-1 px-2 py-1 text-[11px] transition-colors -outline-offset-2 focus-visible:outline-accent focus-visible:text-text-primary';
+  'flex-1 px-2 py-1 text-[11px] transition-colors -outline-offset-2 focus:text-text-primary';
 </script>
 
 <template>
@@ -304,7 +304,7 @@ const segment =
       :class="[grid?.reviewed ? quiet : primary, 'py-1.5']"
       :title="grid?.reviewed
         ? 'Take the review back: the Grid column shows how sure the analysis was again'
-        : `You've checked this grid against the music and it's right. Analysing a batch of tracks again leaves reviewed grids alone. ${shortcut('↩')} marks it and goes on to the next track.`"
+        : `You've checked this grid against the music and it's right. Analysing a batch of tracks again leaves reviewed grids alone. ${shortcut('S')} marks it and goes on to the next track.`"
       @click="review(!grid?.reviewed)"
     >
       {{ grid?.reviewed ? 'Undo review' : 'Mark as reviewed' }}

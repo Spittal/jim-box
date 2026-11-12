@@ -79,30 +79,36 @@ export function useTrackActions() {
     await collection.edit({ kind: 'removeTracks', playlistId, trackIds });
   }
 
-  /** Takes the selected tracks out of the collection, and their files to the Trash if wanted, once asked. */
-  async function remove() {
+  /**
+   * Takes the selected tracks out of the collection, once asked. Their files
+   * go to the Trash if wanted; with `trash`, they go without that being asked.
+   */
+  async function remove(trash = false) {
     const trackIds = browse.selectedIds;
     if (!trackIds.length) return;
     const one = trackIds.length === 1;
     const title = one ? browse.loadedTrack(trackIds[0])?.title : null;
+    const what = one ? `${title ? `“${title}”` : 'this track'}` : `${trackIds.length} tracks`;
+    const leaves = `${one ? 'It leaves' : 'They leave'} the collection and every playlist, with ${
+      one ? 'its' : 'their'
+    } cues and beat ${one ? 'grid' : 'grids'}`;
     const answer = await confirm({
-      title: one
-        ? `Delete ${title ? `“${title}”` : 'this track'} from the collection?`
-        : `Delete ${trackIds.length} tracks from the collection?`,
-      message: `${one ? 'It leaves' : 'They leave'} the collection and every playlist, with ${
-        one ? 'its' : 'their'
-      } cues and beat ${one ? 'grid' : 'grids'}.`,
-      option: {
-        label: `Also move ${one ? 'its file' : 'their files'} to the ${trashName}`,
-        checked: localStorage.getItem(TRASH_KEY) !== 'false',
-      },
-      confirm: 'Delete',
+      title: trash ? `Delete ${what} and ${one ? 'its file' : 'their files'}?` : `Delete ${what} from the collection?`,
+      message: trash ? `${leaves}, and ${one ? 'its file goes' : 'their files go'} to the ${trashName}.` : `${leaves}.`,
+      option: trash
+        ? undefined
+        : {
+            label: `Also move ${one ? 'its file' : 'their files'} to the ${trashName}`,
+            checked: localStorage.getItem(TRASH_KEY) !== 'false',
+          },
+      confirm: trash ? 'Delete with file' : 'Delete',
       danger: true,
     });
     if (!answer) return;
-    localStorage.setItem(TRASH_KEY, String(answer.option));
+    // What was ticked is remembered; a delete that didn't ask says nothing of it.
+    if (!trash) localStorage.setItem(TRASH_KEY, String(answer.option));
     browse.clearSelection();
-    await collection.edit({ kind: 'deleteTracks', trackIds, trashFiles: answer.option });
+    await collection.edit({ kind: 'deleteTracks', trackIds, trashFiles: trash || answer.option });
   }
 
   return { identify, analyse, review, reviewable, allReviewed, addToPlaylist, removeFromPlaylist, remove };

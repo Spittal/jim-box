@@ -42,6 +42,10 @@ export interface TrackQuery {
   sort: TrackSort | 'keyCamelot';
   descending: boolean;
   query: string;
+  /** Only tracks whose beat grid has been reviewed (true) or hasn't (false); null for both. */
+  reviewed: boolean | null;
+  /** Only tracks of one of these genres; '' is tracks with none. Empty for every genre. */
+  genres: string[];
 }
 
 /** What the two beat detectors disagreed about; see `Issue` in src-tauri/src/rekordbox/grid.rs. */
