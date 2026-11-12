@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
+import { commandKey } from '@/platform';
 import type { CollectionTrack, PlaylistNode } from '@/types/collection';
 
 /**
@@ -135,8 +136,16 @@ function add(node: PlaylistNode) {
 
 function remove(playlistId: string) {
   const { id: trackId } = props.track;
+  // A pill that had the keyboard hands it to the box, rather than drop it.
+  if (box.value?.contains(document.activeElement) && document.activeElement !== input.value) input.value?.focus();
   show(members.value.filter((p) => p.id !== playlistId));
   void store.edit({ kind: 'removeTracks', playlistId, trackIds: [trackId] });
+}
+
+/** The last pill's ×: where ← and Backspace go from the empty box. */
+function lastPill(): HTMLElement | null {
+  const pills = box.value?.querySelectorAll<HTMLElement>('button');
+  return pills?.length ? pills[pills.length - 1] : null;
 }
 
 function onBlur() {
@@ -145,21 +154,27 @@ function onBlur() {
 }
 
 function onKey(event: KeyboardEvent) {
-  // Keys that are still composing a character are the input method's.
-  if (event.isComposing) return;
+  // Keys that are still composing a character are the input method's; ones with ⌘ are shortcuts.
+  if (event.isComposing || commandKey(event)) return;
   const offers = offered.value;
   if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-    if (!open.value) open.value = true;
-    else if (offers.length) {
-      const step = event.key === 'ArrowDown' ? 1 : -1;
-      highlighted.value = (Math.max(highlighted.value, step === 1 ? -1 : 0) + step + offers.length) % offers.length;
-    }
+    // With no playlists on offer, the arrows are the sidebar's: they go to its next entry.
+    if (!offers.length) return;
+    const step = event.key === 'ArrowDown' ? 1 : -1;
+    highlighted.value = (Math.max(highlighted.value, step === 1 ? -1 : 0) + step + offers.length) % offers.length;
   } else if (event.key === 'Enter') {
+    // Return offers the playlists, then takes the one the arrows are on.
     if (highlighted.value >= 0) add(offers[highlighted.value].node);
+    else open.value = true;
   } else if (event.key === 'Escape') {
     // The first Escape puts the list away; the next leaves the box.
     if (open.value && offers.length) close();
     else input.value?.blur();
+  } else if ((event.key === 'ArrowLeft' || event.key === 'Backspace') && !event.shiftKey && !event.altKey) {
+    // From the empty box, onto the last pill: Backspace there takes the track out of it.
+    const pill = draft.value ? null : lastPill();
+    if (!pill) return;
+    pill.focus();
   } else return;
   event.preventDefault();
   event.stopPropagation();
@@ -170,6 +185,7 @@ function onKey(event: KeyboardEvent) {
   <!-- Pressing the box anywhere but a pill's × puts the keyboard in it. -->
   <div
     ref="box"
+    data-keys-group
     class="flex w-full cursor-text flex-wrap items-center gap-1 rounded border border-border bg-surface-1 p-1 focus-within:border-border-active"
     @mousedown="
       if ($event.target !== input) {
@@ -192,11 +208,13 @@ function onKey(event: KeyboardEvent) {
         :aria-label="`Remove from ${playlist.name}`"
         @mousedown.stop.prevent
         @click="remove(playlist.id)"
+        @keydown.delete.exact.stop.prevent="remove(playlist.id)"
       >×</button>
     </span>
     <input
       ref="input"
       v-model="draft"
+      data-keys-current
       class="min-w-12 flex-1 bg-transparent px-1 py-0.5 text-xs outline-none placeholder:text-text-muted"
       :placeholder="members.length ? '' : 'Add to a playlist…'"
       aria-label="Add to a playlist"
@@ -204,7 +222,7 @@ function onKey(event: KeyboardEvent) {
       autocomplete="off"
       autocorrect="off"
       autocapitalize="off"
-      @focus="open = true"
+      @click="open = true"
       @blur="onBlur"
       @input="open = true"
       @keydown="onKey"

@@ -12,7 +12,7 @@ use tauri_plugin_opener::OpenerExt;
 use tracing::warn;
 
 /// Menu ids forwarded to the frontend, which owns navigation.
-const FRONTEND_COMMANDS: &[&str] = &["settings", "find", "find-online", "consolidate"];
+const FRONTEND_COMMANDS: &[&str] = &["settings", "find", "find-online", "consolidate", "shortcuts"];
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
@@ -67,8 +67,9 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
 
     let view_menu = SubmenuBuilder::new(app, "View").fullscreen().build()?;
 
+    // Not the system's Minimize, which would take ⌘M: that sets a memory cue (see TrackPlayer.vue).
     let window_menu = SubmenuBuilder::new(app, "Window")
-        .minimize()
+        .item(&MenuItemBuilder::with_id("minimize", "Minimize").build(app)?)
         .maximize_with_text("Zoom")
         .separator()
         .item(&item("show-main", "jim-box", "CmdOrCtrl+0")?)
@@ -77,6 +78,8 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .build()?;
 
     let help_menu = SubmenuBuilder::new(app, "Help")
+        .item(&item("shortcuts", "Keyboard Shortcuts", "CmdOrCtrl+/")?)
+        .separator()
         .item(&MenuItemBuilder::with_id("show-logs", "Show Logs in Finder").build(app)?)
         .build()?;
 
@@ -95,6 +98,11 @@ pub fn handle_event<R: Runtime>(app: &AppHandle<R>, event: MenuEvent) {
     let id = event.id().as_ref();
     match id {
         "show-main" => show_main(app),
+        "minimize" => {
+            if let Some(window) = main_window(app) {
+                let _ = window.minimize();
+            }
+        }
         // Disconnects from Soulseek on the way out (see `RunEvent::Exit`).
         "quit" => app.exit(0),
         "show-logs" => match app.path().app_log_dir() {

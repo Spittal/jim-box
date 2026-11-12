@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useCollectionStore } from '@/stores/collection';
+import { commandKey } from '@/platform';
 import type { TrackField } from '@/types/collection';
 
 /**
@@ -14,6 +15,8 @@ const props = defineProps<{
   value: string;
   /** Take the keyboard as soon as it appears, with the text selected. */
   autofocus?: boolean;
+  /** ↑ and ↓ are left to whoever shows the box unless suggestions are showing, rather than opening them. */
+  arrowsLeave?: boolean;
   /** Commit what's typed if the box is taken away while it has the keyboard, as when its row scrolls off. */
   commitOnRemove?: boolean;
 }>();
@@ -143,10 +146,11 @@ function take(name: string) {
 }
 
 function onKey(event: KeyboardEvent) {
-  // Keys that are still composing a character are the input method's.
-  if (event.isComposing) return;
+  // Keys that are still composing a character are the input method's; ones with ⌘ are shortcuts.
+  if (event.isComposing || commandKey(event)) return;
   const offers = offered.value;
   if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    if (props.arrowsLeave && !offers.length) return;
     if (!open.value && suggests.value) open.value = true;
     else if (offers.length) {
       const step = event.key === 'ArrowDown' ? 1 : -1;

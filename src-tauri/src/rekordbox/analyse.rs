@@ -487,10 +487,10 @@ pub(super) mod tests {
         assert!(!state.reviewed && state.using == GridSource::Chosen);
         assert!(using(GridSource::Model).is_err(), "the model's grid wasn't kept");
 
-        // A change by hand is a review.
+        // A change by hand isn't a review.
         collection.edit(Edit::Grid { track_id: id.clone(), change: GridChange::Nudge { ms: 4 }, from_ms: None }).unwrap();
         let state = row(&collection, &id).grid.unwrap();
-        assert!(state.reviewed && state.using == GridSource::Hand);
+        assert!(!state.reviewed && state.using == GridSource::Hand);
 
         // The fixture's other tracks, of which nothing is known, come after
         // it whichever way the list is sorted.

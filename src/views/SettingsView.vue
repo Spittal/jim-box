@@ -6,6 +6,7 @@ import SettingsLibrary from '@/components/SettingsLibrary.vue';
 import SettingsSharing from '@/components/SettingsSharing.vue';
 import SettingsFormats from '@/components/SettingsFormats.vue';
 import SettingsYoutube from '@/components/SettingsYoutube.vue';
+import SettingsShortcuts from '@/components/SettingsShortcuts.vue';
 import { useUiStore, type SettingsTab } from '@/stores/ui';
 
 /** Settings, in a dialog over the window. */
@@ -15,6 +16,7 @@ const sections: { id: SettingsTab; label: string }[] = [
   { id: 'soulseek', label: 'Soulseek' },
   { id: 'sharing', label: 'Sharing' },
   { id: 'youtube', label: 'YouTube Music' },
+  { id: 'shortcuts', label: 'Shortcuts' },
 ];
 
 const { settings: active } = storeToRefs(useUiStore());
@@ -70,6 +72,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey));
             <SettingsSoulseek v-if="active === 'soulseek'" />
             <SettingsSharing v-if="active === 'sharing'" />
             <SettingsYoutube v-if="active === 'youtube'" />
+            <SettingsShortcuts v-if="active === 'shortcuts'" />
           </div>
         </div>
       </div>

@@ -8,9 +8,10 @@
  * other grids against the music, mark the right one reviewed; or, if none is
  * right, analyse again with a hint.
  */
-import { computed, ref, watch } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import { GRID_SOURCES, gridChoiceTitle, gridClass, gridFollowsTempo, gridIssues } from '@/composables/useGridReport';
 import { useCollectionStore } from '@/stores/collection';
+import { shortcut } from '@/platform';
 import type { CollectionTrack, GridHint, GridSource } from '@/types/collection';
 
 const props = defineProps<{ track: CollectionTrack }>();
@@ -66,13 +67,31 @@ const hintBpm = ref('');
 /** Whether the tempo moves: null leaves it to the analysis. */
 const hintVaries = ref<boolean | null>(null);
 
-/** Opens with what the last analysis was told, to adjust rather than retype. */
-function openAgain() {
+/** The form that analysing again opens, and the button in it that goes ahead. */
+const form = ref<HTMLElement | null>(null);
+const go = ref<HTMLButtonElement | null>(null);
+
+/**
+ * Opens with what the last analysis was told, to adjust rather than retype:
+ * all of it scrolled into view, and Return going ahead as it is.
+ */
+async function openAgain() {
   hintBpm.value = grid.value?.hint.bpm ? String(grid.value.hint.bpm) : '';
   hintVaries.value = grid.value?.hint.varies ?? null;
   taps.value = [];
   again.value = true;
+  await nextTick();
+  form.value?.scrollIntoView({ block: 'nearest' });
+  go.value?.focus({ preventScroll: true });
 }
+
+/** What the sidebar's shortcut does: opens the form, or goes back to its button if it's open. */
+function startAnalyse() {
+  if (analysing.value || queued.value) return;
+  if (again.value) go.value?.focus();
+  else void openAgain();
+}
+defineExpose({ startAnalyse });
 // Another track: its own hint, and nothing half-filled-in.
 watch(
   () => props.track.id,
@@ -135,7 +154,9 @@ const told = computed(() => {
 const quiet = 'rounded bg-surface-2 px-2 py-1 text-[11px] transition-colors hover:bg-surface-3 disabled:opacity-50';
 const primary =
   'rounded bg-accent px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50';
-const segment = 'flex-1 px-2 py-1 text-[11px] transition-colors';
+// The row they're in clips what's outside them, so the keyboard's ring goes inside.
+const segment =
+  'flex-1 px-2 py-1 text-[11px] transition-colors -outline-offset-2 focus-visible:outline-accent focus-visible:text-text-primary';
 </script>
 
 <template>
@@ -147,6 +168,7 @@ const segment = 'flex-1 px-2 py-1 text-[11px] transition-colors';
       <span v-else-if="queued" class="text-[11px] text-text-muted">Queued</span>
       <span v-else-if="!track.analysed" class="text-[11px] text-text-muted">Not analysed</span>
       <span v-else-if="grid?.reviewed" class="text-[11px] font-medium" :class="gridClass(grid)">✓ Reviewed</span>
+      <span v-else-if="grid?.using === 'hand'" class="text-[11px] text-text-muted">Changed by hand</span>
       <span v-else-if="grid && report" class="text-[11px]" :class="gridClass(grid)">
         <span class="font-mono font-medium">{{ report.confidence }}%</span> sure
       </span>
@@ -172,7 +194,7 @@ const segment = 'flex-1 px-2 py-1 text-[11px] transition-colors';
       <!-- The grids to try. -->
       <div v-if="grid && grid.choices.length > 1" class="flex flex-col gap-1">
         <span class="text-[11px] text-text-muted">Grid in use</span>
-        <div class="flex overflow-hidden rounded border border-border">
+        <div data-keys-group class="flex overflow-hidden rounded border border-border">
           <button
             v-for="choice in grid.choices"
             :key="choice.source"
@@ -182,8 +204,9 @@ const segment = 'flex-1 px-2 py-1 text-[11px] transition-colors';
               grid.using === choice.source ? 'bg-accent/20 text-text-primary' : 'bg-surface-1 text-text-secondary hover:bg-surface-2',
             ]"
             :title="gridChoiceTitle(choice)"
-            :disabled="grid.using === choice.source"
-            @click="use(choice.source)"
+            :aria-pressed="grid.using === choice.source"
+            :data-keys-current="grid.using === choice.source ? '' : undefined"
+            @click="grid?.using !== choice.source && use(choice.source)"
           >
             <span>{{ GRID_SOURCES[choice.source] }}</span>
             <span class="font-mono text-[10px] text-text-muted">{{ choice.bpm.toFixed(1) }}{{ choice.dynamic ? '~' : '' }}</span>
@@ -195,36 +218,27 @@ const segment = 'flex-1 px-2 py-1 text-[11px] transition-colors';
         <span v-else class="text-[11px] text-text-muted">Pick one and listen in the player.</span>
       </div>
 
-      <!-- Settling it. -->
-      <div v-if="!again" class="flex items-center gap-2">
-        <button
-          v-if="!grid?.reviewed"
-          :class="primary"
-          title="You've checked this grid against the music and it's right. Analysing a batch of tracks again leaves reviewed grids alone."
-          @click="review(true)"
-        >
-          Mark as reviewed
-        </button>
-        <button
-          v-else
-          :class="quiet"
-          title="Take the review back: the Grid column shows how sure the analysis was again"
-          @click="review(false)"
-        >
-          Undo review
-        </button>
-        <button :class="quiet" title="Work the grid out again, with a tempo hint if the analysis got it wrong" @click="openAgain">
-          Analyse again…
-        </button>
-      </div>
+      <button
+        v-if="!again"
+        :class="[quiet, 'self-start']"
+        :title="`Work the grid out again, with a tempo hint if the analysis got it wrong (${shortcut('L')})`"
+        @click="openAgain"
+      >
+        Analyse again…
+      </button>
     </template>
 
-    <button v-else-if="!analysing && !queued && !again" :class="[primary, 'self-start']" @click="openAgain">
+    <button
+      v-else-if="!analysing && !queued && !again"
+      :class="[primary, 'self-start']"
+      :title="`Analyse this track (${shortcut('L')})`"
+      @click="openAgain"
+    >
       Analyse…
     </button>
 
     <!-- Analysing, with what the user knows of the tempo. -->
-    <div v-if="again && !analysing" class="flex flex-col gap-2 rounded border border-border bg-surface-1 p-2">
+    <div v-if="again && !analysing" ref="form" class="flex scroll-my-3 flex-col gap-2 rounded border border-border bg-surface-1 p-2">
       <label class="flex flex-col gap-1">
         <span class="text-[11px] text-text-muted">Tempo hint (optional)</span>
         <span class="flex items-center gap-1.5">
@@ -234,7 +248,7 @@ const segment = 'flex-1 px-2 py-1 text-[11px] transition-colors';
             placeholder="e.g. 125"
             class="w-20 rounded border border-border bg-surface-0 px-2 py-1 font-mono text-xs outline-none focus:border-border-active"
             :class="hint === 'invalid' ? 'border-status-error' : ''"
-            @keydown.enter="analyse"
+            @keydown.enter.exact="analyse"
           />
           <span class="text-[11px] text-text-muted">BPM</span>
           <button
@@ -251,7 +265,7 @@ const segment = 'flex-1 px-2 py-1 text-[11px] transition-colors';
       </label>
       <div class="flex flex-col gap-1">
         <span class="text-[11px] text-text-muted">Its tempo</span>
-        <div class="flex overflow-hidden rounded border border-border">
+        <div data-keys-group class="flex overflow-hidden rounded border border-border">
           <button
             v-for="option in VARIES"
             :key="String(option.value)"
@@ -262,6 +276,8 @@ const segment = 'flex-1 px-2 py-1 text-[11px] transition-colors';
               hintVaries === option.value ? 'bg-accent/20 text-text-primary' : 'bg-surface-0 text-text-secondary hover:bg-surface-2',
             ]"
             :title="option.title"
+            :aria-pressed="hintVaries === option.value"
+            :data-keys-current="hintVaries === option.value ? '' : undefined"
             @click="hintVaries = option.value"
           >
             {{ option.label }}
@@ -272,7 +288,7 @@ const segment = 'flex-1 px-2 py-1 text-[11px] transition-colors';
         {{ grid?.reviewed ? 'Replaces the grid you reviewed.' : 'Replaces the beat grid.' }} Cues are kept.
       </p>
       <div class="flex items-center gap-2">
-        <button :class="primary" :disabled="hint === 'invalid'" @click="analyse">
+        <button ref="go" :class="primary" :disabled="hint === 'invalid'" @click="analyse">
           {{ track.analysed ? 'Analyse again' : 'Analyse' }}
         </button>
         <button :class="quiet" @click="again = false">Cancel</button>
@@ -281,5 +297,17 @@ const segment = 'flex-1 px-2 py-1 text-[11px] transition-colors';
 
     <p v-if="analysisError" class="error-box">{{ analysisError }}</p>
     <p v-if="error" class="error-box">{{ error }}</p>
+
+    <!-- Settling it: the last thing done to a grid, so the last thing here. One button, so the keyboard stays on it. -->
+    <button
+      v-if="track.analysed && !analysing"
+      :class="[grid?.reviewed ? quiet : primary, 'py-1.5']"
+      :title="grid?.reviewed
+        ? 'Take the review back: the Grid column shows how sure the analysis was again'
+        : `You've checked this grid against the music and it's right. Analysing a batch of tracks again leaves reviewed grids alone. ${shortcut('↩')} marks it and goes on to the next track.`"
+      @click="review(!grid?.reviewed)"
+    >
+      {{ grid?.reviewed ? 'Undo review' : 'Mark as reviewed' }}
+    </button>
   </section>
 </template>

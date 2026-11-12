@@ -72,6 +72,7 @@ async function focusSearchBar() {
 function runCommand(command: string) {
   if (!loaded.value) return;
   if (command === 'settings') ui.toggleSettings();
+  else if (command === 'shortcuts') ui.toggleShortcuts();
   else if (command === 'consolidate') ui.showConsolidate();
   else if (command === 'find') void focusSearchBar();
   else if (command === 'find-online') {
@@ -90,7 +91,8 @@ onUnmounted(() => unlistenMenu.then((unlisten) => unlisten()));
 function onShortcut(event: KeyboardEvent) {
   if (!commandKey(event) || event.altKey) return;
   const key = event.key.toLowerCase();
-  const command = key === ',' ? 'settings' : key === 'f' ? (event.shiftKey ? 'find-online' : 'find') : null;
+  const command =
+    key === ',' ? 'settings' : key === '/' ? 'shortcuts' : key === 'f' ? (event.shiftKey ? 'find-online' : 'find') : null;
   if (!command) return;
   // Also keeps the web view's own find bar from opening.
   event.preventDefault();
@@ -100,6 +102,17 @@ if (!isMac) {
   onMounted(() => window.addEventListener('keydown', onShortcut));
   onUnmounted(() => window.removeEventListener('keydown', onShortcut));
 }
+
+/** `?` shows the shortcuts, as it does in many apps: no menu has it, so the window takes it everywhere. */
+function onHelpKey(event: KeyboardEvent) {
+  if (event.key !== '?' || event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
+  const target = event.target as HTMLElement | null;
+  if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
+  event.preventDefault();
+  runCommand('shortcuts');
+}
+onMounted(() => window.addEventListener('keydown', onHelpKey));
+onUnmounted(() => window.removeEventListener('keydown', onHelpKey));
 </script>
 
 <template>

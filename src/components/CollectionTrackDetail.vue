@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import BeatGridSection from '@/components/BeatGridSection.vue';
 import FieldInput from '@/components/FieldInput.vue';
@@ -7,6 +7,7 @@ import FixCard from '@/components/FixCard.vue';
 import JobStatusBadge from '@/components/JobStatusBadge.vue';
 import LibraryCover from '@/components/LibraryCover.vue';
 import PlaylistPills from '@/components/PlaylistPills.vue';
+import { focusDetail, focusList, stepEntry, stepInGroup } from '@/composables/useDetailKeys';
 import { TRACK_COLORS } from '@/composables/useTrackColors';
 import { formatDuration } from '@/composables/useFormat';
 import { formatKey as keyIn, useKeyNotation } from '@/composables/useKeyNotation';
@@ -14,7 +15,8 @@ import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
 import { isActive, useJobsStore } from '@/stores/jobs';
 import { useLibraryStore } from '@/stores/library';
-import { revealLabel } from '@/platform';
+import { useUiStore } from '@/stores/ui';
+import { commandKey, revealLabel, shortcut } from '@/platform';
 import type { CollectionTrack, TrackField } from '@/types/collection';
 
 const props = defineProps<{ track: CollectionTrack }>();
@@ -146,15 +148,92 @@ function colour(color: number) {
   store.edit({ kind: 'setColor', trackId: props.track.id, color });
 }
 
+// --- Keys ---------------------------------------------------------------------
+
+const ui = useUiStore();
+
+/**
+ * Keys pressed in the sidebar: ↑ and ↓ go round its entries, ← and → along a
+ * row of buttons, and Tab goes back to the track list. A field showing
+ * suggestions has taken ↑ and ↓ for those before this hears them.
+ */
+function onKey(event: KeyboardEvent) {
+  if (event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey) return;
+  const panel = event.currentTarget as HTMLElement;
+  const target = event.target as HTMLElement;
+  if (event.key === 'Tab') focusList();
+  else if (event.shiftKey) return;
+  else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+    const up = event.key === 'ArrowUp';
+    // In the comment, the arrows go through its lines first.
+    if (target instanceof HTMLTextAreaElement) {
+      if (up ? target.selectionStart !== 0 : target.selectionEnd !== target.value.length) return;
+    }
+    stepEntry(panel, target, up ? -1 : 1);
+  } else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+    // Off a row of buttons, the arrows are a text field's or the player's.
+    if (target.tagName !== 'BUTTON' || !stepInGroup(target, event.key === 'ArrowLeft' ? -1 : 1)) return;
+  } else if (event.key === 'Enter' && target instanceof HTMLSelectElement) {
+    // The menu's own keys are taken: ↑ and ↓ go past it, Space plays. Return opens it.
+    try {
+      target.showPicker();
+    } catch {
+      return;
+    }
+  } else if (event.key === 'Escape' && target !== panel) {
+    // Out of the entry, though not out of the track: Escape again lets go of that.
+    panel.focus();
+  } else return;
+  event.preventDefault();
+  event.stopPropagation();
+}
+
+const beatGrid = ref<InstanceType<typeof BeatGridSection> | null>(null);
+
+function identify() {
+  if (!libraryStore.busy) run(() => libraryStore.identify([props.track.id]));
+}
+
+/**
+ * Keys pressed anywhere: Tab comes into the sidebar from the list; ⌘L starts analysing the
+ * track again, ⌘I identifies it and ⌘R downloads it again, from a text field too.
+ */
+function onWindowKey(event: KeyboardEvent) {
+  if (event.defaultPrevented || event.altKey || ui.settings) return;
+  const target = event.target as HTMLElement | null;
+  if (commandKey(event)) {
+    const key = event.shiftKey ? '' : event.key.toLowerCase();
+    if (key === 'l') beatGrid.value?.startAnalyse();
+    else if (key === 'i') identify();
+    else if (key === 'r') {
+      if (!downloading.value && !starting.value && !event.repeat) redownload();
+    } else return;
+  } else if (event.key === 'Tab' && !event.metaKey && !event.ctrlKey) {
+    // Tab out of a text field elsewhere goes where it always has.
+    if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
+    focusDetail(event.shiftKey ? 'last' : 'first');
+  } else return;
+  event.preventDefault();
+}
+onMounted(() => window.addEventListener('keydown', onWindowKey));
+onBeforeUnmount(() => window.removeEventListener('keydown', onWindowKey));
+
 const inputClass =
   'w-full rounded border border-border bg-surface-1 px-2 py-1 text-xs outline-none focus:border-border-active';
 </script>
 
 <template>
-  <aside class="flex w-64 shrink-0 flex-col gap-3 overflow-y-auto border-l border-border p-3 text-xs">
+  <!-- Takes the keyboard itself (see `focusDetail`). Scrolls an entry given the keyboard clear of its edges. -->
+  <aside
+    data-track-detail
+    data-track-pane
+    tabindex="-1"
+    class="flex w-64 shrink-0 flex-col gap-3 overflow-y-auto scroll-py-8 border-l border-border p-3 text-xs outline-none"
+    @keydown="onKey"
+  >
     <div class="flex items-center justify-between">
       <span class="section-label">Track</span>
-      <button class="text-text-muted hover:text-text-primary" title="Close" @click="$emit('close')">✕</button>
+      <button class="text-text-muted hover:text-text-primary" title="Close" tabindex="-1" @click="$emit('close')">✕</button>
     </div>
 
     <LibraryCover :key="track.path" :path="track.path" class="aspect-square w-24 self-center" />
@@ -169,11 +248,13 @@ const inputClass =
           :field="field.id"
           :value="track[field.id as 'title']"
           :class="inputClass"
+          :data-keys-first="field.id === 'genre' ? '' : undefined"
+          arrows-leave
           @commit="commitField(field.id, $event)"
         />
       </label>
       <!-- What MusicBrainz calls it, each a button that makes it the genre. -->
-      <div v-if="field.id === 'genre'" class="-mt-1.5 flex flex-wrap items-center gap-1 text-[11px] text-text-muted">
+      <div v-if="field.id === 'genre'" data-keys-group class="-mt-1.5 flex flex-wrap items-center gap-1 text-[11px] text-text-muted">
         <span title="Genres MusicBrainz's users have given this recording, its album or its artist">MusicBrainz:</span>
         <span v-if="suggestError" :title="suggestError">couldn't be asked</span>
         <span v-else-if="!suggested">looking…</span>
@@ -186,7 +267,8 @@ const inputClass =
             :class="genre === track.genre
               ? 'bg-accent/25 text-text-primary'
               : 'bg-surface-2 text-text-secondary hover:bg-surface-3 hover:text-text-primary'"
-            :disabled="genre === track.genre"
+            :aria-pressed="genre === track.genre"
+            :data-keys-current="genre === track.genre ? '' : undefined"
             :title="genre === track.genre ? 'The genre it has' : `Set the genre to ${genre}`"
             @click="commitField('genre', genre)"
           >{{ genre }}</button>
@@ -220,10 +302,11 @@ const inputClass =
 
     <div class="flex flex-col gap-1">
       <span class="text-[11px] text-text-muted">Rating</span>
-      <div class="flex gap-0.5 text-base leading-none">
+      <div data-keys-group class="flex gap-0.5 text-base leading-none">
         <button
           v-for="star in 5"
           :key="star"
+          :data-keys-current="star === track.rating ? '' : undefined"
           :class="star <= track.rating ? 'text-text-primary' : 'text-text-muted/40 hover:text-text-muted'"
           :title="`${star} ${star === 1 ? 'star' : 'stars'}`"
           @click="rate(star)"
@@ -233,10 +316,11 @@ const inputClass =
 
     <div class="flex flex-col gap-1">
       <span class="text-[11px] text-text-muted">Colour</span>
-      <div class="flex items-center gap-1.5">
+      <div data-keys-group class="flex items-center gap-1.5">
         <button
           v-for="(color, id) in TRACK_COLORS"
           :key="id"
+          :data-keys-current="track.color === id ? '' : undefined"
           class="size-4 rounded-full border"
           :class="track.color === id ? 'border-text-primary' : 'border-border'"
           :style="{ backgroundColor: color.hex || 'transparent' }"
@@ -253,18 +337,18 @@ const inputClass =
       <dd class="font-mono">{{ track.format.toUpperCase() }} {{ track.bitrate ? `${track.bitrate}k` : '' }}</dd>
     </dl>
 
-    <BeatGridSection :track="track" />
+    <BeatGridSection ref="beatGrid" :track="track" />
 
     <div class="flex flex-col gap-1.5 border-t border-border pt-3">
       <span class="section-label">File</span>
       <p class="font-mono text-[10px] break-all text-text-secondary">{{ track.path }}</p>
-      <div class="flex flex-wrap gap-1.5">
+      <div data-keys-group class="flex flex-wrap gap-1.5">
         <button :class="actionClass" @click="run(() => revealItemInDir(track.path))">{{ revealLabel }}</button>
         <button
           :class="actionClass"
           :disabled="libraryStore.busy"
-          title="Look this track up on MusicBrainz and propose the tags and file name it should have, to review here"
-          @click="run(() => libraryStore.identify([track.id]))"
+          :title="`Look this track up on MusicBrainz and propose the tags and file name it should have, to review here (${shortcut('I')})`"
+          @click="identify"
         >
           Identify
         </button>
@@ -272,8 +356,8 @@ const inputClass =
           :class="actionClass"
           :disabled="downloading || starting"
           :title="lossless
-            ? 'Download this track again. It keeps its cues and playlists; the old file goes to the Trash.'
-            : 'Download a lossless copy. The track keeps its cues and playlists; the old file goes to the Trash.'"
+            ? `Download this track again. It keeps its cues and playlists; the old file goes to the Trash. (${shortcut('R')})`
+            : `Download a lossless copy. The track keeps its cues and playlists; the old file goes to the Trash. (${shortcut('R')})`"
           @click="redownload"
         >
           {{ lossless ? 'Redownload' : 'Get lossless' }}

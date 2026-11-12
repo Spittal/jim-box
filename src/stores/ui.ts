@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref, watch } from 'vue';
 
-export type SettingsTab = 'soulseek' | 'library' | 'sharing' | 'formats' | 'youtube';
+export type SettingsTab = 'soulseek' | 'library' | 'sharing' | 'formats' | 'youtube' | 'shortcuts';
 
 /** What is open over the collection. */
 export const useUiStore = defineStore('ui', () => {
@@ -34,5 +34,10 @@ export const useUiStore = defineStore('ui', () => {
     settings.value = settings.value ? null : tab;
   }
 
-  return { settings, consolidate, soulseekPrompt, toggleSettings, showConsolidate, promptSoulseek };
+  /** Shows the keyboard shortcuts; or, when they're showing, closes them. */
+  function toggleShortcuts() {
+    settings.value = settings.value === 'shortcuts' ? null : 'shortcuts';
+  }
+
+  return { settings, consolidate, soulseekPrompt, toggleSettings, toggleShortcuts, showConsolidate, promptSoulseek };
 });

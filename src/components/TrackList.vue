@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import CoverArt from '@/components/CoverArt.vue';
 import FieldInput from '@/components/FieldInput.vue';
@@ -7,6 +7,7 @@ import JobStatusBadge from '@/components/JobStatusBadge.vue';
 import LibraryCover from '@/components/LibraryCover.vue';
 import ProgressBar from '@/components/ProgressBar.vue';
 import TrackPreview from '@/components/TrackPreview.vue';
+import { focusDetail } from '@/composables/useDetailKeys';
 import { dragging, dropRow, endDrag, startDrag } from '@/composables/useDrag';
 import { formatDuration } from '@/composables/useFormat';
 import { gridClass, gridLabel, gridSummary } from '@/composables/useGridReport';
@@ -292,9 +293,41 @@ async function move(by: number | 'first' | 'last', extend: boolean) {
   else pick(spot);
 }
 
+/**
+ * Settles the picked track and goes on to the one under it: marks its grid
+ * reviewed, picks and loads the next, and puts the keyboard in its sidebar.
+ */
+async function reviewAndNext() {
+  const track = detailTrack.value;
+  if (!track) return;
+  const mine = picks;
+  // What's being typed in a field is saved first, as leaving the field saves it.
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  // Found before the review, which reads the list again.
+  const next = await browse.trackAfter(track.id).catch(() => null);
+  if (track.analysed !== false && !track.grid?.reviewed) {
+    store.error = null;
+    void store.reviewGrids([track.id], true).catch((e) => (store.error = String(e)));
+  }
+  // Unless something else was picked meanwhile.
+  if (!next || mine !== picks) return;
+  const index = browse.loadedIndex(next.id) ?? (browse.loadedIndex(track.id) ?? -1) + 1;
+  reveal(pendingRows.value.length + index);
+  pick({ index, id: next.id });
+  emit('open', next);
+  await nextTick();
+  focusDetail('panel');
+}
+
 function onKey(event: KeyboardEvent) {
   if (event.defaultPrevented || event.altKey || ui.settings) return;
   const target = event.target as HTMLElement | null;
+  // From anywhere, a text field included: it's how a track being edited is finished with.
+  if (commandKey(event) && event.key === 'Enter' && !event.shiftKey) {
+    event.preventDefault();
+    if (!event.repeat) void reviewAndNext();
+    return;
+  }
   // Text fields keep their own keys: ⌘A selects their text, arrows move their caret.
   if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
   const command = commandKey(event);
@@ -309,7 +342,11 @@ function onKey(event: KeyboardEvent) {
   else if (event.key === 'Home') void move('first', event.shiftKey);
   else if (event.key === 'End') void move('last', event.shiftKey);
   else if (event.key === 'Escape' && picked) browse.clearSelection();
-  else if (event.key === 'Enter' && detailTrack.value && !target?.closest('button, a')) emit('open', detailTrack.value);
+  else if (event.key === 'Enter' && detailTrack.value && !target?.closest('button, a')) {
+    // Loaded to be worked on: the keyboard goes to its sidebar, as Tab would take it.
+    emit('open', detailTrack.value);
+    focusDetail('first');
+  }
   else if ((event.key === 'Delete' || event.key === 'Backspace') && selection.value.size) {
     // Out of a playlist at once, as its button does; out of the collection once that's been asked.
     if (inPlaylist.value) void actions.removeFromPlaylist();
@@ -732,7 +769,7 @@ const smallButtonClass =
 </script>
 
 <template>
-  <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-auto">
+  <div data-track-pane class="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-auto">
   <div class="flex min-h-0 flex-1 flex-col" :style="{ minWidth: `${minListWidth}px` }">
     <div
       class="relative flex shrink-0 items-center gap-3 border-b border-border py-1.5 pr-7 pl-4 text-[11px] text-text-muted"
@@ -819,7 +856,9 @@ const smallButtonClass =
     <p v-if="listError" class="error-box m-4">{{ listError }}</p>
     <div
       ref="scroller"
-      class="min-h-0 flex-1 overflow-y-auto select-none"
+      data-track-list
+      tabindex="-1"
+      class="min-h-0 flex-1 overflow-y-auto outline-none select-none"
       @scroll.passive="onScroll"
       @mousedown="keepTextUnselected"
       @dragover="overRow($event, total)"

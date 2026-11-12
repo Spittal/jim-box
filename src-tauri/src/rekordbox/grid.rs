@@ -249,7 +249,7 @@ pub struct State {
     /// None for a grid this app didn't make.
     #[serde(default)]
     pub report: Option<Report>,
-    /// The user has said the grid is right, or made it so by hand.
+    /// The user has said the grid is right.
     #[serde(default)]
     pub reviewed: bool,
     /// Whose grid the track has now.
@@ -357,12 +357,11 @@ impl States {
         });
     }
 
-    /// The grid was changed by hand, which is looking it over.
+    /// The grid was changed by hand. That isn't saying it's right: a tempo
+    /// typed in still wants checking against the music, so whether it's
+    /// reviewed stays as it was.
     pub fn edited(&self, track_id: &str) {
-        self.change(track_id, |state| {
-            state.using = Source::Hand;
-            state.reviewed = true;
-        });
+        self.change(track_id, |state| state.using = Source::Hand);
     }
 
     /// Marks tracks' grids as reviewed, or takes that back; saved once.
@@ -1450,10 +1449,14 @@ mod tests {
         states.switched("7", Source::Chosen);
         assert!(!states.get("7").unwrap().reviewed);
 
-        // A grid from elsewhere, changed by hand, is reviewed with no report.
+        // A grid from elsewhere, changed by hand, is known of with no report: not reviewed until that's said.
         states.edited("8");
         let state = States::open(file.clone()).get("8").unwrap();
-        assert!(state.reviewed && state.using == Source::Hand && state.report.is_none());
+        assert!(!state.reviewed && state.using == Source::Hand && state.report.is_none());
+        // And a reviewed one changed by hand stays reviewed.
+        states.review(&["8".to_owned()], true);
+        states.edited("8");
+        assert!(states.get("8").unwrap().reviewed);
 
         // Analysing again starts over, and a grid both agree on has no others.
         let truth = comb(0.5, 0.25, 60.0);

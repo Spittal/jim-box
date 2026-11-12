@@ -79,6 +79,17 @@ input, textarea {
   }
 }
 
+/* Which of the track list and the track sidebar the keyboard is in (Tab goes
+   between them): a line along the top of it. The sidebar when the keyboard is
+   anywhere inside it, else the list beside it. */
+[data-track-pane] {
+  border-top: 2px solid transparent;
+}
+[data-track-detail]:focus-within,
+[data-track-pane]:has(+ [data-track-detail]:not(:focus-within)) {
+  border-top-color: color-mix(in srgb, var(--color-accent) 70%, transparent);
+}
+
 /* Windows draws wide, always-visible scrollbars; keep them slim and dark. */
 html[data-platform="windows"] {
   scrollbar-width: thin;

@@ -15,6 +15,8 @@ import {
 import { editedGrid, nearestBeatIndex, sameGrid } from '@/composables/useGridEdit';
 import { useKeyNotation } from '@/composables/useKeyNotation';
 import { useCollectionStore } from '@/stores/collection';
+import { useUiStore } from '@/stores/ui';
+import { commandKey, shortcut } from '@/platform';
 import type { Beat, CollectionEdit, CollectionTrack, Cue, GridChange, Preparation } from '@/types/collection';
 
 /**
@@ -28,6 +30,7 @@ const props = defineProps<{ track: CollectionTrack | null }>();
 const emit = defineEmits<{ close: []; ended: [] }>();
 
 const store = useCollectionStore();
+const ui = useUiStore();
 const { formatKey } = useKeyNotation();
 
 /** rekordbox's detailed waveforms have 150 columns a second. */
@@ -264,14 +267,69 @@ function tick() {
   if (running && !frame) frame = requestAnimationFrame(tick);
 }
 
+/** ⌘← and ⌘→ go this far: a phrase or two, to the next part of the track. */
+const JUMP_BARS = 32;
+
+/** Whether a key pressed there is typed: a box of text, not a tick box or a button. */
+function typing(target: HTMLElement | null): boolean {
+  if (!target) return false;
+  if (target.tagName === 'TEXTAREA' || target.isContentEditable) return true;
+  return (
+    target instanceof HTMLInputElement &&
+    !['checkbox', 'radio', 'button', 'submit', 'range', 'color', 'file'].includes(target.type)
+  );
+}
+
+/** Space went to the player, so letting go of it mustn't press what has the keyboard. */
+let spaceTaken = false;
+
 function onKey(event: KeyboardEvent) {
   const target = event.target as HTMLElement | null;
+  if (event.defaultPrevented || event.altKey || ui.settings) return;
+  // Space plays and pauses wherever the keyboard is, unless it's typing a space:
+  // on a button, a menu or a tick box it doesn't press, open or tick it.
+  if (event.code === 'Space' && !event.metaKey && !event.ctrlKey && !typing(target)) {
+    if (!event.repeat) toggle();
+    spaceTaken = true;
+    event.preventDefault();
+    return;
+  }
+  // Text fields keep their own keys: digits are typed, ⌘← goes to the start of the line.
   if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
-  if (event.metaKey || event.ctrlKey || event.altKey) return;
-  if (event.code === 'Space') toggle();
-  else if (event.code === 'ArrowLeft') jumpBeats(event.shiftKey ? -4 : -1);
+  const command = commandKey(event);
+  if (!command && (event.metaKey || event.ctrlKey)) return;
+  const pad = /^Digit[1-8]$/.test(event.code) ? Number(event.code.slice(5)) - 1 : -1;
+
+  if (command) {
+    if (!props.track || event.shiftKey) return;
+    if (event.code === 'ArrowLeft') jumpBeats(-JUMP_BARS * 4);
+    else if (event.code === 'ArrowRight') jumpBeats(JUMP_BARS * 4);
+    else if (pad >= 0) {
+      const cue = hotCues.value[pad];
+      if (cue && !event.repeat) deleteCue(cue);
+    } else if (event.code === 'KeyM') {
+      if (!event.repeat) setCue(null);
+    } else if (event.code === 'KeyB') {
+      if (canEditGrid.value && !event.repeat) setDownbeat();
+    } else return;
+  } else if (event.code === 'ArrowLeft') jumpBeats(event.shiftKey ? -4 : -1);
   else if (event.code === 'ArrowRight') jumpBeats(event.shiftKey ? 4 : 1);
-  else return;
+  else if (!props.track || event.shiftKey) return;
+  else if (pad >= 0) {
+    // As pressing the pad: to its cue, or a cue set on it where it has none.
+    const cue = hotCues.value[pad];
+    if (cue) goToCue(cue);
+    else if (!event.repeat) setCue(pad);
+  } else if (event.code === 'KeyM') {
+    if (!event.repeat) setCue(null);
+  } else return;
+  event.preventDefault();
+}
+
+/** A button is pressed as Space is let go, unless that is stopped here. */
+function onKeyUp(event: KeyboardEvent) {
+  if (event.code !== 'Space' || !spaceTaken) return;
+  spaceTaken = false;
   event.preventDefault();
 }
 
@@ -856,12 +914,14 @@ onMounted(() => {
   invalidate();
   window.addEventListener('resize', invalidate);
   window.addEventListener('keydown', onKey);
+  window.addEventListener('keyup', onKeyUp, true);
 });
 onBeforeUnmount(() => {
   cancelAnimationFrame(frame);
   resized.disconnect();
   window.removeEventListener('resize', invalidate);
   window.removeEventListener('keydown', onKey);
+  window.removeEventListener('keyup', onKeyUp, true);
   engine.dispose();
 });
 
@@ -903,8 +963,8 @@ const tabClass = 'px-2 py-0.5 text-[11px] disabled:opacity-30';
         <p v-else class="text-text-muted">No track loaded</p>
       </div>
       <template v-if="track">
-        <button :class="buttonClass" title="Back a beat (←, Shift for a bar)" @click="jumpBeats(-1)">◀ Beat</button>
-        <button :class="buttonClass" title="Forward a beat (→, Shift for a bar)" @click="jumpBeats(1)">Beat ▶</button>
+        <button :class="buttonClass" :title="`Back a beat (←, Shift for a bar, ${shortcut('←')} for 32 bars)`" @click="jumpBeats(-1)">◀ Beat</button>
+        <button :class="buttonClass" :title="`Forward a beat (→, Shift for a bar, ${shortcut('→')} for 32 bars)`" @click="jumpBeats(1)">Beat ▶</button>
       </template>
       <div class="flex overflow-hidden rounded border border-border" title="Waveform colours, as in rekordbox">
         <button
@@ -988,14 +1048,14 @@ const tabClass = 'px-2 py-0.5 text-[11px] disabled:opacity-30';
             :class="hotCues[slot] ? 'text-black' : 'bg-surface-2 text-text-muted hover:bg-surface-3'"
             :style="hotCues[slot] ? { backgroundColor: cueColor(hotCues[slot]!) } : {}"
             :title="hotCues[slot]
-              ? `Hot cue ${letter} at ${formatTime(hotCues[slot]!.positionMs)}. Click to go there, Shift-click to delete.`
-              : `Set hot cue ${letter} at the playhead`"
+              ? `Hot cue ${letter} at ${formatTime(hotCues[slot]!.positionMs)}. Click (${slot + 1}) to go there, Shift-click (${shortcut(String(slot + 1))}) to delete.`
+              : `Set hot cue ${letter} at the playhead (${slot + 1})`"
             @click="pressPad(slot, $event)"
           >
             {{ letter }}
           </button>
         </div>
-        <button :class="buttonClass" title="Set a memory cue at the playhead" @click="setCue(null)">
+        <button :class="buttonClass" title="Set a memory cue at the playhead (M)" @click="setCue(null)">
           + Memory cue
         </button>
         <label class="flex items-center gap-1 text-[11px] text-text-secondary" title="New cues are loops of this length">
@@ -1016,7 +1076,7 @@ const tabClass = 'px-2 py-0.5 text-[11px] disabled:opacity-30';
           :class="buttonClass"
           class="font-medium"
           :disabled="!canEditGrid"
-          title="Make the beat nearest the playhead the first beat of its bar. The grid doesn't move."
+          :title="`Make the beat nearest the playhead the first beat of its bar. The grid doesn't move. (${shortcut('B')})`"
           @click="setDownbeat"
         >
           Set downbeat
