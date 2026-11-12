@@ -1,7 +1,7 @@
 import { acceptHMRUpdate, defineStore } from 'pinia';
 import { ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import type { Followed, LinkedPlaylist, PlaylistProgress, SyncSettings } from '@/types/playlist';
+import type { Followed, Imported, LinkedPlaylist, PlaylistProgress, SyncSettings } from '@/types/playlist';
 import type { TrackRequest } from '@/types/track';
 
 const PLAYLIST_LINK = /open\.spotify\.com\/(?:[\w-]+\/)?playlist\/[A-Za-z0-9]{22}|^spotify:playlist:[A-Za-z0-9]{22}$/;
@@ -43,6 +43,22 @@ export const usePlaylistStore = defineStore('playlist', () => {
       if (shown === result.playlistId) linked.value = result;
       loadWatched();
       return result;
+    } finally {
+      importing.value = false;
+      progress.value = null;
+    }
+  }
+
+  /**
+   * Brings a Spotify playlist's tracks into a rekordbox playlist once,
+   * without following it: the tracks the collection has are added and sure
+   * matches are fetched. Throws on failure.
+   */
+  async function importOnce(url: string, playlistId: string): Promise<Imported> {
+    importing.value = true;
+    progress.value = null;
+    try {
+      return await invoke<Imported>('import_spotify_playlist', { url, playlistId });
     } finally {
       importing.value = false;
       progress.value = null;
@@ -101,7 +117,7 @@ export const usePlaylistStore = defineStore('playlist', () => {
     }
   }
 
-  return { linked, watched, importing, progress, link, refresh, unlink, setSettings, synced, show, setMatch };
+  return { linked, watched, importing, progress, link, importOnce, refresh, unlink, setSettings, synced, show, setMatch };
 });
 
 // Swap in new actions on hot reload instead of keeping the old store.

@@ -103,7 +103,12 @@ const settingsNode = computed(() => playlists.value.find((p) => p.id === setting
 /** Its link to Spotify, if it has one. */
 const followed = computed(() => (settingsOf.value ? watched.value.get(settingsOf.value) ?? null : null));
 const linkUrl = ref('');
-watch(settingsOf, () => (linkUrl.value = ''));
+/** What the last one-time import into it did. */
+const imported = ref<string | null>(null);
+watch(settingsOf, () => {
+  linkUrl.value = '';
+  imported.value = null;
+});
 // Deleted while its settings were open.
 watch(settingsNode, (node) => !node && (settingsOf.value = null));
 
@@ -123,6 +128,28 @@ function linkSpotify() {
   act(async () => {
     await playlistStore.link(url, id);
     linkUrl.value = '';
+  });
+}
+
+/** Brings the Spotify playlist's tracks in once, without following it. */
+function importSpotify() {
+  const id = settingsOf.value;
+  const url = linkUrl.value.trim();
+  if (!id || !isPlaylistLink(url)) return;
+  imported.value = null;
+  act(async () => {
+    const done = await playlistStore.importOnce(url, id);
+    const count = (n: number) => `${n} ${n === 1 ? 'track' : 'tracks'}`;
+    const parts = [`${count(done.added)} added`];
+    if (done.present) parts.push(`${done.present} already here`);
+    if (done.fetching) parts.push(`${done.fetching} being fetched`);
+    if (done.skipped) parts.push(`${done.skipped} left out (no sure match, or fetched before)`);
+    if (done.truncated) parts.push('only the first 100 tracks could be read');
+    // Still the same playlist's settings.
+    if (settingsOf.value === id) {
+      imported.value = `Imported “${done.name}”: ${parts.join(' · ')}.`;
+      linkUrl.value = '';
+    }
   });
 }
 
@@ -416,13 +443,14 @@ const nameInputClass =
           </div>
 
           <section class="flex flex-col gap-3">
-            <h3 class="section-label text-[10px]">Spotify sync</h3>
+            <h3 class="section-label text-[10px]">Spotify</h3>
 
             <!-- Not linked yet. -->
             <template v-if="!followed">
               <p class="text-xs text-text-secondary">
                 Link this playlist to a public Spotify playlist. Tracks on it that you have are added here, the rest
-                are fetched, and tracks added on Spotify later follow.
+                are fetched, and tracks added on Spotify later follow. Or import it once: the same, without
+                following it afterwards.
               </p>
               <form class="flex gap-2" @submit.prevent="linkSpotify">
                 <input
@@ -435,14 +463,28 @@ const nameInputClass =
                 <button
                   type="submit"
                   class="shrink-0 rounded bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
+                  title="Follow the Spotify playlist: tracks added to it later are brought in too."
                   :disabled="!isPlaylistLink(linkUrl) || playlistStore.importing"
                 >
-                  {{ playlistStore.importing ? 'Reading…' : 'Link' }}
+                  Link
+                </button>
+                <button
+                  type="button"
+                  class="shrink-0 rounded bg-surface-2 px-3 py-1.5 text-xs transition-colors hover:bg-surface-3 disabled:opacity-50"
+                  title="Bring its tracks in now, without following it. Needs rekordbox to be closed."
+                  :disabled="!isPlaylistLink(linkUrl) || playlistStore.importing"
+                  @click="importSpotify"
+                >
+                  Import once
                 </button>
               </form>
-              <p v-if="playlistStore.importing && playlistStore.progress?.total" class="text-xs text-text-muted">
-                Matching tracks… {{ playlistStore.progress.done }} of {{ playlistStore.progress.total }}
+              <p v-if="playlistStore.importing" class="text-xs text-text-muted">
+                <template v-if="playlistStore.progress?.total">
+                  Matching tracks… {{ playlistStore.progress.done }} of {{ playlistStore.progress.total }}
+                </template>
+                <template v-else>Reading…</template>
               </p>
+              <p v-else-if="imported" class="text-xs text-text-secondary">{{ imported }}</p>
             </template>
 
             <!-- Linked: how it follows. -->
@@ -486,7 +528,7 @@ const nameInputClass =
               <li>A Spotify playlist can be linked to one playlist at a time.</li>
               <li>Track order isn't synced, only which tracks are in the playlist.</li>
               <li>Only a playlist's first 100 tracks can be read.</li>
-              <li>Changes to this playlist wait while rekordbox is open.</li>
+              <li>Changes to a linked playlist wait while rekordbox is open. Importing once needs it closed.</li>
             </ul>
           </section>
         </div>

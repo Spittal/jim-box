@@ -414,9 +414,8 @@ struct Plan {
 async fn reconcile(app: &AppHandle, playlist: PlaylistMatch) -> AppResult<bool> {
     let Some(rekordbox_id) = playlist.rekordbox_id.clone() else { return Ok(false) };
     let store = app.state::<PlaylistStore>();
-    let job_store = app.state::<JobStore>();
 
-    let jobs = job_store.fetches();
+    let jobs = app.state::<JobStore>().fetches();
     let (work_app, work, list_id) = (app.clone(), playlist.clone(), rekordbox_id.clone());
     let outcome = crate::library::blocking(move || {
         let collection = work_app.state::<Collection>();
@@ -449,17 +448,108 @@ async fn reconcile(app: &AppHandle, playlist: PlaylistMatch) -> AppResult<bool> 
         return Ok(false);
     };
 
+    start_fetches(app, &playlist.name, &rekordbox_id, fetch);
+    Ok(changed)
+}
+
+/// Starts fetching tracks that land in a rekordbox playlist.
+fn start_fetches(app: &AppHandle, name: &str, rekordbox_id: &str, fetch: Vec<TrackRequest>) {
+    let job_store = app.state::<JobStore>();
     for request in fetch {
-        info!("Playlist '{}': fetching {} - {}", playlist.name, request.artist, request.title);
+        info!("Playlist '{name}': fetching {} - {}", request.artist, request.title);
         let mut job = Job::new(request, None);
-        job.playlist_id = Some(rekordbox_id.clone());
+        job.playlist_id = Some(rekordbox_id.to_owned());
         let id = job.id;
         job_store.insert(app, job);
         if let Err(e) = jobs::start(app, id) {
-            warn!("Couldn't start a fetch for playlist '{}': {e}", playlist.name);
+            warn!("Couldn't start a fetch for playlist '{name}': {e}");
         }
     }
-    Ok(changed)
+}
+
+/// What importing a Spotify playlist once did.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Imported {
+    /// The Spotify playlist's name.
+    pub name: String,
+    /// Spotify only lists a playlist's first tracks without signing in.
+    pub truncated: bool,
+    /// Tracks on the Spotify playlist.
+    pub total: usize,
+    /// Collection tracks put in the rekordbox playlist.
+    pub added: usize,
+    /// Those the rekordbox playlist had already.
+    pub present: usize,
+    /// Sure matches now being fetched; they land in the playlist.
+    pub fetching: usize,
+    /// The rest: no sure match, or fetched before.
+    pub skipped: usize,
+}
+
+/// Brings a public Spotify playlist's tracks into a rekordbox playlist
+/// once, without following it: the tracks the collection has are added,
+/// and sure matches it lacks are fetched. Nothing is taken out, and the
+/// Spotify playlist isn't read again. It may be one that another playlist
+/// follows.
+pub async fn import(app: &AppHandle, input: &str, rekordbox_id: String) -> AppResult<Imported> {
+    let store = app.state::<PlaylistStore>();
+    let _one_at_a_time = store.syncing.lock().await;
+    // Nothing reads Spotify again later, so the tracks can't wait for rekordbox to close.
+    let running = || AppError::Rekordbox("rekordbox is running. Quit it before importing.".into());
+    if crate::rekordbox::is_running() {
+        return Err(running());
+    }
+    if store.linked_to(&rekordbox_id).is_some() {
+        return Err(AppError::Validation("This playlist follows a Spotify playlist. Unlink it first.".into()));
+    }
+    let playlist = read(app, input, true).await?;
+    // Add only, whatever the settings of a playlist that follows it.
+    let work = PlaylistMatch { settings: SyncSettings::default(), ..playlist };
+
+    let jobs = app.state::<JobStore>().fetches();
+    let (work_app, list_id) = (app.clone(), rekordbox_id.clone());
+    let (imported, fetch) = crate::library::blocking(move || {
+        let collection = work_app.state::<Collection>();
+        // Read first, so tracks added in rekordbox are found.
+        collection.reload()?;
+        if is_playlist(&collection, &list_id) != Some(true) {
+            return Err(AppError::Validation("Tracks can only be imported into a plain playlist".into()));
+        }
+        let members = collection.playlist_members(&list_id)?;
+        let found = locate(&collection, &jobs, &work.entries);
+        let plan = plan(&work, &members, &found, &jobs);
+        let in_collection: HashSet<&String> = found.iter().flatten().collect();
+        let (added, fetching) = (plan.add.len(), plan.fetch.len());
+        let missing = found.iter().filter(|f| f.is_none()).count();
+        let imported = Imported {
+            name: work.name.clone(),
+            truncated: work.truncated,
+            total: work.entries.len(),
+            added,
+            present: in_collection.len() - added,
+            fetching,
+            skipped: missing - fetching,
+        };
+        if !plan.add.is_empty() {
+            if crate::rekordbox::is_running() {
+                return Err(running());
+            }
+            collection.edit(Edit::AddTracks { playlist_id: list_id, track_ids: plan.add })?;
+        }
+        Ok((imported, plan.fetch))
+    })
+    .await?;
+
+    info!(
+        "Playlist '{}' imported once: {} added, {} fetching, {} skipped",
+        imported.name, imported.added, imported.fetching, imported.skipped
+    );
+    start_fetches(app, &imported.name, &rekordbox_id, fetch);
+    if imported.added > 0 {
+        let _ = app.emit("collection-changed", app.state::<crate::ingest::ArrivalQueue>().waiting());
+    }
+    Ok(imported)
 }
 
 /// Works out what a rekordbox playlist needs to match its Spotify one.

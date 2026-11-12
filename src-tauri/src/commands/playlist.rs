@@ -3,7 +3,7 @@ use tauri::{AppHandle, State};
 use crate::error::AppResult;
 use std::collections::HashMap;
 
-use crate::playlist::{self, Followed, LinkedPlaylist, PlaylistStore, SyncSettings};
+use crate::playlist::{self, Followed, Imported, LinkedPlaylist, PlaylistStore, SyncSettings};
 use crate::state::TrackRequest;
 
 /// Makes a rekordbox playlist follow a public Spotify playlist, and brings
@@ -11,6 +11,13 @@ use crate::state::TrackRequest;
 #[tauri::command]
 pub async fn link_spotify_playlist(app: AppHandle, url: String, playlist_id: String) -> AppResult<LinkedPlaylist> {
     playlist::link(&app, &url, playlist_id).await
+}
+
+/// Brings a public Spotify playlist's tracks into a rekordbox playlist once,
+/// without following it.
+#[tauri::command]
+pub async fn import_spotify_playlist(app: AppHandle, url: String, playlist_id: String) -> AppResult<Imported> {
+    playlist::import(&app, &url, playlist_id).await
 }
 
 /// The rekordbox playlists that follow a Spotify playlist, by id.

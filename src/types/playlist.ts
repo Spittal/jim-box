@@ -34,6 +34,24 @@ export interface LinkedPlaylist {
   missing: MissingEntry[];
 }
 
+/** What importing a Spotify playlist once did. */
+export interface Imported {
+  /** The Spotify playlist's name. */
+  name: string;
+  /** Spotify only lists a playlist's first 100 tracks without signing in. */
+  truncated: boolean;
+  /** Tracks on the Spotify playlist. */
+  total: number;
+  /** Collection tracks put in the rekordbox playlist. */
+  added: number;
+  /** Those the rekordbox playlist had already. */
+  present: number;
+  /** Sure matches now being fetched; they land in the playlist. */
+  fetching: number;
+  /** The rest: no sure match, or fetched before. */
+  skipped: number;
+}
+
 /** How a rekordbox playlist follows its Spotify playlist. */
 export interface SyncSettings {
   /** Fetch tracks added on Spotify whose match is sure. */

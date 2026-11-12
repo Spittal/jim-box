@@ -143,6 +143,7 @@ pub fn run() {
             commands::collection::track_audio,
             commands::collection::stop_track_audio,
             commands::playlist::link_spotify_playlist,
+            commands::playlist::import_spotify_playlist,
             commands::playlist::linked_playlist,
             commands::playlist::followed_playlists,
             commands::playlist::set_playlist_settings,
