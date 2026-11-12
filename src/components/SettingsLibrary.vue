@@ -33,7 +33,12 @@ const PATH_KINDS: { key: keyof PathTemplates; label: string }[] = [
   { key: 'singleton', label: 'Tracks without an album' },
 ];
 const paths = ref<PathTemplates>({ default: '', comp: '', singleton: '' });
-watch(() => settings.value?.paths, (p) => p && (paths.value = { ...p }), { immediate: true });
+// By what they say: saving any setting brings a new copy of them all, which shouldn't undo one being typed.
+watch(
+  () => JSON.stringify(settings.value?.paths),
+  () => settings.value && (paths.value = { ...settings.value.paths }),
+  { immediate: true },
+);
 
 const KEY_NOTATIONS: { id: KeyNotation; label: string; example: string }[] = [
   { id: 'standard', label: 'Musical', example: 'Am, F#' },

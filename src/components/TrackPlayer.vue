@@ -816,7 +816,10 @@ watch(
   { immediate: true },
 );
 // An analysis made elsewhere (rekordbox, then Refresh) shows as a new BPM on the row.
-watch([() => props.track?.bpm, () => props.track?.analysed], () => loadPreparation());
+watch([() => props.track?.id, () => props.track?.bpm, () => props.track?.analysed], ([id], [wasId]) => {
+  // Another track has another tempo too, and is loaded as a whole above.
+  if (id === wasId) loadPreparation();
+});
 // Another of the analysis's grids tried from the track's details.
 watch(
   () => [props.track?.id, props.track?.grid?.using] as const,

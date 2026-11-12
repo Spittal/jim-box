@@ -355,7 +355,8 @@ export const useBrowseStore = defineStore('browse', () => {
     return row ? { job: row.job, entry: row.entry } : null;
   });
 
-  watch(query, resetList, { deep: true });
+  // By what it asks for: it's made afresh whenever something it reads changes, a setting saved among them.
+  watch(() => JSON.stringify(query.value), resetList);
   watch(() => collection.generation, refreshList);
   // The Spotify side follows the playlist shown, and the collection as tracks land.
   watch(

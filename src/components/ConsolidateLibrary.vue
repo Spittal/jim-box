@@ -92,7 +92,8 @@ onMounted(() => {
 });
 watch(() => ui.consolidate, showIfAsked);
 // The library folders changed: what's in and out of them did too.
-watch(targets, look);
+// By their paths: the list is made afresh whenever any setting is saved.
+watch(() => targets.value.join('\n'), look);
 </script>
 
 <template>

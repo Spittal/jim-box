@@ -91,8 +91,10 @@ async function spelled(genre: string): Promise<string> {
 
 watch(
   // Identifying a track says which recording it is, which is worth asking again for.
-  () => [props.track.id, identified.value?.proposal?.metadata.mbRecordingId] as const,
-  ([trackId]) => {
+  // Each on its own: together as one list they'd look new whenever anything about the track changed.
+  [() => props.track.id, () => identified.value?.proposal?.metadata.mbRecordingId],
+  () => {
+    const trackId = props.track.id;
     clearTimeout(dwell);
     suggested.value = null;
     suggestError.value = null;
