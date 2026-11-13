@@ -91,6 +91,17 @@ const analysisPercent = computed(() =>
   analysis.value?.total ? (analysis.value.done / analysis.value.total) * 100 : 0,
 );
 const showFailures = ref(false);
+/**
+ * The banner is for batches: one track's analysis shows on its row. It goes
+ * when the batch is done, unless there's something to read: tracks that
+ * failed, or why it ended early.
+ */
+const showAnalysis = computed(() => {
+  const batch = analysis.value;
+  if (!batch) return false;
+  if (batch.active) return batch.total > 1;
+  return !!batch.stopped || (batch.total > 1 && batch.failed.length > 0);
+});
 
 const buttonClass =
   'rounded bg-surface-2 px-3 py-1.5 text-xs transition-colors hover:bg-surface-3 disabled:opacity-50';
@@ -107,11 +118,11 @@ const buttonClass =
       <button class="ml-1 text-text-muted hover:text-text-primary" title="Dismiss" @click="notice = null">✕</button>
     </p>
 
-    <div v-if="analysis?.total || analysis?.stopped" class="mx-4 mt-3 flex flex-col gap-1.5 text-xs">
+    <div v-if="analysis && showAnalysis" class="mx-4 mt-3 flex flex-col gap-1.5 text-xs">
       <div class="flex items-center gap-3">
         <span class="shrink-0 text-text-secondary">
           <template v-if="analysis.active">Analysing {{ analysis.done }} of {{ analysis.total }}</template>
-          <template v-else>Analysed {{ analysis.done - analysis.failed.length }} {{ analysis.done - analysis.failed.length === 1 ? 'track' : 'tracks' }}</template>
+          <template v-else>Analysed {{ analysis.done - analysis.failed.length }} of {{ analysis.done }}</template>
         </span>
         <ProgressBar v-if="analysis.active" :percent="analysisPercent" class="flex-1" />
         <button
