@@ -45,7 +45,7 @@ export type KeyNotation = 'standard' | 'camelot';
 
 export type CookieBrowser = 'safari' | 'chrome' | 'edge' | 'firefox' | 'brave' | 'vivaldi';
 
-/** The yt-dlp jim-box uses for YouTube Music downloads. */
+/** The yt-dlp Jim Box uses for YouTube Music downloads. */
 export interface YtDlpInfo {
   path: string;
   version: string;

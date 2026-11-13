@@ -1,4 +1,4 @@
-//! YouTube Music, through the yt-dlp command-line tool. jim-box uses the
+//! YouTube Music, through the yt-dlp command-line tool. Jim Box uses the
 //! copy installed with a package manager (Homebrew on macOS, winget or Scoop
 //! on Windows), which keeps yt-dlp and the JavaScript runtime YouTube needs
 //! up to date; YouTube changes often enough that a copy bundled with the app
@@ -15,7 +15,7 @@ use crate::error::{AppError, AppResult};
 
 const BINARY_NAME: &str = if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" };
 const INSTALL_HINT: &str = if cfg!(windows) {
-    "yt-dlp isn't installed. Install it with winget (winget install yt-dlp), then reopen jim-box"
+    "yt-dlp isn't installed. Install it with winget (winget install yt-dlp), then reopen Jim Box"
 } else {
     "yt-dlp isn't installed. Install it with Homebrew: brew install yt-dlp"
 };

@@ -30,7 +30,7 @@ function removeFolder(dir: string) {
     :error="error"
   >
     <ToggleRow
-      label="Share my jim-box library"
+      label="Share my Jim Box library"
       :description="[settings.musicDir, ...settings.libraryDirs].join(' · ')"
       :model-value="settings.shareMusicDir"
       @update:model-value="(on) => save({ shareMusicDir: on })"

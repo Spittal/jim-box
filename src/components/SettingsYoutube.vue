@@ -68,7 +68,7 @@ function setBrowser(value: string) {
         With YouTube Premium, pick the browser you're signed in to YouTube with to get 256 kbps instead of 128 kbps.
         <template v-if="isMac">
           Chrome, Edge, Brave and Vivaldi make macOS ask to allow access to their keychain item; choose Always Allow.
-          Safari needs Full Disk Access for jim-box in System Settings.
+          Safari needs Full Disk Access for Jim Box in System Settings.
         </template>
         <template v-else>
           Firefox is the reliable choice on Windows: Chrome, Edge, Brave and Vivaldi lock their cookies to

@@ -529,7 +529,7 @@ const nameInputClass =
             <!-- Linked: how it follows. -->
             <template v-else>
               <p class="truncate text-xs text-text-secondary" :title="followed.name">
-                Linked to “{{ followed.name }}”, read every minute while jim-box is open.
+                Linked to “{{ followed.name }}”, read every minute while Jim Box is open.
               </p>
               <label class="flex cursor-pointer items-start gap-2">
                 <input

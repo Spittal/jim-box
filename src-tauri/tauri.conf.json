@@ -1,6 +1,6 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "jim-box",
+  "productName": "Jim Box",
   "version": "1.3.0",
   "identifier": "com.jimbox.app",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "jim-box",
+        "title": "Jim Box",
         "width": 1100,
         "height": 720,
         "minWidth": 760,
@@ -57,7 +57,7 @@
     "category": "Music",
     "copyright": "© 2026 Jamie",
     "shortDescription": "Find lossless copies of tracks and tag them from MusicBrainz",
-    "longDescription": "Search for a track or paste a public Spotify playlist, and jim-box downloads the best lossless copy from Soulseek, tags it from MusicBrainz and files it in your library the way beets would.",
+    "longDescription": "Search for a track or paste a public Spotify playlist, and Jim Box downloads the best lossless copy from Soulseek, tags it from MusicBrainz and files it in your library the way beets would.",
     "macOS": {
       "minimumSystemVersion": "12.0",
       "signingIdentity": "-",

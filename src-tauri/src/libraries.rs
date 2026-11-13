@@ -1,4 +1,4 @@
-//! The libraries jim-box manages. A library is a rekordbox `master.db`:
+//! The libraries Jim Box manages. A library is a rekordbox `master.db`:
 //! the one rekordbox uses on this machine, one on a drive, or any other.
 //! Each has its own folders, settings, downloads and playlists (see
 //! [`persistence`]); the Soulseek and YouTube accounts are shared.
@@ -168,7 +168,7 @@ async fn register(app: &AppHandle, master_db: PathBuf) -> AppResult<KnownLibrary
     library::blocking(move || {
         rbl_db::Library::open(location, rbl_db::OpenMode::ReadOnly)
             .map(drop)
-            .map_err(|e| AppError::Validation(format!("That isn't a rekordbox library jim-box can open ({e})")))
+            .map_err(|e| AppError::Validation(format!("That isn't a rekordbox library Jim Box can open ({e})")))
     })
     .await?;
 
@@ -241,7 +241,7 @@ pub fn set_default(app: &AppHandle, on: bool) -> AppResult<()> {
     Ok(())
 }
 
-/// Drops a library from the list, with what jim-box saved for it. Its
+/// Drops a library from the list, with what Jim Box saved for it. Its
 /// `master.db` and music aren't touched.
 pub fn forget(app: &AppHandle, id: Uuid) -> AppResult<()> {
     if open_id(app) == Some(id) {

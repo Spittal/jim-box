@@ -1,4 +1,4 @@
-//! Clients for the outside services jim-box reads from. They return plain
+//! Clients for the outside services Jim Box reads from. They return plain
 //! data; deciding what matches what is `autotag`'s job.
 
 mod deezer;

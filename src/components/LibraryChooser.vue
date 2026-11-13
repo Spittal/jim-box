@@ -51,7 +51,7 @@ async function forget(library: LibraryInfo) {
   const yes = await confirm({
     title: `Forget “${library.name}”?`,
     message:
-      'It comes off the list, with the downloads, playlists and settings jim-box saved for it. The rekordbox library and its music aren’t touched.',
+      'It comes off the list, with the downloads, playlists and settings Jim Box saved for it. The rekordbox library and its music aren’t touched.',
     confirm: 'Forget',
     danger: true,
   });
@@ -83,7 +83,7 @@ const smallButton = 'shrink-0 text-xs text-text-muted transition-colors disabled
           <button
             v-if="library.id"
             :class="[smallButton, 'hover:text-status-error']"
-            title="Take this library off the list, with the downloads, playlists and settings jim-box saved for it. The rekordbox library and its music aren't touched."
+            title="Take this library off the list, with the downloads, playlists and settings Jim Box saved for it. The rekordbox library and its music aren't touched."
             @click="forget(library)"
           >
             Forget
@@ -114,7 +114,7 @@ const smallButton = 'shrink-0 text-xs text-text-muted transition-colors disabled
     </div>
 
     <p v-if="switching" class="text-xs text-text-muted">
-      jim-box restarts to switch library. Downloads in progress stop, and can be retried when you
+      Jim Box restarts to switch library. Downloads in progress stop, and can be retried when you
       come back to this one.
     </p>
     <p v-if="error" class="error-box">{{ error }}</p>

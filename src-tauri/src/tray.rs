@@ -15,14 +15,14 @@ pub const ID: &str = "main";
 pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let item = |id: &str, text: &str| MenuItemBuilder::with_id(id, text).build(app);
     let tray_menu = MenuBuilder::new(app)
-        .item(&item("show-main", "Open jim-box")?)
+        .item(&item("show-main", "Open Jim Box")?)
         .item(&item("show-logs", "Show Logs")?)
         .separator()
-        .item(&item("quit", "Quit jim-box")?)
+        .item(&item("quit", "Quit Jim Box")?)
         .build()?;
 
     let mut tray = TrayIconBuilder::with_id(ID)
-        .tooltip("jim-box")
+        .tooltip("Jim Box")
         .menu(&tray_menu)
         // A click opens the window; the menu is for the right button.
         .show_menu_on_left_click(false)

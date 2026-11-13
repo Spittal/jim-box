@@ -76,7 +76,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .item(&MenuItemBuilder::with_id("minimize", "Minimize").build(app)?)
         .maximize_with_text("Zoom")
         .separator()
-        .item(&item("show-main", "jim-box", "CmdOrCtrl+0")?)
+        .item(&item("show-main", "Jim Box", "CmdOrCtrl+0")?)
         .separator()
         .bring_all_to_front()
         .build()?;

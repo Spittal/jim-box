@@ -83,7 +83,7 @@ async function savePaths() {
       <ToggleRow
         v-else
         label="Open this library by default"
-        description="Off, jim-box asks which library to open each time it starts."
+        description="Off, Jim Box asks which library to open each time it starts."
         :model-value="opensByDefault"
         @update:model-value="(on) => librariesStore.setDefault(on)"
       />

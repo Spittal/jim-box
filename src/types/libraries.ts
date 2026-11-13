@@ -1,4 +1,4 @@
-/** A rekordbox library (a `master.db`) jim-box can manage. */
+/** A rekordbox library (a `master.db`) Jim Box can manage. */
 export interface LibraryInfo {
   /** Null for one found on this machine that hasn't been opened yet. */
   id: string | null;

@@ -416,7 +416,7 @@ const buttonClass =
       <button
         class="shrink-0 rounded bg-surface-2 px-3 py-1 text-xs transition-colors hover:bg-surface-3 disabled:opacity-50"
         :disabled="playlistStore.importing"
-        title="Spotify is read every minute while jim-box is open. This reads it now, and looks again for tracks that found no match."
+        title="Spotify is read every minute while Jim Box is open. This reads it now, and looks again for tracks that found no match."
         @click="run(playlistStore.refresh)"
       >
         {{ playlistStore.importing ? 'Reading…' : 'Sync now' }}

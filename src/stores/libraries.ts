@@ -3,7 +3,7 @@ import { computed, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { LibraryChoices, Opened } from '@/types/libraries';
 
-/** The rekordbox libraries jim-box manages, one of them open at a time. */
+/** The rekordbox libraries Jim Box manages, one of them open at a time. */
 export const useLibrariesStore = defineStore('libraries', () => {
   const choices = ref<LibraryChoices | null>(null);
 
@@ -32,7 +32,7 @@ export const useLibrariesStore = defineStore('libraries', () => {
     choices.value = await invoke<LibraryChoices>('set_default_library', { on });
   }
 
-  /** Drops a library from the list, with what jim-box saved for it. */
+  /** Drops a library from the list, with what Jim Box saved for it. */
   async function forget(id: string) {
     choices.value = await invoke<LibraryChoices>('forget_library', { id });
   }

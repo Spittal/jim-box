@@ -155,7 +155,7 @@ def dmg_background(scale):
     # Caption.
     tf = skia.Typeface('.AppleSystemUIFont')  # San Francisco
     font = skia.Font(tf, 15)
-    text = 'Drag jim-box to Applications to install it'
+    text = 'Drag Jim Box to Applications to install it'
     width = font.measureText(text)
     c.drawString(text, (DMG_W - width) / 2, DMG_H - 60, font,
                  skia.Paint(AntiAlias=True, Color=skia.Color4f(1, 1, 1, 0.85)))
