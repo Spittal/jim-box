@@ -612,6 +612,21 @@ function pressPad(slot: number, event: MouseEvent) {
   setCue(slot);
 }
 
+/**
+ * What is being typed in a box that shows a value. Every redraw puts the
+ * value back in such a box, and playing redraws many times a second: so
+ * while it's typed in, the box shows this instead.
+ */
+const typed = ref<{ box: string; text: string } | null>(null);
+
+function shown(box: string, value: string) {
+  return typed.value?.box === box ? typed.value.text : value;
+}
+
+function type(box: string, event: Event) {
+  typed.value = { box, text: (event.target as HTMLInputElement).value };
+}
+
 function nameCue(cue: Cue, event: Event) {
   const comment = (event.target as HTMLInputElement).value.trim();
   if (comment === cue.comment) return;
@@ -691,10 +706,13 @@ function undo() {
   );
 }
 
-/** Makes the beat nearest the playhead the first of its bar; nothing moves. */
+/**
+ * Makes the beat nearest the playhead the first of its bar. With quantize on
+ * nothing moves; with it off the grid slides to put that beat at the playhead.
+ */
 function setDownbeat() {
   const at = nearestBeat(position.value);
-  if (at >= 0) grid({ kind: 'downbeat', timeMs: beats.value[at][0] });
+  if (at >= 0) grid({ kind: 'downbeat', timeMs: quantize.value ? beats.value[at][0] : Math.round(position.value) });
 }
 
 const bpmInput = ref('');
@@ -723,12 +741,14 @@ function setPlayBpm(bpm: number) {
 
 /** A step faster or slower: 1 BPM, or with Shift a tenth of one. */
 function stepPlayBpm(direction: number, event: MouseEvent | KeyboardEvent) {
+  typed.value = null;
   if (playBpm.value) setPlayBpm(playBpm.value + direction * (event.shiftKey ? 0.1 : 1));
 }
 
 function typePlayBpm(event: Event) {
   const input = event.target as HTMLInputElement;
   setPlayBpm(Number(input.value));
+  typed.value = null;
   // What was typed gives way to what it came to: a tempo out of range, or not a number.
   input.value = playBpm.value?.toFixed(2) ?? '';
 }
@@ -1145,13 +1165,15 @@ const statValueClass = 'font-mono text-base font-semibold text-text-primary';
           </span>
           <span class="flex items-center gap-1">
             <input
-              :value="playBpm.toFixed(2)"
+              :value="shown('playBpm', playBpm.toFixed(2))"
               :class="[statValueClass, speed !== 1 ? 'text-status-busy' : '']"
               class="w-[4.75rem] rounded border border-transparent bg-transparent text-center outline-none hover:border-border focus:border-border-active"
               title="The tempo it plays at. Type one, or use the arrows: the track plays faster or slower, and its pitch goes with it, as on a turntable. The track and its grid aren't changed."
               spellcheck="false"
               inputmode="decimal"
+              @input="type('playBpm', $event)"
               @change="typePlayBpm"
+              @blur="typed = null"
               @keydown.enter="($event.target as HTMLInputElement).blur()"
               @keydown.up.prevent="stepPlayBpm(1, $event)"
               @keydown.down.prevent="stepPlayBpm(-1, $event)"
@@ -1269,8 +1291,8 @@ const statValueClass = 'font-mono text-base font-semibold text-text-primary';
         :class="quantize ? onClass : buttonClass"
         class="font-semibold"
         :title="quantize
-          ? 'Quantize is on: new cues and loops go on the nearest beat. Click (Q) to turn it off.'
-          : 'Quantize is off: new cues and loops go exactly at the playhead. Click (Q) to turn it on.'"
+          ? 'Quantize is on: new cues, loops and the downbeat go on the nearest beat. Click (Q) to turn it off.'
+          : 'Quantize is off: new cues, loops and the downbeat go exactly at the playhead. Click (Q) to turn it on.'"
         :aria-pressed="quantize"
         @click="quantize = !quantize"
       >
@@ -1326,7 +1348,9 @@ const statValueClass = 'font-mono text-base font-semibold text-text-primary';
           :class="buttonClass"
           class="font-medium"
           :disabled="!canEditGrid"
-          :title="`Make the beat nearest the playhead the first beat of its bar. The grid doesn't move. (${shortcut('B')})`"
+          :title="quantize
+            ? `Make the beat nearest the playhead the first beat of its bar. The grid doesn't move. (${shortcut('B')})`
+            : `Make the beat nearest the playhead the first beat of its bar, and slide the grid to put it exactly at the playhead: quantize is off. (${shortcut('B')})`"
           @click="setDownbeat"
         >
           Set downbeat
@@ -1440,11 +1464,13 @@ const statValueClass = 'font-mono text-base font-semibold text-text-primary';
         </button>
         <span class="shrink-0 font-mono text-[10px] text-text-muted">{{ formatTime(cue.positionMs) }}</span>
         <input
-          :value="cue.comment"
+          :value="shown(`cue-${cueKeys.get(cue.id) ?? cue.id}`, cue.comment)"
           placeholder="name"
           spellcheck="false"
           class="w-16 min-w-9 rounded border border-transparent bg-transparent px-1 text-[11px] outline-none hover:border-border focus:border-border-active"
+          @input="type(`cue-${cueKeys.get(cue.id) ?? cue.id}`, $event)"
           @change="nameCue(cue, $event)"
+          @blur="typed = null"
           @keydown.enter="($event.target as HTMLInputElement).blur()"
         />
         <button
