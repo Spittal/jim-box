@@ -2,7 +2,6 @@
 import { ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import ConsolidateLibrary from '@/components/ConsolidateLibrary.vue';
-import LibraryChooser from '@/components/LibraryChooser.vue';
 import LibraryFolders from '@/components/LibraryFolders.vue';
 import SettingsSection from '@/components/SettingsSection.vue';
 import ToggleRow from '@/components/ToggleRow.vue';
@@ -16,16 +15,8 @@ const settingsStore = useSettingsStore();
 const { settings } = storeToRefs(settingsStore);
 const { error, save } = useSettingsSave();
 
-// Which rekordbox library is being managed.
-const librariesStore = useLibrariesStore();
-const { current, opensByDefault } = storeToRefs(librariesStore);
-const switching = ref(false);
-
-async function showOthers() {
-  switching.value = !switching.value;
-  // Drives come and go.
-  if (switching.value) await librariesStore.load();
-}
+// The rekordbox library being managed.
+const { status: library } = storeToRefs(useLibrariesStore());
 
 // Beets' `paths` setting: which template files a track depends on its album.
 const PATH_KINDS: { key: keyof PathTemplates; label: string }[] = [
@@ -63,33 +54,16 @@ async function savePaths() {
     description="Finished downloads are tagged, moved into your primary library folder laid out the way beets would, and added to your rekordbox collection."
     :error="error"
   >
-    <div v-if="current" class="flex flex-col gap-2">
+    <div v-if="library?.masterDb" class="flex flex-col gap-2">
       <span class="text-xs text-text-secondary">rekordbox library</span>
-      <div class="flex items-center gap-3 rounded border border-border bg-surface-1 px-3 py-2">
-        <div class="flex min-w-0 flex-1 flex-col">
-          <span class="truncate text-sm">{{ current.name }}</span>
-          <code class="truncate font-mono text-[11px] text-text-muted select-text" :title="current.masterDb">
-            {{ current.masterDb }}
-          </code>
-        </div>
-        <button
-          class="shrink-0 rounded bg-surface-2 px-3 py-1 text-xs transition-colors hover:bg-surface-3"
-          @click="showOthers"
-        >
-          {{ switching ? 'Cancel' : 'Switch library…' }}
-        </button>
-      </div>
-      <LibraryChooser v-if="switching" switching />
-      <ToggleRow
-        v-else
-        label="Open this library by default"
-        description="Off, Jim Box asks which library to open each time it starts."
-        :model-value="opensByDefault"
-        @update:model-value="(on) => librariesStore.setDefault(on)"
-      />
+      <code
+        class="truncate rounded border border-border bg-surface-1 px-3 py-2 font-mono text-[11px] text-text-muted select-text"
+        :title="library.masterDb"
+      >
+        {{ library.masterDb }}
+      </code>
       <span class="text-xs text-text-muted">
-        The folders, paths and analysis below, along with downloads, playlists, formats and what's
-        shared, belong to this library. Your Soulseek and YouTube sign-ins are used for all of them.
+        The library rekordbox keeps on this computer. The folders, paths and analysis below belong to it.
       </span>
     </div>
 

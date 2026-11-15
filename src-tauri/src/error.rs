@@ -32,6 +32,10 @@ pub enum AppError {
     #[error("rekordbox: {0}")]
     Rekordbox(String),
 
+    /// Writing a USB stick; says what went wrong whole.
+    #[error("{0}")]
+    Usb(String),
+
     #[error("Download not found: {0}")]
     JobNotFound(Uuid),
 

@@ -8,6 +8,7 @@ import { useLibraryStore } from '@/stores/library';
 import { usePlaylistStore } from '@/stores/playlist';
 import { useSearchStore } from '@/stores/search';
 import { useUiStore } from '@/stores/ui';
+import { useUsbStore } from '@/stores/usb';
 
 /**
  * The bar under the collection. Its box filters the list as you type. On
@@ -22,6 +23,13 @@ const jobs = useJobsStore();
 const library = useLibraryStore();
 const ui = useUiStore();
 const { status: connection } = storeToRefs(useSoulseekStore());
+const usb = useUsbStore();
+
+/** The export to a stick under way, in a few words. */
+const exportingUsb = computed(() => {
+  if (!usb.exporting) return '';
+  return usb.percent === null ? 'USB…' : `USB ${usb.percent}%`;
+});
 
 const input = ref<HTMLInputElement | null>(null);
 const text = computed(() => search.value.trim());
@@ -178,6 +186,13 @@ const chipClass =
     >
       <span class="size-2 shrink-0 rounded-full" :class="soulseek.dot" />
       <span class="max-w-40 truncate">{{ soulseek.label }}</span>
+    </button>
+    <button
+      :class="[chipClass, usb.exporting ? 'text-text-primary' : '']"
+      :title="usb.exporting ? 'Exporting to a USB stick. Click to see how it’s going.' : 'Export playlists to a USB stick, for CDJs and other players'"
+      @click="ui.usb = !ui.usb"
+    >
+      {{ exportingUsb || 'USB' }}
     </button>
     <button :class="chipClass" title="Settings" @click="ui.toggleSettings()">Settings</button>
   </footer>

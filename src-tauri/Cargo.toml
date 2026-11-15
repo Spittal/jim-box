@@ -48,6 +48,9 @@ rbl-index = { git = "https://github.com/chrisle/rbxport", rev = "d0ff75b378ec85b
 rbl-analysis = { git = "https://github.com/chrisle/rbxport", rev = "d0ff75b378ec85be891d9f3067ada1e82bad4cae" }
 rbl-anlz = { git = "https://github.com/chrisle/rbxport", rev = "d0ff75b378ec85be891d9f3067ada1e82bad4cae" }
 rbl-audio = { git = "https://github.com/chrisle/rbxport", rev = "d0ff75b378ec85be891d9f3067ada1e82bad4cae" }
+# Writing a USB stick for players: the export itself, and finding the sticks.
+rbl-export = { git = "https://github.com/chrisle/rbxport", rev = "d0ff75b378ec85be891d9f3067ada1e82bad4cae" }
+rbl-devices = { git = "https://github.com/chrisle/rbxport", rev = "d0ff75b378ec85be891d9f3067ada1e82bad4cae" }
 # rbxport's own SQLite (same version and features, so one build): to name its
 # types where undo writes what rbxport's writer has no call for.
 rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl"] }

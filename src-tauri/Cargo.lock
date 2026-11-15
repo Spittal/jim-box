@@ -319,6 +319,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "blake3"
+version = "1.8.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d9e454fc11f76977dc803893aff6304ed33d6a26efae8696573bea74baa27ae"
+dependencies = [
+ "arrayvec",
+ "cc",
+ "cfg-if",
+ "constant_time_eq",
+ "cpufeatures 0.3.1",
+]
+
+[[package]]
 name = "block-buffer"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -638,6 +651,12 @@ name = "const-oid"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
+
+[[package]]
+name = "constant_time_eq"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "cookie"
@@ -999,7 +1018,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.3",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1200,7 +1219,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1972,7 +1991,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.61.2",
 ]
 
 [[package]]
@@ -2345,6 +2364,8 @@ dependencies = [
  "rbl-audio",
  "rbl-core",
  "rbl-db",
+ "rbl-devices",
+ "rbl-export",
  "rbl-index",
  "reqwest 0.12.28",
  "rusqlite",
@@ -2760,7 +2781,7 @@ dependencies = [
  "png 0.18.1",
  "serde",
  "thiserror 2.0.21",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2852,7 +2873,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3053,6 +3074,15 @@ dependencies = [
  "objc2",
  "objc2-core-foundation",
  "objc2-core-graphics",
+]
+
+[[package]]
+name = "objc2-disk-arbitration"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee6933800935dccff2b811f1c5b804eb9b3d3347face044712188624bf547b45"
+dependencies = [
+ "objc2-core-foundation",
 ]
 
 [[package]]
@@ -3677,6 +3707,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbl-devices"
+version = "1.10.0"
+source = "git+https://github.com/chrisle/rbxport?rev=d0ff75b378ec85be891d9f3067ada1e82bad4cae#d0ff75b378ec85be891d9f3067ada1e82bad4cae"
+dependencies = [
+ "dirs 5.0.1",
+ "objc2-core-foundation",
+ "objc2-disk-arbitration",
+ "rbl-core",
+ "rbl-export",
+ "rbl-onelibrary",
+ "rbl-pdb",
+ "sysinfo",
+ "thiserror 2.0.21",
+ "tracing",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "rbl-export"
+version = "1.10.0"
+source = "git+https://github.com/chrisle/rbxport?rev=d0ff75b378ec85be891d9f3067ada1e82bad4cae#d0ff75b378ec85be891d9f3067ada1e82bad4cae"
+dependencies = [
+ "blake3",
+ "fs2",
+ "rbl-anlz",
+ "rbl-audio",
+ "rbl-core",
+ "rbl-onelibrary",
+ "rbl-pdb",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tracing",
+ "unicode-normalization",
+]
+
+[[package]]
 name = "rbl-index"
 version = "1.10.0"
 source = "git+https://github.com/chrisle/rbxport?rev=d0ff75b378ec85be891d9f3067ada1e82bad4cae#d0ff75b378ec85be891d9f3067ada1e82bad4cae"
@@ -3690,6 +3759,29 @@ dependencies = [
  "rbl-db",
  "rusqlite",
  "serde",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
+name = "rbl-onelibrary"
+version = "1.10.0"
+source = "git+https://github.com/chrisle/rbxport?rev=d0ff75b378ec85be891d9f3067ada1e82bad4cae#d0ff75b378ec85be891d9f3067ada1e82bad4cae"
+dependencies = [
+ "flate2",
+ "rbl-anlz",
+ "rbl-core",
+ "rusqlite",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
+name = "rbl-pdb"
+version = "1.10.0"
+source = "git+https://github.com/chrisle/rbxport?rev=d0ff75b378ec85be891d9f3067ada1e82bad4cae#d0ff75b378ec85be891d9f3067ada1e82bad4cae"
+dependencies = [
  "thiserror 2.0.21",
  "tracing",
 ]
@@ -3970,7 +4062,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4419,7 +4511,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5181,10 +5273,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5631,7 +5723,7 @@ dependencies = [
  "png 0.18.1",
  "serde",
  "thiserror 2.0.21",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5660,7 +5752,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -6065,7 +6157,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

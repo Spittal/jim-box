@@ -20,6 +20,7 @@ mod state;
 mod text;
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 mod tray;
+mod usb;
 
 use std::fs::{File, OpenOptions};
 use std::path::Path;
@@ -73,6 +74,7 @@ pub fn run() {
             app.manage(analysis::AnalysisQueue::default());
             app.manage(commands::collection::AudioStream::default());
             app.manage(Sources::new());
+            app.manage(usb::Exports::default());
             soulseek::raise_open_file_limit();
             app.manage(Soulseek::new());
 
@@ -82,8 +84,8 @@ pub fn run() {
                 tracing::warn!("Couldn't add the tray icon: {e}");
             }
 
-            // With no library to open, the window asks for one, and the
-            // rest is set up when it's chosen (see `libraries::open`).
+            // When the library can't be opened the window says so, and
+            // nothing that works on one is set up.
             libraries::open_at_launch(app.handle());
 
             // The window is created hidden (`visible: false`) so it first
@@ -99,10 +101,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::libraries::library_choices,
-            commands::libraries::open_library,
-            commands::libraries::set_default_library,
-            commands::libraries::forget_library,
+            commands::libraries::library_status,
             commands::settings::get_settings,
             commands::settings::update_settings,
             commands::settings::add_library_dir,
@@ -161,6 +160,11 @@ pub fn run() {
             commands::playlist::set_playlist_settings,
             commands::playlist::unlink_playlist,
             commands::playlist::set_playlist_match,
+            commands::usb::usb_devices,
+            commands::usb::usb_estimate,
+            commands::usb::usb_export,
+            commands::usb::cancel_usb_export,
+            commands::usb::eject_usb,
         ])
         .build(context)
         .expect("error while building tauri application");

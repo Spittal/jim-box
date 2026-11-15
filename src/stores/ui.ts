@@ -8,6 +8,9 @@ export const useUiStore = defineStore('ui', () => {
   /** The settings tab being shown; null when settings are closed. */
   const settings = ref<SettingsTab | null>(null);
 
+  /** Whether Export to USB is showing. */
+  const usb = ref(false);
+
   /** Set to bring the Library tab's Consolidate part into view. */
   const consolidate = ref(false);
 
@@ -25,6 +28,14 @@ export const useUiStore = defineStore('ui', () => {
     if (tab !== 'soulseek') soulseekPrompt.value = false;
   });
 
+  // One dialog at a time: each opens over where the other would be.
+  watch(settings, (tab) => {
+    if (tab) usb.value = false;
+  });
+  watch(usb, (open) => {
+    if (open) settings.value = null;
+  });
+
   function showConsolidate() {
     settings.value = 'library';
     consolidate.value = true;
@@ -39,5 +50,5 @@ export const useUiStore = defineStore('ui', () => {
     settings.value = settings.value === 'shortcuts' ? null : 'shortcuts';
   }
 
-  return { settings, consolidate, soulseekPrompt, toggleSettings, toggleShortcuts, showConsolidate, promptSoulseek };
+  return { settings, usb, consolidate, soulseekPrompt, toggleSettings, toggleShortcuts, showConsolidate, promptSoulseek };
 });

@@ -5,11 +5,13 @@ import { useSoulseekStore } from '@/stores/soulseek';
 import { useJobsStore } from '@/stores/jobs';
 import { useLibraryStore } from '@/stores/library';
 import { usePlaylistStore } from '@/stores/playlist';
+import { useUsbStore } from '@/stores/usb';
 import type { AnalysisEvent, Waiting } from '@/types/collection';
 import type { SoulseekStatus } from '@/types/soulseek';
 import type { Job } from '@/types/job';
 import type { LibraryItem, LibraryProgress, LibrarySnapshot } from '@/types/library';
 import type { PlaylistProgress } from '@/types/playlist';
+import type { UsbProgress } from '@/types/usb';
 
 /** Subscribes stores to backend events for the lifetime of the calling component. */
 export function useEvents() {
@@ -18,6 +20,7 @@ export function useEvents() {
   const library = useLibraryStore();
   const playlist = usePlaylistStore();
   const collection = useCollectionStore();
+  const usb = useUsbStore();
   const unlisteners: Promise<UnlistenFn>[] = [
     listen<SoulseekStatus>('soulseek-status', (e) => {
       soulseek.status = e.payload;
@@ -36,6 +39,10 @@ export function useEvents() {
       playlist.progress = e.payload;
     }),
     listen<string>('playlist-synced', (e) => playlist.synced(e.payload)),
+    listen<UsbProgress>('usb-progress', (e) => {
+      // One that arrives after the export is over says nothing new.
+      if (usb.exporting) usb.progress = e.payload;
+    }),
   ];
 
   onUnmounted(() => {

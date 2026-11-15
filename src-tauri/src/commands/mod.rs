@@ -7,3 +7,4 @@ pub mod search;
 pub mod settings;
 pub mod soulseek;
 pub mod stores;
+pub mod usb;

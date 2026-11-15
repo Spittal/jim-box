@@ -6,9 +6,9 @@ import { storeToRefs } from 'pinia';
 import BottomBar from '@/components/BottomBar.vue';
 import ConfirmDialog from '@/components/ConfirmDialog.vue';
 import SearchPanel from '@/components/SearchPanel.vue';
+import UsbExport from '@/components/UsbExport.vue';
 import CollectionView from '@/views/CollectionView.vue';
 import SettingsView from '@/views/SettingsView.vue';
-import WelcomeView from '@/views/WelcomeView.vue';
 import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
 import { useSoulseekStore } from '@/stores/soulseek';
@@ -30,10 +30,10 @@ const ui = useUiStore();
 const { needsCredentials } = storeToRefs(soulseekStore);
 const { activeCount } = storeToRefs(jobsStore);
 
-/** Whether the libraries have been asked for: until then there's nothing to show. */
+/** Whether the library has been asked after: until then there's nothing to show. */
 const asked = ref(false);
-/** A rekordbox library is open, at launch or once the welcome screen has opened one. */
-const libraryOpen = computed(() => !!librariesStore.choices?.open);
+/** The rekordbox library was opened at launch. */
+const libraryOpen = computed(() => !!librariesStore.status?.open);
 const loaded = ref(false);
 
 useEvents();
@@ -63,6 +63,7 @@ watch(
 async function focusSearchBar() {
   // The settings dialog would otherwise sit over the bar.
   ui.settings = null;
+  ui.usb = false;
   await nextTick();
   const input = document.querySelector<HTMLInputElement>('#search-bar');
   input?.focus();
@@ -150,7 +151,10 @@ onUnmounted(() => window.removeEventListener('keydown', onHelpKey));
   <div class="flex h-full flex-col bg-surface-0">
     <!-- Titlebar drag region, under the traffic lights. Windows has a title bar of its own. -->
     <div v-if="isMac" data-tauri-drag-region class="h-8 shrink-0" />
-    <WelcomeView v-if="asked && !libraryOpen" />
+    <!-- Most likely rekordbox isn't installed. There's nothing to manage without its library. -->
+    <p v-if="asked && !libraryOpen" class="m-auto text-sm text-text-muted">
+      Jim Box couldn’t open the rekordbox library on this computer.
+    </p>
     <template v-else-if="loaded">
       <main class="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <div class="min-h-0 flex-1">
@@ -158,6 +162,7 @@ onUnmounted(() => window.removeEventListener('keydown', onHelpKey));
         </div>
         <SearchPanel />
         <SettingsView v-if="ui.settings" />
+        <UsbExport v-if="ui.usb" />
       </main>
       <BottomBar />
     </template>

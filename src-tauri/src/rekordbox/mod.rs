@@ -8,12 +8,14 @@
 
 mod analyse;
 mod edit;
+mod export;
 mod grid;
 mod history;
 mod ingest;
 mod prepare;
 
 pub use edit::{Edit, EditOutcome, UndoOutcome};
+pub use export::Selection as ExportSelection;
 pub use grid::{Hint as GridHint, Source as GridSource};
 pub use ingest::{Arrival, ImportReport};
 pub use prepare::{Audio, GridChange, Preparation, Preview};

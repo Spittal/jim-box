@@ -24,8 +24,6 @@ use crate::state::{Job, Settings};
 
 const STORE_FILE: &str = "config.json";
 const LIBRARIES_KEY: &str = "libraries";
-const DEFAULT_LIBRARY_KEY: &str = "defaultLibrary";
-const OPEN_NEXT_KEY: &str = "openNext";
 const ACCOUNT_KEY: &str = "account";
 
 // A library's own, in its file. Before there were libraries these were in
@@ -144,52 +142,6 @@ pub fn load_libraries(app: &AppHandle) -> Vec<KnownLibrary> {
 
 pub fn save_libraries(app: &AppHandle, libraries: &[KnownLibrary]) {
     store_set(app, STORE_FILE, LIBRARIES_KEY, &libraries);
-}
-
-/// The library that opens without asking, if one is chosen.
-pub fn default_library(app: &AppHandle) -> Option<Uuid> {
-    store_get::<Option<Uuid>>(app, STORE_FILE, DEFAULT_LIBRARY_KEY).flatten()
-}
-
-pub fn set_default_library(app: &AppHandle, id: Option<Uuid>) {
-    store_set(app, STORE_FILE, DEFAULT_LIBRARY_KEY, &id);
-}
-
-/// The library to open at the next launch only: how the app switches
-/// library, by restarting into the other one.
-pub fn set_open_next(app: &AppHandle, id: Option<Uuid>) {
-    store_set(app, STORE_FILE, OPEN_NEXT_KEY, &id);
-}
-
-pub fn take_open_next(app: &AppHandle) -> Option<Uuid> {
-    let id = store_get::<Option<Uuid>>(app, STORE_FILE, OPEN_NEXT_KEY).flatten()?;
-    set_open_next(app, None);
-    Some(id)
-}
-
-/// Removes what was saved for a library. Its rekordbox library isn't touched.
-pub fn delete_library_data(app: &AppHandle, id: Uuid) {
-    let Ok(dir) = app.path().app_data_dir() else { return };
-    STORES.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&dir.join(library_file(id)));
-    for file in [
-        dir.join(library_file(id)),
-        dir.join(format!("libraries/{id}.jobs.json")),
-        dir.join(format!("libraries/{id}.grids.json")),
-    ] {
-        if let Err(e) = std::fs::remove_file(&file) {
-            if e.kind() != std::io::ErrorKind::NotFound {
-                error!("Couldn't remove {}: {e}", file.display());
-            }
-        }
-    }
-    // The grids to choose from, and the backups made of its master.db.
-    for folder in [dir.join(format!("libraries/{id}.grids")), dir.join(format!("rekordbox-backups/{id}"))] {
-        if let Err(e) = std::fs::remove_dir_all(&folder) {
-            if e.kind() != std::io::ErrorKind::NotFound {
-                error!("Couldn't remove {}: {e}", folder.display());
-            }
-        }
-    }
 }
 
 /// The settings saved for a library that may not be the open one, read
