@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.6.0
+
+### New
+
+- **Drag and drop.** Drag files and folders from Finder or Explorer onto the window to add them to the collection. Before, the window opened them itself.
+  - Dropped on a playlist in the sidebar, they join that playlist too; dropped anywhere else, the playlist that's open.
+  - The window says where a drop will put them while you drag.
+
 ## 1.5.0
 
 ### New
