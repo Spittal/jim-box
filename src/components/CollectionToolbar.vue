@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
+import { addFromPaths } from '@/composables/useFileDrop';
 import { formatAgo, formatLength } from '@/composables/useFormat';
 import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
@@ -19,7 +20,6 @@ const {
   inPlaylist,
   selection,
   total,
-  notice,
   link,
   pendingRows,
   pendingSelection,
@@ -154,14 +154,7 @@ async function addFromDisk(directory: boolean) {
       : [{ name: 'Music', extensions: ['mp3', 'm4a', 'aac', 'flac', 'wav', 'aiff', 'aif', 'ogg', 'opus'] }],
   });
   const paths = Array.isArray(picked) ? picked : picked ? [picked] : [];
-  if (!paths.length) return;
-  notice.value = null;
-  const report = await store.importPaths(paths, inPlaylist.value ? selected.value : null);
-  if (!report) return;
-  const parts = [`Added ${report.added} ${report.added === 1 ? 'track' : 'tracks'}`];
-  if (report.existing) parts.push(`${report.existing} already in the collection`);
-  if (report.skipped.length) parts.push(`${report.skipped.length} couldn't be read`);
-  notice.value = `${parts.join(' · ')}.`;
+  await addFromPaths(paths, inPlaylist.value ? selected.value : null);
 }
 
 // --- A playlist that came from Spotify ---------------------------------------

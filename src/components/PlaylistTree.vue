@@ -308,7 +308,7 @@ function acceptsDrop(node: PlaylistNode): boolean {
   const drag = dragging.value;
   if (!drag) return false;
   if (drag.kind === 'tracks') return node.kind === 'playlist' && node.id !== selected.value;
-  if (drag.kind === 'result') return node.kind === 'playlist';
+  if (drag.kind === 'result' || drag.kind === 'files') return node.kind === 'playlist';
   // A folder can't go inside itself.
   return !isWithin(node, drag.id);
 }
@@ -323,7 +323,8 @@ async function dropOnTree(node: PlaylistNode) {
   const drag = dragging.value;
   const accepted = acceptsDrop(node);
   endDrag();
-  if (!drag || !accepted) return;
+  // Files from outside are taken by `useFileDrop`, before this hears of the drop.
+  if (!drag || !accepted || drag.kind === 'files') return;
   if (drag.kind === 'tracks') {
     await store.edit({ kind: 'addTracks', playlistId: node.id, trackIds: drag.ids });
   } else if (drag.kind === 'result') {

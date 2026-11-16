@@ -1,4 +1,5 @@
 pub mod collection;
+pub mod drop;
 pub mod jobs;
 pub mod libraries;
 pub mod library;

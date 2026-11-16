@@ -65,6 +65,15 @@ libc = "0.2"
 [target.'cfg(target_os = "macos")'.dependencies]
 # The main dispatch queue, to show the window after tao's queued resize.
 dispatch2 = "0.3"
+# The drag pasteboard: where files dropped on the window are.
+objc2-app-kit = { version = "0.3", features = ["NSPasteboard", "NSPasteboardItem"] }
+objc2-foundation = { version = "0.3", features = ["NSArray", "NSString", "NSURL"] }
+
+[target.'cfg(windows)'.dependencies]
+# The web view's own messages: where files dropped on the window are. The
+# versions wry uses, so they name the same types.
+webview2-com = "0.38"
+windows-core = "0.61"
 
 [dev-dependencies]
 tempfile = "3"

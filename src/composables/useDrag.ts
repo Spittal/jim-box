@@ -1,12 +1,14 @@
 import { ref } from 'vue';
 import type { TrackRequest } from '@/types/track';
 
-/** What is being dragged: collection tracks, a playlist, or an online search result. */
+/** What is being dragged: collection tracks, a playlist, an online search result, or files from outside the app. */
 export type Drag =
   | { kind: 'tracks'; ids: string[] }
   | { kind: 'playlist'; id: string }
   /** `ownedId` is the collection track the result already is, if any. */
-  | { kind: 'result'; track: TrackRequest; ownedId: string | null };
+  | { kind: 'result'; track: TrackRequest; ownedId: string | null }
+  /** See `useFileDrop`, which also takes the drop. */
+  | { kind: 'files' };
 
 // One drag at a time, shared by the playlist tree, the track list and the results.
 export const dragging = ref<Drag | null>(null);

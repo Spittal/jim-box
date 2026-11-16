@@ -19,6 +19,7 @@ import { useLibraryStore } from '@/stores/library';
 import { useSearchStore } from '@/stores/search';
 import { useUiStore } from '@/stores/ui';
 import { useEvents } from '@/composables/useEvents';
+import { useFileDrop } from '@/composables/useFileDrop';
 import { commandKey, isMac } from '@/platform';
 
 const soulseekStore = useSoulseekStore();
@@ -37,6 +38,8 @@ const libraryOpen = computed(() => !!librariesStore.status?.open);
 const loaded = ref(false);
 
 useEvents();
+/** Where files being dragged over the window would go. */
+const dropInto = useFileDrop(() => loaded.value);
 
 watch(libraryOpen, async (open) => {
   if (!open) return;
@@ -167,5 +170,14 @@ onUnmounted(() => window.removeEventListener('keydown', onHelpKey));
       <BottomBar />
     </template>
     <ConfirmDialog />
+    <!-- Files dragged in from outside: says where a drop would put them. -->
+    <div
+      v-if="dropInto !== null"
+      class="pointer-events-none fixed inset-0 z-50 flex items-end justify-center pb-16 outline outline-2 -outline-offset-2 outline-accent"
+    >
+      <p class="rounded-full bg-surface-2 px-4 py-1.5 text-xs text-text-primary shadow-lg">
+        Drop to add to {{ dropInto ? `the collection and “${dropInto}”` : 'the collection' }}
+      </p>
+    </div>
   </div>
 </template>

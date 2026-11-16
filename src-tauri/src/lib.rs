@@ -84,6 +84,11 @@ pub fn run() {
                 tracing::warn!("Couldn't add the tray icon: {e}");
             }
 
+            #[cfg(windows)]
+            if let Some(window) = menu::main_window(app.handle()) {
+                commands::drop::watch(&window);
+            }
+
             // When the library can't be opened the window says so, and
             // nothing that works on one is set up.
             libraries::open_at_launch(app.handle());
@@ -145,6 +150,7 @@ pub fn run() {
             commands::collection::undo_collection,
             commands::collection::review_grids,
             commands::collection::import_to_collection,
+            commands::drop::dropped_paths,
             commands::collection::analyse_tracks,
             commands::collection::cancel_analysis,
             commands::collection::analysis_progress,
