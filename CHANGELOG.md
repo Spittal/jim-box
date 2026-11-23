@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.7.0
+
+### New
+
+- **Downloads window.** Downloads now have their own window, opened from the Downloads button at the foot of the window. It lists what's under way, what found no source or failed, and what's finished.
+  - Pick a download to see its Soulseek sources, other files found, YouTube Music and places to buy it. A finished one can be shown in the library.
+  - Select several to search again, cancel or remove them together. "Clear finished" tidies the list; the tracks stay in your library.
+  - The button shows how many are downloading, and turns red when some need a look.
+  - It opens when you start a download, once for a batch started together. Turn that off in Settings → Soulseek → Downloads.
+  - A notice says when a download finishes while the window is closed.
+- The selection's total length shows beside the number of tracks selected.
+- A list opens scrolled to the track that's playing.
+
+### Changed
+
+- **Two searches.** ⌘F, or the magnifying glass beside Filter, searches the list being shown. ⇧⌘F and the field at the foot of the window search online, and say which playlist what you get goes into.
+- Searching online shows that it's working, and can be cancelled with the Cancel button or Esc.
+- Downloads no longer appear among the tracks in the list.
+- Adding tracks a playlist already has says how many were left out.
+
+### Fixed
+
+- A file that can't be read to its end says where it stopped, instead of seeming to end early.
+- The last moments of a track are no longer cut off when the next one starts.
+- Keys no longer act on the list behind the USB and Downloads windows.
+
 ## 1.6.0
 
 ### New
