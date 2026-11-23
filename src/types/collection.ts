@@ -238,6 +238,8 @@ export interface EditOutcome {
   createdId: string | null;
   /** Something the change couldn't finish, though the library was changed. */
   warning: string | null;
+  /** How many of the tracks an `addTracks` was given it left out: the playlist had them already. */
+  skipped: number;
 }
 
 /** The library after an undo or redo; see `UndoOutcome` in src-tauri/src/rekordbox/edit.rs. */

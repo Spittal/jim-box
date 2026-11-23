@@ -62,6 +62,12 @@ pub async fn collection_track_ids(app: AppHandle, query: TrackQuery) -> AppResul
     library::blocking(move || app.state::<Collection>().track_ids(&query)).await
 }
 
+/// How long these tracks are together, in seconds.
+#[tauri::command]
+pub async fn tracks_duration(app: AppHandle, track_ids: Vec<String>) -> AppResult<u64> {
+    library::blocking(move || app.state::<Collection>().duration_of(&track_ids)).await
+}
+
 /// The artists, albums or genres already in the collection, the most used
 /// first, to offer as one is typed.
 #[tauri::command]
@@ -203,6 +209,7 @@ pub struct AudioStream(AtomicU64);
 /// 16-bit stereo samples in pieces, then an empty message at the end. The
 /// audio is on rekordbox's timeline, so cues and beats land where rekordbox
 /// has them. `stream` is the caller's name for it; a later one replaces it.
+/// A file that couldn't be read to its end is an error, after what could be.
 #[tauri::command]
 pub async fn track_audio(
     app: AppHandle,
@@ -213,17 +220,18 @@ pub async fn track_audio(
     app.state::<AudioStream>().0.store(stream, Ordering::SeqCst);
     library::blocking(move || {
         let current = || app.state::<AudioStream>().0.load(Ordering::SeqCst) == stream;
-        app.state::<Collection>().decode_audio(&track_id, |audio| {
+        let decoded = app.state::<Collection>().decode_audio(&track_id, |audio| {
             let bytes = match audio {
                 Audio::Start { rate, frames } => [rate.to_le_bytes(), frames.to_le_bytes()].concat(),
                 Audio::Pcm(pcm) => pcm,
             };
             current() && on_audio.send(Response::new(bytes)).is_ok()
-        })?;
+        });
+        // Even when it failed part-way: what there is of it plays to where it stops.
         if current() {
             let _ = on_audio.send(Response::new(Vec::new()));
         }
-        Ok(())
+        decoded
     })
     .await
 }

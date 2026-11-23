@@ -89,11 +89,44 @@ const lastVisible = computed(() => {
 
 onMounted(() => browse.ensure(firstVisible.value, lastVisible.value));
 watch([firstVisible, lastVisible], ([first, last]) => browse.ensure(first, last));
+/** How many rows show above the track in the player when a list opens on it. */
+const ROWS_ABOVE_PLAYING = 5;
+
+/** Resolves once list `list`'s first rows are in, so it's as tall as it will be; false if another list took over. */
+function listArrived(list: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const stop = watch(
+      () => [browse.arrived, browse.resets],
+      () => {
+        if (browse.resets !== list) resolve(false);
+        else if (browse.arrived >= list) resolve(true);
+        else return;
+        // After this run, by which `stop` is set.
+        queueMicrotask(() => stop());
+      },
+      { immediate: true },
+    );
+  });
+}
+
+// A different list opens at its top, or on the track in the player when it's in it:
+// clearing a search, or going back to a playlist, shows where the music is.
+// A search's own results stay at their top: the best of them is what was asked for.
 watch(
   () => browse.resets,
-  () => {
+  async (list) => {
     scrollTop.value = 0;
     if (scroller.value) scroller.value.scrollTop = 0;
+    const id = props.playingId;
+    if (!id || filter.value || pendingOnly.value) return;
+    const index = await browse.indexOf(id).catch(() => -1);
+    if (index < 0 || !(await listArrived(list))) return;
+    await nextTick();
+    const el = scroller.value;
+    // Unless it's been scrolled meanwhile.
+    if (!el || el.scrollTop !== 0) return;
+    el.scrollTop = Math.max(0, pendingRows.value.length + index - ROWS_ABOVE_PLAYING) * ROW_HEIGHT;
+    scrollTop.value = el.scrollTop;
   },
 );
 
@@ -200,12 +233,20 @@ async function extendTo(spot: Spot) {
 
 function clickRow(index: number, track: CollectionTrack, event: MouseEvent) {
   const spot = { index, id: track.id };
+  const wasAlone = selection.value.size === 1 && selection.value.has(track.id);
+  cancelSlowEdit();
   if (event.shiftKey) void extendTo(spot);
   else pick(spot, commandKey(event));
+  // A click on a field of the one row already picked, with no second click after it, opens the field.
+  if (wasAlone && event.detail === 1 && !event.shiftKey && !commandKey(event)) {
+    const field = fieldAt(event);
+    if (field) slowEdit(track.id, field);
+  }
 }
 
 /** A row's context menu: what can be done to the selection, which a right-click on a row outside it moves there. */
 function rowMenu(index: number, track: CollectionTrack) {
+  cancelSlowEdit();
   if (!selection.value.has(track.id)) pick({ index, id: track.id });
   const one = selection.value.size === 1;
   const playlists = store.playlists.filter((p) => p.kind === 'playlist' && p.id !== selected.value);
@@ -328,6 +369,7 @@ async function reviewAndNext() {
 }
 
 function onKey(event: KeyboardEvent) {
+  cancelSlowEdit();
   if (event.defaultPrevented || event.altKey || ui.settings) return;
   const target = event.target as HTMLElement | null;
   // From anywhere, a text field included: it's how a track being edited is finished with.
@@ -385,20 +427,54 @@ type CellField = 'title' | 'artist' | 'album' | 'genre';
 /** The field being edited in its row. */
 const editing = ref<{ id: string; field: CellField } | null>(null);
 
-/**
- * A double-click opens a track in the player. On the track already there, it
- * opens the field under it for editing instead.
- */
-function doubleClickRow(event: MouseEvent, track: CollectionTrack) {
-  // By where the click was across the row: an empty field has no text to land on.
+/** The field of its row a click was on, by where it was across the row: an empty field has no text to land on. */
+function fieldAt(event: MouseEvent): CellField | undefined {
   const cells = (event.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('[data-field]');
   const cell = [...cells].find((el) => {
     const { left, right } = el.getBoundingClientRect();
     return event.clientX >= left && event.clientX <= right;
   });
-  const field = cell?.dataset.field as CellField | undefined;
+  return cell?.dataset.field as CellField | undefined;
+}
+
+/**
+ * A double-click opens a track in the player. On the track already there, it
+ * opens the field under it for editing instead.
+ */
+function doubleClickRow(event: MouseEvent, track: CollectionTrack) {
+  cancelSlowEdit();
+  const field = fieldAt(event);
   if (field && track.id === props.playingId) editing.value = { id: track.id, field };
   else emit('open', track);
+}
+
+/** How long a click on the picked row waits for a second, which would make it a double-click. */
+const SLOW_EDIT_MS = 500;
+/** A click that came with the window being brought forward isn't one to edit by. */
+const FOCUS_SETTLE_MS = 300;
+let slowEditTimer = 0;
+let windowFocusedAt = 0;
+const onWindowFocus = () => (windowFocusedAt = performance.now());
+onMounted(() => window.addEventListener('focus', onWindowFocus));
+onUnmounted(() => {
+  window.removeEventListener('focus', onWindowFocus);
+  cancelSlowEdit();
+});
+
+function cancelSlowEdit() {
+  clearTimeout(slowEditTimer);
+  slowEditTimer = 0;
+}
+
+/** Opens a field of the picked row for editing, unless the click turns out to start something else. */
+function slowEdit(id: string, field: CellField) {
+  if (performance.now() - windowFocusedAt < FOCUS_SETTLE_MS) return;
+  slowEditTimer = window.setTimeout(() => {
+    slowEditTimer = 0;
+    // Still the one row picked, and not being dragged off somewhere.
+    if (selection.value.size !== 1 || !selection.value.has(id) || dragging.value || editing.value) return;
+    editing.value = { id, field };
+  }, SLOW_EDIT_MS);
 }
 
 /** Saves what was typed into the open field, if it changed. */
@@ -416,7 +492,10 @@ function commitCell(value: string) {
 // A different list has nothing of the field that was open.
 watch(
   () => browse.resets,
-  () => (editing.value = null),
+  () => {
+    cancelSlowEdit();
+    editing.value = null;
+  },
 );
 
 // --- Tracks on their way ----------------------------------------------------
@@ -491,6 +570,7 @@ const reorderable = computed(
 
 function dragTrack(event: DragEvent, track: CollectionTrack) {
   // Dragging an unselected row drags just that row.
+  cancelSlowEdit();
   if (!selection.value.has(track.id)) browse.selectTracks([track.id]);
   startDrag(event, { kind: 'tracks', ids: selectedIds.value });
 }

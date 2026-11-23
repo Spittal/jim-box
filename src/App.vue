@@ -20,6 +20,7 @@ import { useSearchStore } from '@/stores/search';
 import { useUiStore } from '@/stores/ui';
 import { useEvents } from '@/composables/useEvents';
 import { useFileDrop } from '@/composables/useFileDrop';
+import { toast } from '@/composables/useToast';
 import { commandKey, isMac } from '@/platform';
 
 const soulseekStore = useSoulseekStore();
@@ -170,6 +171,19 @@ onUnmounted(() => window.removeEventListener('keydown', onHelpKey));
       <BottomBar />
     </template>
     <ConfirmDialog />
+    <!-- A word on what just happened, gone in a moment. -->
+    <Transition
+      enter-active-class="transition duration-150"
+      leave-active-class="transition duration-300"
+      enter-from-class="translate-y-1 opacity-0"
+      leave-to-class="opacity-0"
+    >
+      <div v-if="toast" class="pointer-events-none fixed inset-x-0 bottom-16 z-50 flex justify-center" role="status">
+        <p class="rounded-full border border-border bg-surface-2 px-4 py-1.5 text-xs text-text-primary shadow-lg">
+          {{ toast }}
+        </p>
+      </div>
+    </Transition>
     <!-- Files dragged in from outside: says where a drop would put them. -->
     <div
       v-if="dropInto !== null"

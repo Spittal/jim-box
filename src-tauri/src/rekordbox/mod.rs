@@ -689,6 +689,17 @@ impl Collection {
         Ok(view.window(0, view.len()).iter().map(|&row| loaded.index.ids[row as usize].to_string()).collect())
     }
 
+    /// How long these tracks are together, in seconds: the selection's length.
+    pub fn duration_of(&self, track_ids: &[String]) -> AppResult<u64> {
+        let loaded = self.loaded()?;
+        let index = &loaded.index;
+        Ok(track_ids
+            .iter()
+            .filter_map(|id| index.row_of(id))
+            .map(|row| u64::from(index.length_sec[row as usize]))
+            .sum())
+    }
+
     /// Every artist, album or genre the collection's tracks have, the most
     /// used first: what to offer as one is typed.
     pub fn field_values(&self, field: &str) -> AppResult<Vec<String>> {

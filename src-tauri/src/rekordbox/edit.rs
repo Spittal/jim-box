@@ -79,6 +79,9 @@ pub struct EditOutcome {
     pub created_id: Option<String>,
     /// Something the change couldn't finish, though the library was changed.
     pub warning: Option<String>,
+    /// How many of the tracks an `AddTracks` was given it left out, the
+    /// playlist having them already.
+    pub skipped: usize,
 }
 
 /// Moves the files of deleted tracks to the Trash; ones already gone are
@@ -183,6 +186,14 @@ impl Collection {
             _ => Vec::new(),
         };
         let regridded = matches!(edit, Edit::Grid { .. } | Edit::UseGrid { .. });
+        // An add's playlist, how many tracks it was given, and how many the playlist had.
+        let adding = match &edit {
+            Edit::AddTracks { playlist_id, track_ids } => {
+                let asked = track_ids.iter().collect::<std::collections::HashSet<_>>().len();
+                Some((playlist_id.clone(), asked, self.playlist_count(playlist_id)?))
+            }
+            _ => None,
+        };
 
         let (created_id, kept) = self.write(|writer, index| {
             let (created_id, steps) = self.apply(writer, index, edit)?;
@@ -203,7 +214,17 @@ impl Collection {
         if regridded {
             self.forget_view();
         }
-        Ok(EditOutcome { status: self.status()?, playlists: self.playlists()?, created_id, warning })
+        let playlists = self.playlists()?;
+        let skipped = adding.map_or(0, |(id, asked, before)| {
+            let now = playlists.iter().find(|p| p.id == id).and_then(|p| p.count).unwrap_or(before);
+            asked.saturating_sub(now.saturating_sub(before))
+        });
+        Ok(EditOutcome { status: self.status()?, playlists, created_id, warning, skipped })
+    }
+
+    /// How many tracks a playlist has; none for one that isn't there.
+    fn playlist_count(&self, id: &str) -> AppResult<usize> {
+        Ok(self.playlists()?.iter().find(|p| p.id == id).and_then(|p| p.count).unwrap_or(0))
     }
 
     /// Undoes the last change made this session. Blocking.
@@ -607,9 +628,11 @@ mod tests {
         let list = create(&collection, "Test", None, false);
         let picked: Vec<String> = tracks[..4].to_vec();
 
-        collection.edit(Edit::AddTracks { playlist_id: list.clone(), track_ids: picked.clone() }).unwrap();
-        // Adding again doesn't duplicate.
-        collection.edit(Edit::AddTracks { playlist_id: list.clone(), track_ids: picked[..2].to_vec() }).unwrap();
+        let added = collection.edit(Edit::AddTracks { playlist_id: list.clone(), track_ids: picked.clone() }).unwrap();
+        assert_eq!(added.skipped, 0);
+        // Adding again doesn't duplicate, and says how many it left out.
+        let again = collection.edit(Edit::AddTracks { playlist_id: list.clone(), track_ids: picked[..2].to_vec() }).unwrap();
+        assert_eq!(again.skipped, 2);
         assert_eq!(ids(&collection, playlist(&list), Sort::TrackNo), picked);
 
         // Last to the front.

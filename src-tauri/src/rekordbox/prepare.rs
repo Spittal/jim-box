@@ -442,11 +442,13 @@ impl Collection {
 
         let mut pcm: Vec<u8> = Vec::new();
         let mut started = false;
+        let mut decoded: u64 = 0;
         // Bytes to gather before handing them on: a fifth of a second to
         // start with, then eight seconds at a time.
         let mut piece = 0;
         while let Some((_, frames)) = stream.next_frames() {
             pcm.reserve(frames.len() * 4);
+            decoded += frames.len() as u64;
             for [left, right] in frames {
                 pcm.extend_from_slice(&left.to_le_bytes());
                 pcm.extend_from_slice(&right.to_le_bytes());
@@ -471,12 +473,30 @@ impl Collection {
         if !started {
             return Err(AppError::Rekordbox("The file has no audio that could be decoded".into()));
         }
-        if !pcm.is_empty() {
-            sink(Audio::Pcm(pcm));
+        if !pcm.is_empty() && !sink(Audio::Pcm(pcm)) {
+            return Ok(());
+        }
+        // The decoder ends on anything it can't read, as it does at the end of
+        // the file. Seconds short of both what the file says it holds and what
+        // rekordbox measured, it stopped early: said, so it isn't taken for the end.
+        let rate = u64::from(stream.sample_rate().max(1));
+        let short_of = |frames: u64| decoded + CUT_SHORT_SECS * rate < frames;
+        if stream.expected_frames().is_some_and(short_of) && short_of(length_secs * rate) {
+            let at = decoded / rate;
+            return Err(AppError::Rekordbox(format!(
+                "The file couldn't be read past {}:{:02} of {}:{:02}. It may be damaged.",
+                at / 60,
+                at % 60,
+                length_secs / 60,
+                length_secs % 60
+            )));
         }
         Ok(())
     }
 }
+
+/// How far short of its length a file's audio can stop before it's taken as cut short.
+const CUT_SHORT_SECS: u64 = 3;
 
 /// A track's audio as [`Collection::decode_audio`] hands it out.
 pub enum Audio {

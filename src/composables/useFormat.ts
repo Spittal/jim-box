@@ -18,6 +18,13 @@ export function formatDuration(secs: number): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+/** How long some tracks play for, to the second: "38:12", "1:02:07". */
+export function formatClock(secs: number): string {
+  const s = Math.round(secs);
+  const rest = `${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+  return s < 3600 ? formatDuration(s) : `${Math.floor(s / 3600)}:${rest}`;
+}
+
 /** How long a list of tracks plays for: "48 min", "3 h 05 min", "2 days 4 h". */
 export function formatLength(secs: number): string {
   const mins = Math.round(secs / 60);

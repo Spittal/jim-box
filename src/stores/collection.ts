@@ -1,6 +1,7 @@
 import { acceptHMRUpdate, defineStore } from 'pinia';
 import { ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { showToast } from '@/composables/useToast';
 import type {
   AnalysisEvent,
   AnalysisProgress,
@@ -86,6 +87,9 @@ export const useCollectionStore = defineStore('collection', () => {
   const tracks = (query: TrackQuery, offset: number, limit: number) =>
     invoke<TrackPage>('collection_tracks', { query, offset, limit });
 
+  /** How long these tracks are together, in seconds. */
+  const tracksDuration = (trackIds: string[]) => invoke<number>('tracks_duration', { trackIds });
+
   /** The id of every track in a list, in its order. */
   const trackIds = (query: TrackQuery) => invoke<string[]>('collection_track_ids', { query });
 
@@ -125,6 +129,15 @@ export const useCollectionStore = defineStore('collection', () => {
       status.value = outcome.status;
       // Done, though not all of it: say what wasn't.
       error.value = outcome.warning;
+      // A playlist holds a track once: say which it had already.
+      if (change.kind === 'addTracks' && outcome.skipped) {
+        const name = outcome.playlists.find((p) => p.id === change.playlistId)?.name;
+        const where = name ? `“${name}”` : 'the playlist';
+        const asked = new Set(change.trackIds).size;
+        const added = asked - outcome.skipped;
+        if (added > 0) showToast(`Added ${added} · ${outcome.skipped} already in ${where}`);
+        else showToast(asked === 1 ? `Already in ${where}` : `All ${asked} already in ${where}`);
+      }
       if (!quiet) {
         playlists.value = outcome.playlists;
         generation.value++;
@@ -271,6 +284,7 @@ export const useCollectionStore = defineStore('collection', () => {
     analysisMoved,
     tracks,
     trackIds,
+    tracksDuration,
     namesOf,
     edit,
     undo,

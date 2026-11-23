@@ -3,7 +3,7 @@ import { computed, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { addFromPaths } from '@/composables/useFileDrop';
-import { formatAgo, formatLength } from '@/composables/useFormat';
+import { formatAgo, formatClock, formatLength } from '@/composables/useFormat';
 import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
 import { isActive, useJobsStore } from '@/stores/jobs';
@@ -30,6 +30,7 @@ const {
   filterCount,
   lists,
   totalSecs,
+  selectionSecs,
 } = storeToRefs(browse);
 const playlistStore = usePlaylistStore();
 const jobs = useJobsStore();
@@ -252,7 +253,10 @@ const buttonClass =
           @click="store.open()"
         >{{ waiting.count }} {{ waiting.count === 1 ? 'file waits' : 'files wait' }} to be added</button>
         <template v-if="selection.size">
-          <span class="text-[11px] text-text-muted">{{ selection.size }} selected</span>
+          <span
+            class="text-[11px] text-text-muted"
+            :title="selectionSecs ? 'How long the selected tracks play for, one after another' : undefined"
+          >{{ selection.size }} selected<template v-if="selectionSecs"> · {{ formatClock(selectionSecs) }}</template></span>
           <button
             v-if="selection.size < total"
             :class="linkClass"

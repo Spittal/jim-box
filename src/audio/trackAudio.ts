@@ -55,6 +55,10 @@ export class TrackAudio {
   /** The decode being received; 0 for none. */
   private stream = 0;
   private idle = 0;
+  /** Waits for the track's last samples, played, to be heard; 0 when not waiting. */
+  private tail = 0;
+  /** The decode stopped short of the file's end: where it stops isn't the track's end. */
+  private cut = false;
 
   /** Loads a track and plays it. Resolves once it is all decoded. */
   async load(trackId: string) {
@@ -86,7 +90,13 @@ export class TrackAudio {
           if (stream === this.stream) this.onerror(e);
         });
     };
-    await invoke('track_audio', { trackId, stream, onAudio: channel });
+    try {
+      await invoke('track_audio', { trackId, stream, onAudio: channel });
+    } catch (e) {
+      // What was decoded still plays; nothing follows it as if it had ended.
+      if (stream === this.stream) this.cut = true;
+      throw e;
+    }
   }
 
   /** The first message: the sample rate and about how many frames are coming. */
@@ -138,11 +148,19 @@ export class TrackAudio {
   private heard(report: Report) {
     if (report.seq !== this.seq) return;
     if (report.type === 'ended') {
-      this.playing = false;
-      this.frame = this.frames;
-      this.rest();
-      this.onstate();
-      this.onended();
+      // Its last samples have been played, but not heard yet: the end waits
+      // for them, or what follows (another track, at another rate) cuts them off.
+      const seq = this.seq;
+      clearTimeout(this.tail);
+      this.tail = window.setTimeout(() => {
+        this.tail = 0;
+        if (seq !== this.seq || !this.playing) return;
+        this.playing = false;
+        this.frame = this.frames;
+        this.rest();
+        this.onstate();
+        if (!this.cut) this.onended();
+      }, Math.min(1000, this.latency * 1000));
       return;
     }
     this.frame = report.frame;
@@ -164,6 +182,7 @@ export class TrackAudio {
     // The audio thread has gone round the loop since it last said where it was.
     const loop = this.loop;
     if (loop && frame >= loop.end) frame = loop.start + ((frame - loop.end) % (loop.end - loop.start));
+    if (this.done) frame = Math.min(frame, this.frames);
     return (frame / this.rate) * 1000;
   }
 
@@ -212,6 +231,8 @@ export class TrackAudio {
 
   pause() {
     if (!this.playing) return;
+    clearTimeout(this.tail);
+    this.tail = 0;
     this.frame = (this.positionMs() / 1000) * this.rate;
     this.playing = false;
     this.node?.port.postMessage({ type: 'pause' });
@@ -224,12 +245,21 @@ export class TrackAudio {
     this.frame = Math.max(0, Math.round((ms / 1000) * this.rate));
     this.time = this.context?.currentTime ?? 0;
     this.node.port.postMessage({ type: 'seek', frame: this.frame, seq: ++this.seq });
+    // Sought away from the end while its last samples were playing out: the audio thread had stopped.
+    if (this.tail) {
+      clearTimeout(this.tail);
+      this.tail = 0;
+      this.node.port.postMessage({ type: 'play' });
+    }
   }
 
   /** Lets go of the track: its audio stops and its samples are dropped. */
   unload() {
     if (this.stream) invoke('stop_track_audio', { stream: this.stream }).catch(() => {});
     this.stream = 0;
+    clearTimeout(this.tail);
+    this.tail = 0;
+    this.cut = false;
     this.ready = false;
     this.playing = false;
     this.done = false;

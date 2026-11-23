@@ -157,6 +157,8 @@ export const useBrowseStore = defineStore('browse', () => {
   const listError = ref<string | null>(null);
   /** Bumped when a different list is shown, so the view scrolls back to its top. */
   const resets = ref(0);
+  /** The `resets` of the latest list whose first rows have arrived, and with them its length. */
+  const arrived = ref(0);
   const requested = new Set<number>();
   /** Identifies the list being shown, so late answers for an old one are dropped. */
   let listVersion = 0;
@@ -178,6 +180,7 @@ export const useBrowseStore = defineStore('browse', () => {
       total.value = result.total;
       totalSecs.value = result.durationSecs;
       const next = new Map(stale ? [] : pages.value);
+      if (stale) arrived.value = resets.value;
       stale = false;
       next.set(page, result.rows);
       // Scrolled through, a big library would otherwise be held whole.
@@ -289,6 +292,12 @@ export const useBrowseStore = defineStore('browse', () => {
     return ids;
   }
 
+  /** Where a track is in the list being shown, fetched or not; -1 if it isn't in it. */
+  async function indexOf(id: string): Promise<number> {
+    const held = stale ? null : loadedIndex(id);
+    return held ?? (await collection.trackIds(query.value)).indexOf(id);
+  }
+
   /** The track under this one in the list being shown, or null if it's the last or not in it. */
   async function trackAfter(id: string): Promise<CollectionTrack | null> {
     const asked = query.value;
@@ -335,6 +344,24 @@ export const useBrowseStore = defineStore('browse', () => {
   const focus = ref<Focus | null>(null);
   /** Something to tell the user about the last thing they did. */
   const notice = ref<string | null>(null);
+
+  /** How long the selected tracks are together, in seconds; 0 until it's known. */
+  const selectionSecs = ref(0);
+  watch([selection, () => collection.generation], async ([picked]) => {
+    if (!picked.size) return void (selectionSecs.value = 0);
+    // The rows held say it at once; a selection reaching past them is asked for.
+    let secs = 0;
+    for (const id of picked) {
+      const track = loadedTrack(id);
+      if (!track) {
+        const asked = await collection.tracksDuration([...picked]).catch(() => 0);
+        if (selection.value === picked) selectionSecs.value = asked;
+        return;
+      }
+      secs += track.durationSecs;
+    }
+    selectionSecs.value = secs;
+  });
 
   /** The one selected track, for the detail panel; fresh after each change. */
   const detailTrack = computed(() => (selection.value.size === 1 ? loadedTrack(selectedIds.value[0]) : null));
@@ -485,6 +512,9 @@ export const useBrowseStore = defineStore('browse', () => {
     total,
     listError,
     resets,
+    arrived,
+    indexOf,
+    selectionSecs,
     ensure,
     trackAt,
     loadedTrack,

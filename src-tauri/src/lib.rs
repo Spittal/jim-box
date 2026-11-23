@@ -144,6 +144,7 @@ pub fn run() {
             commands::collection::collection_state,
             commands::collection::collection_tracks,
             commands::collection::collection_track_ids,
+            commands::collection::tracks_duration,
             commands::collection::collection_field_values,
             commands::collection::find_in_collection,
             commands::collection::edit_collection,
