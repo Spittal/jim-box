@@ -2,8 +2,7 @@ import { acceptHMRUpdate, defineStore } from 'pinia';
 import { computed, ref, shallowRef, watch } from 'vue';
 import { useCollectionStore } from './collection';
 import { useJobsStore } from './jobs';
-import { isPlaylistLink, usePlaylistStore } from './playlist';
-import { useSearchStore } from './search';
+import { usePlaylistStore } from './playlist';
 import { useSettingsStore } from './settings';
 import type { CollectionTrack, TrackQuery, TrackSort, TrackSource } from '@/types/collection';
 import type { Job } from '@/types/job';
@@ -14,28 +13,27 @@ const PAGE = 200;
 /** Pages held at once: the ones furthest from what's in view are let go. */
 const MAX_PAGES = 40;
 
-/** A track that isn't in the collection yet, listed above the ones that are. */
+/** A track of a Spotify playlist that isn't in the collection yet, listed above the ones that are. */
 export interface PendingRow {
   key: string;
   title: string;
   artist: string;
   album: string;
   durationSecs: number;
-  /** Its fetch, once one has been started. */
+  /** Its fetch, once one has been started: shown in the Downloads window. */
   job: Job | null;
-  /** The Spotify playlist track it is, in a playlist that came from Spotify. */
-  entry: MissingEntry | null;
+  /** The Spotify playlist track it is. */
+  entry: MissingEntry;
 }
 
-/** The pending row whose details are showing. */
-export type Focus = { kind: 'job'; id: string } | { kind: 'entry'; index: number };
+/** The pending row whose details are showing: a Spotify track still to match. */
+export type Focus = { kind: 'entry'; index: number };
 
 /** What the collection screen is showing: the list, its order, and what's picked in it. */
 export const useBrowseStore = defineStore('browse', () => {
   const collection = useCollectionStore();
   const jobs = useJobsStore();
   const playlist = usePlaylistStore();
-  const online = useSearchStore();
   const settings = useSettingsStore();
 
   // --- Which list -------------------------------------------------------------
@@ -44,18 +42,12 @@ export const useBrowseStore = defineStore('browse', () => {
   const lists = ref<string[]>([]);
   /** The one playlist or folder being shown; null for the whole collection, and for several at once. */
   const selected = computed(() => (lists.value.length === 1 ? lists.value[0] : null));
-  /** The text in the search bar, which filters the list. */
+  /** The text in the list's search field, which filters it. */
   const search = ref('');
-  /**
-   * What the list is filtered by. Nothing while the text's online results are
-   * showing (the list stays whole beside them), or for a pasted playlist link,
-   * which is something to bring in.
-   */
-  const filter = computed(() => {
-    const text = search.value.trim();
-    if (isPlaylistLink(text) || (online.open && text === online.asked)) return '';
-    return text;
-  });
+  /** Whether the list's search field is showing. Hidden, it filters nothing. */
+  const searchOpen = ref(false);
+  /** What the list is filtered by. */
+  const filter = computed(() => (searchOpen.value ? search.value.trim() : ''));
   const sort = ref<TrackSort>('dateAdded');
   const descending = ref(true);
   /** Show only tracks whose beat grid has been reviewed (true) or hasn't (false); null for both. */
@@ -74,9 +66,6 @@ export const useBrowseStore = defineStore('browse', () => {
     genreFilter.value = [];
     ratingFilter.value = [];
   }
-
-  /** Show only the tracks still being fetched. */
-  const pendingOnly = ref(false);
 
   const selectedNode = computed(() => collection.playlists.find((p) => p.id === selected.value) ?? null);
   const inPlaylist = computed(() => selectedNode.value?.kind === 'playlist');
@@ -368,7 +357,7 @@ export const useBrowseStore = defineStore('browse', () => {
 
   function showPending(next: Focus) {
     selection.value = new Set();
-    pendingSelection.value = new Set([next.kind === 'entry' ? `entry:${next.index}` : `job:${next.id}`]);
+    pendingSelection.value = new Set([`entry:${next.index}`]);
     focus.value = next;
   }
 
@@ -384,16 +373,12 @@ export const useBrowseStore = defineStore('browse', () => {
     selection.value = new Set();
     pendingSelection.value = keys;
     const only = keys.size === 1 ? pendingRows.value.find((row) => keys.has(row.key)) : undefined;
-    focus.value = !only
-      ? null
-      : only.entry
-        ? { kind: 'entry', index: only.entry.index }
-        : { kind: 'job', id: only.job!.id };
+    focus.value = only ? { kind: 'entry', index: only.entry.index } : null;
   }
 
   /** Picks everything of the kind already picked: every pending row, or every track of the list. */
   async function selectAll() {
-    if (pendingSelection.value.size || pendingOnly.value) {
+    if (pendingSelection.value.size) {
       selectPending(new Set(pendingRows.value.map((row) => row.key)));
       return;
     }
@@ -421,11 +406,9 @@ export const useBrowseStore = defineStore('browse', () => {
     const rows: PendingRow[] = [];
     // Tracks not in the collection yet have no grid or genre to pass a filter by.
     if (filterCount.value) return rows;
-    const listed = new Set<string>();
     for (const entry of link.value?.missing ?? []) {
       const found = entry.request ? jobs.jobFor(entry.request) : undefined;
       const job = found && found.status !== 'cancelled' ? found : null;
-      if (job) listed.add(job.id);
       rows.push({
         key: `entry:${entry.index}`,
         title: entry.track.title,
@@ -436,19 +419,6 @@ export const useBrowseStore = defineStore('browse', () => {
         entry,
       });
     }
-    for (const job of jobs.pending) {
-      if (listed.has(job.id)) continue;
-      if (lists.value.length && !lists.value.includes(job.playlistId ?? '')) continue;
-      rows.push({
-        key: `job:${job.id}`,
-        title: job.metadata?.title ?? job.request.title,
-        artist: job.metadata?.artist ?? job.request.artist,
-        album: job.metadata?.album ?? job.request.album,
-        durationSecs: job.request.durationSecs,
-        job,
-        entry: null,
-      });
-    }
     const words = query.value.query.toLowerCase().split(/\s+/).filter(Boolean);
     if (!words.length) return rows;
     return rows.filter((row) => {
@@ -457,16 +427,12 @@ export const useBrowseStore = defineStore('browse', () => {
     });
   });
 
-  /** What the focused pending row now is: its fetch, or the Spotify track still to match. */
-  const focused = computed<{ job: Job | null; entry: MissingEntry | null } | null>(() => {
+  /** The Spotify track still to match whose details are showing; one being fetched shows in the Downloads window instead. */
+  const focused = computed<MissingEntry | null>(() => {
     const at = focus.value;
     if (!at) return null;
-    if (at.kind === 'job') {
-      const job = jobs.byId(at.id);
-      return job ? { job, entry: null } : null;
-    }
-    const row = pendingRows.value.find((r) => r.entry?.index === at.index);
-    return row ? { job: row.job, entry: row.entry } : null;
+    const row = pendingRows.value.find((r) => r.entry.index === at.index);
+    return row && !row.job ? row.entry : null;
   });
 
   // By what it asks for: it's made afresh whenever something it reads changes, a setting saved among them.
@@ -477,12 +443,6 @@ export const useBrowseStore = defineStore('browse', () => {
     [selected, inPlaylist, () => collection.generation],
     () => playlist.show(inPlaylist.value ? selected.value : null),
     { immediate: true },
-  );
-  watch(
-    () => jobs.pending.length,
-    (count) => {
-      if (!count) pendingOnly.value = false;
-    },
   );
 
   return {
@@ -496,10 +456,10 @@ export const useBrowseStore = defineStore('browse', () => {
     opened,
     playing,
     search,
+    searchOpen,
     filter,
     sort,
     descending,
-    pendingOnly,
     reviewedFilter,
     genreFilter,
     filterCount,

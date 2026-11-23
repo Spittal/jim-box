@@ -7,6 +7,8 @@ import { useUiStore } from '@/stores/ui';
 
 /** Looking for tracks online: Deezer's results, then MusicBrainz's. */
 export const useSearchStore = defineStore('search', () => {
+  /** The text in the online search field. */
+  const text = ref('');
   /** Whether the results panel is showing. */
   const open = ref(false);
   const results = ref<TrackRequest[]>([]);
@@ -64,12 +66,25 @@ export const useSearchStore = defineStore('search', () => {
     }
   }
 
+  /** Stops the search under way: its answer is dropped, and the results panel goes away with it. */
+  function cancel() {
+    if (!loading.value) return;
+    latest++;
+    loading.value = false;
+    results.value = [];
+    owned.value = [];
+    asked.value = '';
+    searchedFor.value = '';
+    close();
+  }
+
   function close() {
+    if (loading.value) return cancel();
     open.value = false;
     error.value = null;
   }
 
-  return { open, results, owned, loading, error, asked, searchedFor, find, run, refreshOwned, close };
+  return { text, open, results, owned, loading, error, asked, searchedFor, find, run, refreshOwned, cancel, close };
 });
 
 // Swap in new actions on hot reload instead of keeping the old store.

@@ -62,7 +62,7 @@ const ui = useUiStore();
  * than wander off to a button somewhere else.
  */
 function onKey(event: KeyboardEvent) {
-  if (event.defaultPrevented || event.altKey || ui.settings) return;
+  if (event.defaultPrevented || event.altKey || ui.settings || ui.usb || ui.downloads) return;
   const target = event.target as HTMLElement | null;
   const pane = target?.closest('[data-pane]');
   const field = target?.closest<HTMLElement>('input, textarea, select, [contenteditable="true"]');

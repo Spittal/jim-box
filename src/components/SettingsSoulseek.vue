@@ -3,6 +3,8 @@ import { computed } from 'vue';
 import { storeToRefs } from 'pinia';
 import SettingsSection from '@/components/SettingsSection.vue';
 import SoulseekCredentialsForm from '@/components/SoulseekCredentialsForm.vue';
+import ToggleRow from '@/components/ToggleRow.vue';
+import { useSettingsSave } from '@/composables/useSettingsSave';
 import { useSoulseekStore } from '@/stores/soulseek';
 import { useSettingsStore } from '@/stores/settings';
 import { useUiStore } from '@/stores/ui';
@@ -12,6 +14,7 @@ const soulseekStore = useSoulseekStore();
 const { status } = storeToRefs(soulseekStore);
 const { settings } = storeToRefs(useSettingsStore());
 const ui = useUiStore();
+const { error: saveError, save } = useSettingsSave();
 
 /** Finding online was asked for with no account: say why this tab opened. */
 const askToSignIn = computed(() => ui.soulseekPrompt && soulseekStore.needsCredentials);
@@ -65,6 +68,15 @@ function reconnect() {
       <SoulseekCredentialsForm
         :submit-label="soulseekStore.needsCredentials ? 'Sign in' : 'Save and reconnect'"
         :initial-username="settings?.soulseekUsername"
+      />
+    </SettingsSection>
+
+    <SettingsSection v-if="settings" title="Downloads" :error="saveError">
+      <ToggleRow
+        label="Show downloads as they start"
+        description="Open the Downloads window when you start a download, once for a batch started together. Off, it opens only from the Downloads button at the foot of the window."
+        :model-value="settings.openDownloadsOnFetch"
+        @update:model-value="(on) => save({ openDownloadsOnFetch: on })"
       />
     </SettingsSection>
   </div>

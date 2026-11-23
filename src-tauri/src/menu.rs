@@ -48,8 +48,8 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .build()?;
 
     let file_menu = SubmenuBuilder::new(app, "File")
-        .item(&item("find", "Find…", "CmdOrCtrl+F")?)
-        .item(&item("find-online", "Find Online", "CmdOrCtrl+Shift+F")?)
+        .item(&item("find", "Search List…", "CmdOrCtrl+F")?)
+        .item(&item("find-online", "Find Online…", "CmdOrCtrl+Shift+F")?)
         .separator()
         .item(&MenuItemBuilder::with_id("consolidate", "Consolidate Library…").build(app)?)
         .separator()

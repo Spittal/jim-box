@@ -136,6 +136,9 @@ pub struct Settings {
     /// How musical keys are shown.
     #[serde(default)]
     pub key_notation: KeyNotation,
+    /// Open the Downloads window when a download starts.
+    #[serde(default = "default_true")]
+    pub open_downloads_on_fetch: bool,
 }
 
 impl Settings {
@@ -155,6 +158,7 @@ impl Settings {
             analyse_new_tracks: true,
             dynamic_grids: true,
             key_notation: KeyNotation::default(),
+            open_downloads_on_fetch: true,
         }
     }
 

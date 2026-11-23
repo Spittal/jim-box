@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, nextTick, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { addFromPaths } from '@/composables/useFileDrop';
 import { formatAgo, formatClock, formatLength } from '@/composables/useFormat';
 import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
-import { isActive, useJobsStore } from '@/stores/jobs';
+import { useJobsStore } from '@/stores/jobs';
 import { usePlaylistStore } from '@/stores/playlist';
 import { shortcut } from '@/platform';
 
@@ -31,6 +31,8 @@ const {
   lists,
   totalSecs,
   selectionSecs,
+  search,
+  searchOpen,
 } = storeToRefs(browse);
 const playlistStore = usePlaylistStore();
 const jobs = useJobsStore();
@@ -54,6 +56,33 @@ async function run(action: () => Promise<unknown>) {
   } catch (e) {
     error.value = String(e);
   }
+}
+
+// --- Searching the list ------------------------------------------------------
+
+const searchInput = ref<HTMLInputElement | null>(null);
+
+async function openSearch() {
+  searchOpen.value = true;
+  await nextTick();
+  searchInput.value?.focus();
+  searchInput.value?.select();
+}
+
+/** Esc clears what's typed, then puts the field away. */
+function escapeSearch() {
+  if (search.value) search.value = '';
+  else closeSearch();
+}
+
+function closeSearch() {
+  search.value = '';
+  searchOpen.value = false;
+}
+
+/** Left empty, the field goes away again. */
+function blurSearch() {
+  if (!search.value.trim()) closeSearch();
 }
 
 // --- Filtering the list -------------------------------------------------------
@@ -98,12 +127,8 @@ function toggleGenre(name: string) {
 
 // --- The selected pending rows -----------------------------------------------
 
-/** Of the pending rows picked: those with a fetch, those whose fetch stopped short, and those not fetched yet. */
-const pickedFetches = computed(() => selectedPending.value.filter((r) => r.job));
-const pickedStopped = computed(() =>
-  selectedPending.value.filter((r) => r.job && !isActive(r.job) && r.job.status !== 'completed'),
-);
-const pickedUnfetched = computed(() => selectedPending.value.filter((r) => !r.job && r.entry?.request));
+/** Of the pending rows picked, those not fetched yet. (Fetches are dealt with in the Downloads window.) */
+const pickedUnfetched = computed(() => selectedPending.value.filter((r) => !r.job && r.entry.request));
 
 const working = ref(false);
 
@@ -124,14 +149,7 @@ function each<T>(rows: T[], action: (row: T) => Promise<unknown>) {
   })().finally(() => (working.value = false));
 }
 
-/** Gives up on the picked fetches: stops the ones running, and takes them off the list. */
-function removeFetches() {
-  const rows = pickedFetches.value;
-  browse.clearSelection();
-  each(rows, (row) => jobs.discard(row.job!.id));
-}
-const retryPicked = () => each(pickedStopped.value, (row) => jobs.retry(row.job!.id));
-const fetchPicked = () => each(pickedUnfetched.value, (row) => jobs.fetch(row.entry!.request!, selected.value));
+const fetchPicked = () => each(pickedUnfetched.value, (row) => jobs.fetch(row.entry.request!, selected.value));
 
 // --- The library's own menu ------------------------------------------------------
 
@@ -162,7 +180,7 @@ async function addFromDisk(directory: boolean) {
 
 /** Missing tracks with a sure match and no fetch yet. */
 const fetchable = computed(() =>
-  link.value ? pendingRows.value.filter((r) => r.entry?.request && r.entry.confidence === 'high' && !r.job) : [],
+  link.value ? pendingRows.value.filter((r) => r.entry.request && r.entry.confidence === 'high' && !r.job) : [],
 );
 const fetchingAll = ref(false);
 
@@ -170,7 +188,7 @@ function fetchAll() {
   fetchingAll.value = true;
   // Fetches queue in the backend (a few run at a time), so starting them all is fine.
   run(async () => {
-    for (const row of fetchable.value) await jobs.fetch(row.entry!.request!, selected.value);
+    for (const row of fetchable.value) await jobs.fetch(row.entry.request!, selected.value);
   }).finally(() => (fetchingAll.value = false));
 }
 
@@ -287,25 +305,47 @@ const buttonClass =
           >
             Get lossless for {{ pickedUnfetched.length }}
           </button>
-          <button
-            v-if="pickedStopped.length"
-            :class="buttonClass"
-            :disabled="working"
-            title="Search again for the selected tracks that found no source or failed"
-            @click="retryPicked"
-          >
-            Search again for {{ pickedStopped.length }}
-          </button>
-          <button
-            v-if="pickedFetches.length"
-            :class="buttonClass"
-            :disabled="working"
-            title="Give up on the selected fetches: the ones running are stopped, and they leave this list. Nothing in the collection changes."
-            @click="removeFetches"
-          >
-            Remove {{ pickedFetches.length }}
-          </button>
         </template>
+        <!-- Searching the list: put away until it's wanted. -->
+        <label
+          v-if="searchOpen"
+          class="flex w-56 items-center gap-1.5 rounded border border-border bg-surface-1 px-2 py-1 focus-within:border-accent"
+        >
+          <svg class="size-3.5 shrink-0 text-text-muted" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+            <circle cx="7" cy="7" r="4.5" /><path d="m10.5 10.5 3.5 3.5" stroke-linecap="round" />
+          </svg>
+          <input
+            id="library-search"
+            ref="searchInput"
+            v-model="search"
+            type="text"
+            spellcheck="false"
+            autocomplete="off"
+            :placeholder="`Search ${heading}`"
+            class="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-text-muted"
+            @keydown.esc.prevent.stop="escapeSearch"
+            @blur="blurSearch"
+          />
+          <button
+            class="shrink-0 text-xs leading-none text-text-muted hover:text-text-primary"
+            title="Stop searching (Esc)"
+            aria-label="Stop searching"
+            @mousedown.prevent
+            @click="closeSearch"
+          >✕</button>
+        </label>
+        <button
+          v-else
+          :class="buttonClass"
+          class="flex items-center"
+          :title="`Search this list (${shortcut('F')})`"
+          aria-label="Search this list"
+          @click="openSearch"
+        >
+          <svg class="size-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+            <circle cx="7" cy="7" r="4.5" /><path d="m10.5 10.5 3.5 3.5" stroke-linecap="round" />
+          </svg>
+        </button>
         <div class="relative">
           <button
             :class="[buttonClass, filterCount ? 'text-accent' : '']"

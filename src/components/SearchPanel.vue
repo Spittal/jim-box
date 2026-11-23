@@ -9,6 +9,7 @@ import { useCollectionStore } from '@/stores/collection';
 import { useSoulseekStore } from '@/stores/soulseek';
 import { useJobsStore } from '@/stores/jobs';
 import { useSearchStore } from '@/stores/search';
+import { useUiStore } from '@/stores/ui';
 import type { Job } from '@/types/job';
 import { trackKey, type TrackRequest } from '@/types/track';
 
@@ -24,6 +25,7 @@ const { targetPlaylist } = storeToRefs(browse);
 const collection = useCollectionStore();
 const jobs = useJobsStore();
 const { isOnline } = storeToRefs(useSoulseekStore());
+const ui = useUiStore();
 
 // What's in the collection changes as tracks land and are removed.
 watch(
@@ -77,7 +79,7 @@ const buttonClass =
   <section v-if="open" class="flex max-h-[45%] shrink-0 flex-col border-t border-border-active bg-surface-1">
     <header class="flex shrink-0 items-center gap-3 border-b border-border px-4 py-1.5 text-xs text-text-muted">
       <span class="min-w-0 flex-1 truncate">
-        <template v-if="loading">Looking online…</template>
+        <template v-if="loading">Looking online for “{{ searchStore.asked }}”…</template>
         <template v-else-if="searchedFor && !error">
           Online, for “{{ searchedFor }}”
           <template v-if="results.length"> · drag a result onto a playlist, or use its button</template>
@@ -128,8 +130,8 @@ const buttonClass =
         <button
           v-else-if="jobOf(track)"
           class="shrink-0 rounded border border-border px-2 py-1 text-xs text-text-secondary hover:border-border-active"
-          title="Show how its fetch is going"
-          @click="browse.showPending({ kind: 'job', id: jobOf(track)!.id })"
+          title="Show how its download is going"
+          @click="ui.openDownloads(jobOf(track)!.id)"
         >
           <JobStatusBadge :job="jobOf(track)!" />
         </button>

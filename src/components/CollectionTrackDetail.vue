@@ -196,7 +196,7 @@ function identify() {
 
 /** Keys pressed anywhere: ⌘L starts analysing the track again, ⌘I identifies it, ⌘R downloads it again and ⌘1 to ⌘5 give it its stars, from a text field too. */
 function onWindowKey(event: KeyboardEvent) {
-  if (event.defaultPrevented || event.altKey || ui.settings) return;
+  if (event.defaultPrevented || event.altKey || ui.settings || ui.usb || ui.downloads) return;
   if (!commandKey(event) || event.shiftKey) return;
   const key = event.key.toLowerCase();
   if (/^Digit[1-5]$/.test(event.code)) {
@@ -362,8 +362,8 @@ const inputClass =
       <button
         v-if="job"
         class="inline-flex self-start text-[11px] text-text-secondary hover:text-text-primary"
-        title="Show where this file came from, and the other sources found for it"
-        @click="browse.focus = { kind: 'job', id: job.id }"
+        title="Show where this file came from, and the other sources found for it, in Downloads"
+        @click="ui.openDownloads(job.id)"
       >
         <JobStatusBadge :job="job" />
       </button>

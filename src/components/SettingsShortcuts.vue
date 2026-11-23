@@ -89,8 +89,8 @@ const groups: { title: string; note?: string; lines: Line[] }[] = [
   {
     title: 'Window',
     lines: [
-      { does: 'Find in the collection', keys: [[cmd, 'F']] },
-      { does: 'Find online', keys: [[cmd, shift, 'F']] },
+      { does: 'Search the list being shown', keys: [[cmd, 'F']] },
+      { does: 'Find tracks online', keys: [[cmd, shift, 'F']] },
       { does: 'These shortcuts', keys: [[cmd, '/'], ['?']] },
       { does: 'Close settings or a dialog', keys: [['Esc']] },
     ],

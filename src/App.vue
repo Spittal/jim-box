@@ -5,6 +5,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { storeToRefs } from 'pinia';
 import BottomBar from '@/components/BottomBar.vue';
 import ConfirmDialog from '@/components/ConfirmDialog.vue';
+import DownloadsModal from '@/components/DownloadsModal.vue';
 import SearchPanel from '@/components/SearchPanel.vue';
 import UsbExport from '@/components/UsbExport.vue';
 import CollectionView from '@/views/CollectionView.vue';
@@ -64,14 +65,30 @@ watch(
 
 // Menu bar commands (see src-tauri/src/menu.rs).
 
-async function focusSearchBar() {
-  // The settings dialog would otherwise sit over the bar.
+/** Puts the keyboard in a search field, out from under any dialog that would sit over it. */
+async function focusField(id: string) {
   ui.settings = null;
   ui.usb = false;
+  ui.downloads = false;
   await nextTick();
-  const input = document.querySelector<HTMLInputElement>('#search-bar');
+  const input = document.querySelector<HTMLInputElement>(`#${id}`);
   input?.focus();
   input?.select();
+}
+
+/** ⌘F: the list's search field, which shows itself. */
+function findInList() {
+  useBrowseStore().searchOpen = true;
+  void focusField('library-search');
+}
+
+/** ⇧⌘F: the online search field, looking again for what's in it. */
+function findOnline() {
+  // With no Soulseek account, the sign-in comes first (as it does in the search itself).
+  if (needsCredentials.value) return ui.promptSoulseek();
+  void focusField('online-search');
+  const search = useSearchStore();
+  if (search.text.trim()) search.run(search.text);
 }
 
 /** Whether the keyboard is in something being typed, which has an undo of its own. */
@@ -100,13 +117,8 @@ function runCommand(command: string) {
   } else if (command === 'settings') ui.toggleSettings();
   else if (command === 'shortcuts') ui.toggleShortcuts();
   else if (command === 'consolidate') ui.showConsolidate();
-  else if (command === 'find') void focusSearchBar();
-  else if (command === 'find-online') {
-    // With no Soulseek account, the sign-in comes first (as it does in the search itself).
-    if (needsCredentials.value) return ui.promptSoulseek();
-    void focusSearchBar();
-    useSearchStore().run(useBrowseStore().search);
-  }
+  else if (command === 'find') findInList();
+  else if (command === 'find-online') findOnline();
 }
 
 const unlistenMenu = listen<string>('menu', (e) => runCommand(e.payload));
@@ -167,6 +179,7 @@ onUnmounted(() => window.removeEventListener('keydown', onHelpKey));
         <SearchPanel />
         <SettingsView v-if="ui.settings" />
         <UsbExport v-if="ui.usb" />
+        <DownloadsModal v-if="ui.downloads" />
       </main>
       <BottomBar />
     </template>

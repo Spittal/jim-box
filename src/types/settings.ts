@@ -38,6 +38,8 @@ export interface Settings {
   dynamicGrids: boolean;
   /** How musical keys are shown. */
   keyNotation: KeyNotation;
+  /** Open the Downloads window when a download starts. */
+  openDownloadsOnFetch: boolean;
 }
 
 /** Musical names (`Am`, `F#`) or Camelot wheel codes (`8A`, `2B`). */

@@ -5,7 +5,6 @@ import CoverArt from '@/components/CoverArt.vue';
 import FieldInput from '@/components/FieldInput.vue';
 import JobStatusBadge from '@/components/JobStatusBadge.vue';
 import LibraryCover from '@/components/LibraryCover.vue';
-import ProgressBar from '@/components/ProgressBar.vue';
 import TrackPreview from '@/components/TrackPreview.vue';
 import { focusPane, paneOf } from '@/composables/useDetailKeys';
 import { dragging, dropRow, endDrag, startDrag } from '@/composables/useDrag';
@@ -19,8 +18,9 @@ import { TRACK_COLORS } from '@/composables/useTrackColors';
 import { PALETTES, chosenPalette } from '@/composables/useWaveform';
 import { useBrowseStore, type PendingRow } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
-import { isActive, useJobsStore } from '@/stores/jobs';
+import { useJobsStore } from '@/stores/jobs';
 import { useLibraryStore } from '@/stores/library';
+import { useSearchStore } from '@/stores/search';
 import { useUiStore } from '@/stores/ui';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { commandKey, revealLabel } from '@/platform';
@@ -56,7 +56,7 @@ const store = useCollectionStore();
 const { formatKey } = useKeyNotation();
 const { analysis } = storeToRefs(store);
 const browse = useBrowseStore();
-const { sort, descending, filter, total, listError, selection, selectedIds, pendingRows, pendingSelection, pendingOnly, inPlaylist, selected, detailTrack } =
+const { sort, descending, filter, total, listError, selection, selectedIds, pendingRows, pendingSelection, inPlaylist, selected, detailTrack } =
   storeToRefs(browse);
 const jobs = useJobsStore();
 const library = useLibraryStore();
@@ -118,7 +118,7 @@ watch(
     scrollTop.value = 0;
     if (scroller.value) scroller.value.scrollTop = 0;
     const id = props.playingId;
-    if (!id || filter.value || pendingOnly.value) return;
+    if (!id || filter.value) return;
     const index = await browse.indexOf(id).catch(() => -1);
     if (index < 0 || !(await listArrived(list))) return;
     await nextTick();
@@ -277,7 +277,7 @@ function rowMenu(index: number, track: CollectionTrack) {
 // --- Keys ---------------------------------------------------------------------
 
 /** Rows are counted down the whole list: the pending ones, then the collection's. */
-const rowCount = computed(() => pendingRows.value.length + (pendingOnly.value ? 0 : total.value));
+const rowCount = computed(() => pendingRows.value.length + total.value);
 
 function positionOf(spot: Spot | null): number | null {
   if (!spot) return null;
@@ -285,7 +285,7 @@ function positionOf(spot: Spot | null): number | null {
     const at = pendingRows.value.findIndex((r) => r.key === spot.key);
     return at === -1 ? null : at;
   }
-  return pendingOnly.value || !total.value ? null : pendingRows.value.length + indexOf(spot);
+  return !total.value ? null : pendingRows.value.length + indexOf(spot);
 }
 
 /** Scrolls just far enough to show a row. */
@@ -370,7 +370,7 @@ async function reviewAndNext() {
 
 function onKey(event: KeyboardEvent) {
   cancelSlowEdit();
-  if (event.defaultPrevented || event.altKey || ui.settings) return;
+  if (event.defaultPrevented || event.altKey || ui.settings || ui.usb || ui.downloads) return;
   const target = event.target as HTMLElement | null;
   // From anywhere, a text field included: it's how a track being edited is finished with.
   if (commandKey(event) && event.key.toLowerCase() === 's' && !event.shiftKey) {
@@ -518,9 +518,15 @@ async function act(row: PendingRow, action: () => Promise<unknown>) {
   }
 }
 
+/** Looks online for what the list's search found nothing for. */
+function findOnline(text: string) {
+  const online = useSearchStore();
+  online.text = text;
+  online.run(text);
+}
+
 /** Fetches a Spotify playlist's track into the collection and this playlist. */
-const fetchEntry = (row: PendingRow) => act(row, () => jobs.fetch(row.entry!.request!, browse.selected));
-const retry = (row: PendingRow) => act(row, () => jobs.retry(row.job!.id));
+const fetchEntry = (row: PendingRow) => act(row, () => jobs.fetch(row.entry.request!, browse.selected));
 
 // --- Work under way on a track --------------------------------------------------
 
@@ -565,7 +571,7 @@ const activities = computed(() => {
 
 /** Tracks can be dragged into a new order only in the playlist's own order. */
 const reorderable = computed(
-  () => inPlaylist.value && sort.value === 'trackNo' && !descending.value && !filter.value && !pendingOnly.value,
+  () => inPlaylist.value && sort.value === 'trackNo' && !descending.value && !filter.value,
 );
 
 function dragTrack(event: DragEvent, track: CollectionTrack) {
@@ -977,7 +983,7 @@ const smallButtonClass =
         <template v-for="column in columns" :key="column.id">
           <CoverArt
             v-if="column.id === 'art'"
-            :src="row.job?.request.coverUrl ?? row.entry?.request?.coverUrl ?? null"
+            :src="row.entry.request?.coverUrl ?? null"
             :style="cellStyle.art"
           />
           <span
@@ -991,9 +997,7 @@ const smallButtonClass =
           <span v-else-if="column.id === 'artist'" class="truncate text-text-muted" :class="column.class" :style="cellStyle[column.id]">{{ row.artist }}</span>
           <span v-else-if="column.id === 'album'" class="truncate text-text-muted" :class="column.class" :style="cellStyle[column.id]">{{ row.album }}</span>
         </template>
-        <span class="min-w-0 flex-1">
-          <ProgressBar v-if="row.job && progressPercent(row.job) !== null" :percent="progressPercent(row.job)!" />
-        </span>
+        <span class="min-w-0 flex-1" />
         <span class="flex w-[22rem] shrink-0 items-center gap-2">
           <span
             v-if="rowError?.key === row.key"
@@ -1001,22 +1005,17 @@ const smallButtonClass =
             :title="rowError.message"
           >{{ rowError.message }}</span>
           <template v-else-if="row.job">
-            <JobStatusBadge :job="row.job" class="min-w-0 flex-1" :title="row.job.error ?? undefined" />
             <button
-              v-if="!isActive(row.job) && row.job.status !== 'completed'"
-              :class="smallButtonClass"
-              title="Search for it again"
-              @click.stop="retry(row)"
+              class="flex min-w-0 flex-1 items-center text-left hover:text-text-primary"
+              :title="row.job.status === 'completed'
+                ? 'Downloaded. rekordbox is open, so its library can\'t be changed: the track joins the collection when you quit rekordbox.'
+                : 'Show how its download is going'"
+              @click.stop="ui.openDownloads(row.job.id)"
             >
-              Search again
+              <JobStatusBadge :job="row.job" class="min-w-0" />
             </button>
-            <span
-              v-else-if="row.job.status === 'completed'"
-              class="shrink-0 text-[11px] text-text-muted"
-              title="rekordbox is open, so its library can't be changed. The track joins the collection when you quit rekordbox."
-            >waits for rekordbox to close</span>
           </template>
-          <template v-else-if="row.entry?.request">
+          <template v-else-if="row.entry.request">
             <span class="min-w-0 flex-1 truncate text-text-muted">
               On Spotify · {{ formatDuration(row.durationSecs) }}
             </span>
@@ -1042,7 +1041,7 @@ const smallButtonClass =
         </span>
       </div>
 
-      <div v-if="!pendingOnly" class="relative" :style="{ height: `${total * ROW_HEIGHT}px` }">
+      <div class="relative" :style="{ height: `${total * ROW_HEIGHT}px` }">
         <div
           v-for="row in visibleRows"
           :key="row.index"
@@ -1186,13 +1185,13 @@ const smallButtonClass =
         </div>
       </div>
       <p
-        v-if="!listError && !pendingRows.length && (pendingOnly || !total)"
+        v-if="!listError && !pendingRows.length && !total"
         class="p-8 text-center text-sm text-text-muted"
       >
         <template v-if="filter">
-          Nothing here matches. Press Return to look for “{{ filter }}” online.
+          Nothing here matches “{{ filter }}”.
+          <button class="text-accent hover:text-accent-hover" @click="findOnline(filter)">Find it online</button>
         </template>
-        <template v-else-if="pendingOnly">Nothing is being fetched.</template>
         <template v-else-if="inPlaylist">
           Nothing here yet. Drag tracks onto this playlist, or search below and add what you find.
         </template>

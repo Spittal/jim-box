@@ -1,12 +1,11 @@
 <script setup lang="ts">
 import { storeToRefs } from 'pinia';
-import JobDetail from '@/components/JobDetail.vue';
 import PlaylistEntryPicker from '@/components/PlaylistEntryPicker.vue';
 import { useBrowseStore } from '@/stores/browse';
 
 /**
- * A track that isn't in the collection yet: how its fetch is going and the
- * sources found for it, or, for a Spotify track with none, picking its match.
+ * A Spotify playlist's track that isn't in the collection and has no fetch
+ * yet: picking its match. One being fetched shows in the Downloads window.
  */
 const browse = useBrowseStore();
 const { focused } = storeToRefs(browse);
@@ -23,7 +22,6 @@ const { focused } = storeToRefs(browse);
         ✕
       </button>
     </div>
-    <JobDetail v-if="focused.job" :key="focused.job.id" :job="focused.job" @removed="browse.clearSelection()" />
-    <PlaylistEntryPicker v-else-if="focused.entry" :key="focused.entry.index" :entry="focused.entry" />
+    <PlaylistEntryPicker :key="focused.index" :entry="focused" />
   </aside>
 </template>

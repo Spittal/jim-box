@@ -366,7 +366,7 @@ let spaceTaken = false;
 
 function onKey(event: KeyboardEvent) {
   const target = event.target as HTMLElement | null;
-  if (event.defaultPrevented || event.altKey || ui.settings) return;
+  if (event.defaultPrevented || event.altKey || ui.settings || ui.usb || ui.downloads) return;
   // Space plays and pauses wherever the keyboard is, unless it's typing a space:
   // on a button, a menu or a tick box it doesn't press, open or tick it.
   if (event.code === 'Space' && !event.metaKey && !event.ctrlKey && !typing(target)) {
