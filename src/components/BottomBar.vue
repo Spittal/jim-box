@@ -5,6 +5,7 @@ import { useBrowseStore } from '@/stores/browse';
 import { useSoulseekStore } from '@/stores/soulseek';
 import { useJobsStore } from '@/stores/jobs';
 import { useLibraryStore } from '@/stores/library';
+import { useLibrariesStore } from '@/stores/libraries';
 import { usePlaylistStore } from '@/stores/playlist';
 import { useSearchStore } from '@/stores/search';
 import { useUiStore } from '@/stores/ui';
@@ -25,6 +26,7 @@ const library = useLibraryStore();
 const ui = useUiStore();
 const { status: connection } = storeToRefs(useSoulseekStore());
 const usb = useUsbStore();
+const libraries = useLibrariesStore();
 
 /** The export to a stick under way, in a few words. */
 const exportingUsb = computed(() => {
@@ -213,11 +215,17 @@ const chipClass =
       <span class="max-w-40 truncate">{{ soulseek.label }}</span>
     </button>
     <button
-      :class="[chipClass, usb.exporting ? 'text-text-primary' : '']"
-      :title="usb.exporting ? 'Exporting to a USB stick. Click to see how it’s going.' : 'Export playlists to a USB stick, for CDJs and other players'"
+      :class="[chipClass, usb.exporting || libraries.stagedCount ? 'text-text-primary' : '']"
+      class="flex items-center gap-1.5"
+      :title="usb.exporting
+        ? 'Writing to a USB stick. Click to see how it’s going.'
+        : libraries.stagedCount
+          ? `Changes waiting to be written to ${libraries.staged.map((s) => s.name).join(', ')}. Click to apply them.`
+          : 'Export playlists to a USB stick, for CDJs and other players'"
       @click="ui.usb = !ui.usb"
     >
-      {{ exportingUsb || 'USB' }}
+      <span v-if="libraries.stagedCount && !usb.exporting" class="size-2 shrink-0 rounded-full bg-accent" />
+      {{ exportingUsb || (libraries.stagedCount ? `USB · ${libraries.stagedCount}` : 'USB') }}
     </button>
     <button :class="chipClass" title="Settings" @click="ui.toggleSettings()">Settings</button>
   </footer>

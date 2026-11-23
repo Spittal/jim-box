@@ -6,19 +6,23 @@
 //! change in turn (see [`edit`]), so nothing here holds it open while
 //! rekordbox runs.
 
-mod analyse;
+pub(crate) mod analyse;
 mod edit;
 mod export;
 mod grid;
 mod history;
 mod ingest;
 mod prepare;
+pub mod stick;
+mod transfer;
 
 pub use edit::{Edit, EditOutcome, UndoOutcome};
 pub use export::Selection as ExportSelection;
 pub use grid::{Hint as GridHint, Source as GridSource};
 pub use ingest::{Arrival, ImportReport};
-pub use prepare::{Audio, GridChange, Preparation, Preview};
+pub use prepare::{Audio, Cue, GridChange, Preparation, Preview};
+pub use stick::{Change, PlaylistRef, Stick, TrackRef};
+pub use transfer::{placements, Destination, Incoming, TransferReport};
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -75,6 +79,8 @@ pub struct PlaylistNode {
     pub kind: PlaylistKind,
     /// Tracks in a playlist; None for folders and intelligent playlists.
     pub count: Option<usize>,
+    /// Made or changed on a USB stick, and not written to it yet.
+    pub pending: bool,
 }
 
 /// Which tracks to list.
@@ -152,6 +158,9 @@ pub struct TrackQuery {
     /// none. Empty for every rating.
     #[serde(default)]
     pub ratings: Vec<u8>,
+    /// The library to list, when it isn't the one Jim Box manages: see `others`.
+    #[serde(default)]
+    pub library: Option<String>,
 }
 
 /// A list as it's shown: its rows in order, filtered.
@@ -206,6 +215,8 @@ pub struct TrackRow {
     /// What is known of its grid: how this app decided it, and whether
     /// it has been looked over.
     pub grid: Option<grid::State>,
+    /// On its way to a USB stick, not written to it yet.
+    pub pending: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -510,6 +521,7 @@ impl Collection {
                 depth,
                 kind,
                 count: (kind == PlaylistKind::Playlist).then(|| playlists.members[i].len()),
+                pending: false,
             });
             stack.extend(children[i].iter().rev().map(|&child| (child, depth + 1)));
         }
@@ -728,39 +740,60 @@ impl Collection {
         let loaded = self.loaded()?;
         let listing = self.open_view(&loaded, query)?;
         let view = &listing.view;
-        let index = &loaded.index;
         let rows = view
             .window(offset, limit)
             .iter()
             .enumerate()
-            .map(|(i, &row)| {
-                let r = row as usize;
-                let bpm = index.bpm_x100[r];
-                TrackRow {
-                    id: index.ids[r].to_string(),
-                    position: listing.track_no_at(offset + i),
-                    title: index.title.get(r).to_owned(),
-                    artist: index.artist_name(row).to_owned(),
-                    album: index.album_name(row).to_owned(),
-                    genre: index.genre_name(row).to_owned(),
-                    key: index.key_name(row).to_owned(),
-                    bpm: (bpm > 0).then(|| f64::from(bpm) / 100.0),
-                    duration_secs: index.length_sec[r],
-                    rating: index.rating[r],
-                    color: index.color[r],
-                    date_added: index.date_added.get(r).to_owned(),
-                    format: file_type_name(index.file_type[r]),
-                    bitrate: index.bitrate[r],
-                    path: local_path(index.folder_path.get(r)),
-                    comment: index.comment.get(r).to_owned(),
-                    playlists: loaded.playlist_names(r),
-                    playlist_ids: loaded.playlist_ids(r),
-                    analysed: analyse::is_analysed(index.analysed[r]),
-                    grid: self.grids.get(&index.ids[r].to_string()),
-                }
-            })
+            .map(|(i, &row)| self.track_row(&loaded, row, listing.track_no_at(offset + i)))
             .collect();
         Ok(TrackPage { total: view.len(), duration_secs: listing.duration_secs, offset, rows })
+    }
+
+    /// Every track's id, in the collection's stored order.
+    pub fn all_track_ids(&self) -> Vec<String> {
+        let Ok(loaded) = self.loaded_or_read() else { return Vec::new() };
+        loaded.index.ids.iter().map(ToString::to_string).collect()
+    }
+
+    /// The rows of these tracks, as a list shows them, numbered from 1 in
+    /// the order given. Tracks no longer in the collection are left out.
+    pub fn rows_of(&self, track_ids: &[String]) -> AppResult<Vec<TrackRow>> {
+        let loaded = self.loaded()?;
+        Ok(track_ids
+            .iter()
+            .filter_map(|id| loaded.index.row_of(id))
+            .enumerate()
+            .map(|(at, row)| self.track_row(&loaded, row, at as u32 + 1))
+            .collect())
+    }
+
+    fn track_row(&self, loaded: &Loaded, row: u32, position: u32) -> TrackRow {
+        let index = &loaded.index;
+        let r = row as usize;
+        let bpm = index.bpm_x100[r];
+        TrackRow {
+            id: index.ids[r].to_string(),
+            position,
+            title: index.title.get(r).to_owned(),
+            artist: index.artist_name(row).to_owned(),
+            album: index.album_name(row).to_owned(),
+            genre: index.genre_name(row).to_owned(),
+            key: index.key_name(row).to_owned(),
+            bpm: (bpm > 0).then(|| f64::from(bpm) / 100.0),
+            duration_secs: index.length_sec[r],
+            rating: index.rating[r],
+            color: index.color[r],
+            date_added: index.date_added.get(r).to_owned(),
+            format: file_type_name(index.file_type[r]),
+            bitrate: index.bitrate[r],
+            path: local_path(index.folder_path.get(r)),
+            comment: index.comment.get(r).to_owned(),
+            playlists: loaded.playlist_names(r),
+            playlist_ids: loaded.playlist_ids(r),
+            analysed: analyse::is_analysed(index.analysed[r]),
+            grid: self.grids.get(&index.ids[r].to_string()),
+            pending: false,
+        }
     }
 }
 
@@ -769,12 +802,12 @@ pub(crate) mod tests {
     use super::*;
     use rbl_db::fixture::Shape;
 
-    pub(super) fn query(source: Source, sort: Sort) -> TrackQuery {
-        TrackQuery { source, sort, descending: false, query: String::new(), reviewed: None, genres: Vec::new(), ratings: Vec::new() }
+    pub(crate) fn query(source: Source, sort: Sort) -> TrackQuery {
+        TrackQuery { source, sort, descending: false, query: String::new(), reviewed: None, genres: Vec::new(), ratings: Vec::new(), library: None }
     }
 
     /// A fixture library with rekordbox's real schema, in a temp folder.
-    pub(super) fn fixture() -> (tempfile::TempDir, Collection) {
+    pub(crate) fn fixture() -> (tempfile::TempDir, Collection) {
         let dir = tempfile::tempdir().unwrap();
         let location = rbl_db::fixture::build(dir.path(), Shape { tracks: 50, ..Shape::default() }).unwrap();
         let collection = Collection::new(dir.path().join("backups"));

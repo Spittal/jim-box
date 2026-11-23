@@ -8,6 +8,7 @@ mod jobs;
 mod libraries;
 mod library;
 mod menu;
+mod others;
 mod persistence;
 mod playlist;
 mod process;
@@ -92,6 +93,8 @@ pub fn run() {
             // When the library can't be opened the window says so, and
             // nothing that works on one is set up.
             libraries::open_at_launch(app.handle());
+            // The other libraries that were open, and the drives coming and going.
+            others::start(app.handle());
 
             // The window is created hidden (`visible: false`) so it first
             // appears at its remembered size and position, not at the
@@ -172,6 +175,17 @@ pub fn run() {
             commands::usb::usb_export,
             commands::usb::cancel_usb_export,
             commands::usb::eject_usb,
+            commands::others::other_libraries,
+            commands::others::open_other_library,
+            commands::others::close_other_library,
+            commands::others::reload_other_library,
+            commands::others::plugged_libraries,
+            commands::others::move_tracks,
+            commands::others::move_playlists,
+            commands::others::import_other_library,
+            commands::others::update_stick,
+            commands::others::apply_stick_changes,
+            commands::others::discard_stick_changes,
         ])
         .build(context)
         .expect("error while building tauri application");

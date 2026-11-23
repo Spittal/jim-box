@@ -42,6 +42,12 @@ impl Collection {
     /// with them inside; an intelligent playlist is what its rule admits
     /// now. Blocking.
     pub fn export_selection(&self, playlist_ids: &[String]) -> AppResult<Selection> {
+        self.export_selection_with(playlist_ids, &[])
+    }
+
+    /// [`Self::export_selection`] with tracks of no playlist besides: ones
+    /// going into a playlist made on the stick. Blocking.
+    pub fn export_selection_with(&self, playlist_ids: &[String], loose: &[String]) -> AppResult<Selection> {
         // Not while a change is being made: the index and the database would disagree.
         let _editing = self.editing.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         self.refresh()?;
@@ -80,11 +86,16 @@ impl Collection {
             }
         }
         let rows_of: Vec<Vec<u32>> = named.iter().map(|(_, _, source)| library.source_rows(source)).collect();
+        let loose_rows: Vec<u32> = loose.iter().filter_map(|id| library.row_of(id)).collect();
+        if loose_rows.len() < loose.len() {
+            return Err(AppError::Rekordbox("A track is no longer in the library".into()));
+        }
 
         // What the index doesn't hold, in one read for the whole selection.
         let ids: Vec<String> = rows_of
             .iter()
             .flatten()
+            .chain(&loose_rows)
             .map(|&row| library.ids.get(row as usize).copied().unwrap_or(0).to_string())
             .collect::<BTreeSet<_>>()
             .into_iter()
@@ -139,6 +150,15 @@ impl Collection {
                 track_indices,
                 entries_changed_ms: entries_changed.get(&id).copied(),
                 ..Default::default()
+            });
+        }
+
+        for row in loose_rows {
+            position.entry(row).or_insert_with(|| {
+                let content = library.ids.get(row as usize).copied().unwrap_or(0).to_string();
+                let extra = extras.get(&content).cloned().unwrap_or_default();
+                tracks.push(source_track(library, share, row, &extra));
+                tracks.len() - 1
             });
         }
 

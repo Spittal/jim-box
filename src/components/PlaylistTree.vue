@@ -1,29 +1,56 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
+import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { confirm } from '@/composables/useConfirm';
 import { showContextMenu, type MenuLine } from '@/composables/useContextMenu';
-import { dragging, dropTree, endDrag, startDrag } from '@/composables/useDrag';
+import { dragging, dropTree, endDrag, startDrag, type Drag } from '@/composables/useDrag';
 import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
 import { useJobsStore } from '@/stores/jobs';
+import { libraryOf, useLibrariesStore } from '@/stores/libraries';
 import { isPlaylistLink, usePlaylistStore } from '@/stores/playlist';
-import { commandKey } from '@/platform';
+import { useUiStore } from '@/stores/ui';
+import { commandKey, revealLabel } from '@/platform';
 import type { PlaylistNode } from '@/types/collection';
 import type { SyncSettings } from '@/types/playlist';
 
 /**
- * The playlist tree: picking a list, and making, naming, moving and filling
- * playlists. Each playlist has a button for linking it to a Spotify
- * playlist, which it then follows.
+ * One library's playlist tree: picking a list, and making, naming, moving
+ * and filling playlists. The master's playlists each have a button for
+ * linking them to a Spotify playlist, which they then follow. Another
+ * library's (`library`) is the same, with a title over it saying which it
+ * is; tracks and playlists dragged between them go from one to the other.
  */
+const props = defineProps<{
+  /** The library shown: null for the master. */
+  library: string | null;
+  /** Whether to say which library it is, as when there's more than one. */
+  titled: boolean;
+}>();
+
 const store = useCollectionStore();
-const { status, playlists } = storeToRefs(store);
+const libraries = useLibrariesStore();
 const browse = useBrowseStore();
-const { selected, selectedNode, lists } = storeToRefs(browse);
 const jobs = useJobsStore();
+const ui = useUiStore();
 const playlistStore = usePlaylistStore();
 const { watched } = storeToRefs(playlistStore);
+
+const other = computed(() => libraries.get(props.library));
+const kind = computed(() => libraries.kindOf(props.library));
+const isStick = computed(() => kind.value === 'stick');
+const title = computed(() => (props.library ? (other.value?.name ?? '') : 'Library'));
+const playlists = computed(() => (other.value ? other.value.playlists : store.playlists));
+const status = computed(() => (other.value ? other.value.status : store.status));
+/** Whether the list shown is this library's. */
+const active = computed(() => browse.library === props.library);
+const lists = computed(() => (active.value ? browse.lists : []));
+const selected = computed(() => (active.value ? browse.selected : null));
+const selectedNode = computed(() => (active.value ? browse.selectedNode : null));
+
+/** Makes a change to this library. */
+const edit = (change: Parameters<typeof store.edit>[0]) => store.edit(change, { library: props.library });
 
 const collapsed = ref(new Set<string>());
 
@@ -60,16 +87,22 @@ const lead = computed(() =>
   clicked.value && lists.value.includes(clicked.value) ? clicked.value : (lists.value[lists.value.length - 1] ?? null),
 );
 
+/** Shows this library's whole collection. */
+function showCollection() {
+  anchor = null;
+  browse.select(null, props.library);
+}
+
 function clickNode(node: PlaylistNode, event: MouseEvent) {
   clicked.value = node.id;
-  if (event.shiftKey) {
+  if (event.shiftKey && active.value) {
     const ids = treeRows.value.map((row) => row.id);
     const from = ids.indexOf(anchor ?? node.id);
     const to = ids.indexOf(node.id);
     // The anchor has gone, or is folded away: just this one.
     if (from === -1) browse.select((anchor = node.id));
     else browse.selectSeveral(ids.slice(Math.min(from, to), Math.max(from, to) + 1));
-  } else if (commandKey(event)) {
+  } else if (commandKey(event) && active.value) {
     anchor = node.id;
     browse.selectSeveral(
       lists.value.includes(node.id) ? lists.value.filter((id) => id !== node.id) : [...lists.value, node.id],
@@ -118,10 +151,10 @@ async function commitName() {
   if (!name) return;
   if (pending.id) {
     if (playlists.value.find((p) => p.id === pending.id)?.name !== name) {
-      await store.edit({ kind: 'renamePlaylist', id: pending.id, name });
+      await edit({ kind: 'renamePlaylist', id: pending.id, name });
     }
   } else {
-    const id = await store.edit({
+    const id = await edit({
       kind: 'createPlaylist',
       name,
       parentId: pending.parentId,
@@ -216,7 +249,7 @@ function unlinkSpotify() {
   if (id) act(() => playlistStore.unlink(id));
 }
 
-// The keyboard, when the pane has it (see useDetailKeys.ts).
+// The keyboard, when the pane has it (see useDetailKeys.ts): the sidebar hands keys to the tree being browsed.
 
 const pane = ref<HTMLElement | null>(null);
 
@@ -229,7 +262,8 @@ function onKey(event: KeyboardEvent) {
     const ids: (string | null)[] = [null, ...treeRows.value.map((node) => node.id)];
     const at = ids.indexOf(lead.value) + (event.key === 'ArrowDown' ? 1 : -1);
     if (at >= 0 && at < ids.length) {
-      browse.select((anchor = ids[at]));
+      const id = (anchor = ids[at]);
+      browse.select(id, props.library);
       void nextTick(() => pane.value?.querySelector('[aria-current="true"]')?.scrollIntoView({ block: 'nearest' }));
     }
   } else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
@@ -248,16 +282,37 @@ onUnmounted(() => window.removeEventListener('keydown', closeOnEscape));
 
 /** Deletes a playlist or folder, once asked. */
 async function deletePlaylist(node: PlaylistNode) {
+  const where = isStick.value ? 'stick' : 'collection';
   const yes = await confirm({
     title: `Delete “${node.name}”?`,
     message:
-      node.kind === 'folder'
-        ? 'The folder and the playlists in it are deleted. Their tracks stay in the collection.'
-        : 'The playlist is deleted. Its tracks stay in the collection.',
+      (node.kind === 'folder'
+        ? `The folder and the playlists in it are deleted. Their tracks stay on the ${where}.`
+        : `The playlist is deleted. Its tracks stay on the ${where}.`) +
+      (isStick.value ? ' Nothing changes on the stick until you apply the changes.' : ''),
     confirm: 'Delete',
     danger: true,
   });
-  if (yes) await store.edit({ kind: 'deletePlaylist', id: node.id });
+  if (yes) await edit({ kind: 'deletePlaylist', id: node.id });
+}
+
+// --- Between libraries --------------------------------------------------------
+
+/** The other open libraries a playlist or track of this one can go to. */
+const elsewhere = computed(() => {
+  const targets: { id: string | null; name: string; kind: string }[] = [];
+  if (props.library) targets.push({ id: null, name: 'Library', kind: 'master' });
+  for (const o of libraries.others) {
+    if (o.id === props.library) continue;
+    // Only the master's go onto a stick: what's on one is the master's.
+    if (o.kind === 'stick' && props.library) continue;
+    targets.push({ id: o.id, name: o.name, kind: o.kind });
+  }
+  return targets;
+});
+
+function sendTo(target: { id: string | null; name: string }, ids: string[]): MenuLine {
+  return { text: target.id ? target.name : 'Library', action: () => void libraries.movePlaylists(ids, target.id) };
 }
 
 /** A tree row's context menu; the Collection row's and the empty space's make new playlists at the top. */
@@ -270,10 +325,75 @@ function treeMenu(node: PlaylistNode | null) {
   ];
   if (node) {
     lines.push('separator', { text: 'Rename', action: () => startRename(node) });
-    if (node.kind === 'playlist') lines.push({ text: 'Playlist Settings…', action: () => (settingsOf.value = node.id) });
+    if (node.kind === 'playlist' && !props.library) lines.push({ text: 'Playlist Settings…', action: () => (settingsOf.value = node.id) });
+    const picked = lists.value.includes(node.id) ? lists.value : [node.id];
+    if (elsewhere.value.length && !node.pending) {
+      lines.push('separator');
+      if (props.library) lines.push({ text: 'Import into Library', action: () => void libraries.movePlaylists(picked, null) });
+      const targets = elsewhere.value.filter((t) => t.id !== null);
+      if (targets.length) lines.push({ text: 'Send to', items: targets.map((t) => sendTo(t, picked)) });
+    }
     lines.push('separator', { text: 'Delete…', action: () => void deletePlaylist(node) });
   }
   void showContextMenu(lines);
+}
+
+/** The title's menu: what can be done with the library as a whole. */
+function libraryMenu() {
+  const lib = other.value;
+  if (!lib) {
+    void showContextMenu([{ text: 'Open Another Library…', action: () => void libraries.open() }]);
+    return;
+  }
+  const lines: MenuLine[] = [
+    {
+      text: lib.kind === 'stick' ? 'Import or Update Library from This Stick' : 'Import or Update Library from This One',
+      action: () => void importAll(),
+    },
+  ];
+  if (lib.kind === 'stick') {
+    lines.push({ text: 'Update Stick from Library', action: () => void libraries.updateStick(lib.id) });
+    if (lib.staged?.changes) {
+      lines.push(
+        'separator',
+        { text: 'Apply Changes…', action: () => (ui.usb = true) },
+        { text: 'Discard Changes…', action: () => void discard() },
+      );
+    }
+  }
+  lines.push(
+    'separator',
+    { text: revealLabel, action: () => void revealItemInDir(lib.path).catch((e) => (libraries.error = String(e))) },
+    { text: 'Read Again', action: () => void libraries.reload(lib.id) },
+    { text: 'Close', action: () => void libraries.close(lib.id) },
+  );
+  void showContextMenu(lines);
+}
+
+async function importAll() {
+  const lib = other.value;
+  if (!lib) return;
+  const yes = await confirm({
+    title: `Bring everything on ${lib.name} into your library?`,
+    message:
+      `Every track and playlist on it comes into your library. Tracks you don't have are copied in. ` +
+      `Ones you have, and playlists with the same names in the same folders, are updated to match ${lib.name}: ` +
+      'its beat grids, cues, ratings and colours replace yours.',
+    confirm: 'Import',
+  });
+  if (yes) await libraries.importAll(lib.id);
+}
+
+async function discard() {
+  const lib = other.value;
+  if (!lib) return;
+  const yes = await confirm({
+    title: `Discard the changes waiting for ${lib.name}?`,
+    message: 'They were never written to the stick, so it stays as it is.',
+    confirm: 'Discard',
+    danger: true,
+  });
+  if (yes) await libraries.discard(lib.id);
 }
 
 /** Where a new row's name box goes: after its parent's last descendant. */
@@ -294,7 +414,8 @@ const newRowDepth = computed(() => {
 });
 
 // Drops: tracks and search results onto a playlist, and playlists into
-// folders or a new place among their siblings.
+// folders or a new place among their siblings. From another library, they
+// come into this one.
 
 /** Whether `node` is `ancestorId` or inside it. */
 function isWithin(node: PlaylistNode, ancestorId: string): boolean {
@@ -304,32 +425,65 @@ function isWithin(node: PlaylistNode, ancestorId: string): boolean {
   return false;
 }
 
-function acceptsDrop(node: PlaylistNode): boolean {
+/** The library a drag is from; undefined for what isn't of one (files, search results). */
+function fromLibrary(drag: Drag): string | null | undefined {
+  if (drag.kind === 'tracks') return libraryOf(drag.ids[0]);
+  if (drag.kind === 'playlist') return libraryOf(drag.id);
+  return undefined;
+}
+
+/** Whether a drag comes from another library, and could come into this one. */
+function crossing(drag: Drag): boolean | null {
+  const from = fromLibrary(drag);
+  if (from === undefined || from === props.library) return false;
+  // Only the master's go onto a stick.
+  if (isStick.value && from !== null) return null;
+  return true;
+}
+
+function acceptsDrop(node: PlaylistNode | null): boolean {
   const drag = dragging.value;
   if (!drag) return false;
+  const across = crossing(drag);
+  if (across === null) return false;
+  if (across) {
+    if (drag.kind === 'tracks') return node ? node.kind === 'playlist' : !isStick.value;
+    // A playlist goes under a folder, beside a playlist, or onto the library's top.
+    return true;
+  }
+  if (!node) return false;
   if (drag.kind === 'tracks') return node.kind === 'playlist' && node.id !== selected.value;
-  if (drag.kind === 'result' || drag.kind === 'files') return node.kind === 'playlist';
-  // A folder can't go inside itself.
-  return !isWithin(node, drag.id);
+  if (drag.kind === 'result' || drag.kind === 'files') return node.kind === 'playlist' && !props.library;
+  // Playlists on a stick stay where they are; a folder can't go inside itself.
+  return !isStick.value && !isWithin(node, drag.id);
 }
 
-function overTree(event: DragEvent, node: PlaylistNode) {
+function overTree(event: DragEvent, node: PlaylistNode | null) {
   if (!acceptsDrop(node)) return;
   event.preventDefault();
-  dropTree.value = node.id;
+  dropTree.value = node ? node.id : `top:${props.library ?? ''}`;
 }
 
-async function dropOnTree(node: PlaylistNode) {
+async function dropOnTree(node: PlaylistNode | null) {
   const drag = dragging.value;
   const accepted = acceptsDrop(node);
   endDrag();
   // Files from outside are taken by `useFileDrop`, before this hears of the drop.
   if (!drag || !accepted || drag.kind === 'files') return;
+  if (crossing(drag)) {
+    if (drag.kind === 'tracks') await libraries.moveTracks(drag.ids, props.library, node?.id ?? null);
+    else if (drag.kind === 'playlist') {
+      const under = node ? (node.kind === 'folder' ? node.id : node.parentId) : null;
+      await libraries.movePlaylists([drag.id], props.library, under);
+    }
+    return;
+  }
+  if (!node) return;
   if (drag.kind === 'tracks') {
-    await store.edit({ kind: 'addTracks', playlistId: node.id, trackIds: drag.ids });
+    await edit({ kind: 'addTracks', playlistId: node.id, trackIds: drag.ids });
   } else if (drag.kind === 'result') {
     // One you have joins the playlist now; one you don't, when it lands.
-    if (drag.ownedId) await store.edit({ kind: 'addTracks', playlistId: node.id, trackIds: [drag.ownedId] });
+    if (drag.ownedId) await edit({ kind: 'addTracks', playlistId: node.id, trackIds: [drag.ownedId] });
     else {
       try {
         await jobs.fetch(drag.track, node.id);
@@ -338,11 +492,11 @@ async function dropOnTree(node: PlaylistNode) {
       }
     }
   } else if (node.kind === 'folder') {
-    await store.edit({ kind: 'movePlaylist', id: drag.id, parentId: node.id, index: null });
+    await edit({ kind: 'movePlaylist', id: drag.id, parentId: node.id, index: null });
   } else {
     // Onto a playlist: take its place among its siblings.
     const siblings = playlists.value.filter((p) => p.parentId === node.parentId && p.id !== drag.id);
-    await store.edit({
+    await edit({
       kind: 'movePlaylist',
       id: drag.id,
       parentId: node.parentId,
@@ -351,35 +505,89 @@ async function dropOnTree(node: PlaylistNode) {
   }
 }
 
-const treeButtonClass = 'rounded px-1.5 py-0.5 text-[11px] text-text-muted hover:bg-surface-2 hover:text-text-primary';
+/** A word on what's waiting to be written to a stick. */
+const stagedNote = computed(() => {
+  const staged = other.value?.staged;
+  if (!staged?.changes) return null;
+  return `${staged.changes} ${staged.changes === 1 ? 'change' : 'changes'} waiting to be written. Apply them from USB at the bottom.`;
+});
+
+defineExpose({ onKey });
+
 const iconButtonClass =
   'shrink-0 rounded p-1 text-text-muted hover:bg-surface-2 hover:text-text-primary disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-text-muted';
 const GEAR_ICON =
   'M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z';
-const TRASH_ICON = 'M2.5 4.5h11M6 4.5V3h4v1.5M4 4.5l.5 9h7l.5-9M6.5 7v4M9.5 7v4';
+const NEW_PLAYLIST_ICON = 'M2 4h8M2 8h8M2 12h5M12.5 9.5v5M10 12h5';
+const NEW_FOLDER_ICON = 'M1.5 3.5h4.5l1.5 1.5h7v8h-13zM8 7.5v4M6 9.5h4';
+const STICK_ICON = 'M5 1.5h6v4H5zM3.5 5.5h9v8a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1zM6.5 3v1M9.5 3v1';
+const LIBRARY_ICON = 'M2.5 2.5h3v11h-3zM6.5 2.5h3v11h-3zM10.5 3l2.6-.6 2.4 10.6-2.6.6z';
 const nameInputClass =
   'min-w-0 flex-1 rounded border border-border-active bg-surface-1 px-1 py-0 text-xs outline-none';
 </script>
 
 <template>
-  <div
-    ref="pane"
-    data-pane="playlists"
-    tabindex="-1"
-    class="flex w-56 shrink-0 flex-col border-r border-border outline-none"
-    @keydown="onKey"
-  >
+  <div ref="pane" class="flex min-h-0 flex-col">
+    <!-- Which library this is, when more than one is open. Right-click it for what can be done with it. -->
+    <div
+      v-if="titled"
+      class="group flex shrink-0 cursor-default items-center gap-1.5 border-y border-border bg-surface-1 py-1 pr-1 pl-3 text-[11px] select-none"
+      :class="dropTree === `top:${library ?? ''}` ? 'outline outline-1 -outline-offset-1 outline-accent' : ''"
+      :title="other ? other.path : (status?.masterDb ?? '')"
+      @contextmenu.prevent="libraryMenu"
+      @dragover="overTree($event, null)"
+      @dragleave="dropTree === `top:${library ?? ''}` && (dropTree = null)"
+      @drop.prevent="dropOnTree(null)"
+    >
+      <svg viewBox="0 0 16 16" class="size-3.5 shrink-0 text-text-muted" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" aria-hidden="true">
+        <path :d="isStick ? STICK_ICON : LIBRARY_ICON" />
+      </svg>
+      <span class="min-w-0 flex-1 truncate font-medium text-text-primary">{{ library ? title : 'Master library' }}</span>
+      <span
+        v-if="other?.staged?.changes"
+        class="shrink-0 rounded-full bg-accent px-1.5 font-mono text-[10px] text-white"
+        :title="stagedNote ?? ''"
+      >{{ other.staged.changes }}</span>
+      <button :class="iconButtonClass" title="What can be done with this library" aria-label="Library menu" @click.stop="libraryMenu">
+        <svg viewBox="0 0 16 16" class="size-3.5" fill="currentColor" aria-hidden="true">
+          <circle cx="3.5" cy="8" r="1.2" /><circle cx="8" cy="8" r="1.2" /><circle cx="12.5" cy="8" r="1.2" />
+        </svg>
+      </button>
+      <button v-if="library" :class="iconButtonClass" title="Close this library" aria-label="Close" @click.stop="libraries.close(library)">
+        <svg viewBox="0 0 16 16" class="size-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+          <path d="M4 4l8 8M12 4l-8 8" />
+        </svg>
+      </button>
+    </div>
     <ul class="min-h-0 flex-1 overflow-y-auto py-1 text-xs select-none" @contextmenu.prevent="treeMenu(null)">
       <li
         class="flex cursor-default items-center gap-1 py-1 pr-2 pl-4"
-        :class="!lists.length ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:bg-surface-1'"
-        :aria-current="!lists.length"
-        @click="browse.select((anchor = null))"
+        :class="[
+          active && !lists.length ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:bg-surface-1',
+          !titled && dropTree === `top:${library ?? ''}` ? 'outline outline-1 -outline-offset-1 outline-accent' : '',
+        ]"
+        :aria-current="active && !lists.length"
+        @click="showCollection"
+        @dragover="overTree($event, null)"
+        @dragleave="dropTree === `top:${library ?? ''}` && (dropTree = null)"
+        @drop.prevent="dropOnTree(null)"
       >
-        <span class="min-w-0 flex-1 truncate">Collection</span>
+        <span class="min-w-0 flex-1 truncate">{{ isStick ? 'All tracks' : 'Collection' }}</span>
         <span class="shrink-0 font-mono text-[10px] text-text-muted">{{ status?.tracks }}</span>
       </li>
-      <li class="section-label px-4 pt-3 pb-1 text-[10px]">Playlists</li>
+      <li class="flex items-center gap-0.5 pt-2 pr-1.5 pb-0.5 pl-4">
+        <span class="section-label flex-1 text-[10px]">Playlists</span>
+        <button :class="iconButtonClass" title="New playlist" aria-label="New playlist" @click.stop="startCreate(false)">
+          <svg viewBox="0 0 16 16" class="size-3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path :d="NEW_PLAYLIST_ICON" />
+          </svg>
+        </button>
+        <button :class="iconButtonClass" title="New folder" aria-label="New folder" @click.stop="startCreate(true)">
+          <svg viewBox="0 0 16 16" class="size-3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path :d="NEW_FOLDER_ICON" />
+          </svg>
+        </button>
+      </li>
       <li v-if="naming && !naming.id && newRowAfter === null" class="flex items-center py-0.5 pr-2 pl-4">
         <input ref="nameInput" v-model="naming.name" :class="nameInputClass" spellcheck="false" @keydown.enter="commitName" @keydown.esc="naming = null" @blur="commitName" />
       </li>
@@ -393,16 +601,16 @@ const nameInputClass =
           :style="{ paddingLeft: `${node.depth * 12 + 4}px` }"
           :aria-current="lead === node.id"
           :aria-selected="lists.includes(node.id)"
-          :draggable="naming?.id !== node.id"
+          :draggable="naming?.id !== node.id && !node.pending"
           @mousedown="keepTextUnselected"
           @click="clickNode(node, $event)"
           @dblclick="startRename(node)"
           @contextmenu.prevent.stop="treeMenu(node)"
           @dragstart="startDrag($event, { kind: 'playlist', id: node.id })"
           @dragend="endDrag"
-          @dragover="overTree($event, node)"
+          @dragover.stop="overTree($event, node)"
           @dragleave="dropTree === node.id && (dropTree = null)"
-          @drop.prevent="dropOnTree(node)"
+          @drop.prevent.stop="dropOnTree(node)"
         >
           <button
             tabindex="-1"
@@ -425,11 +633,16 @@ const nameInputClass =
             @blur="commitName"
           />
           <template v-else>
-            <span class="min-w-0 flex-1 truncate" :class="{ 'font-medium': node.kind === 'folder' }" :title="node.name">
+            <span
+              class="min-w-0 flex-1 truncate"
+              :class="{ 'font-medium': node.kind === 'folder', italic: node.pending }"
+              :title="node.pending ? `${node.name} (waiting to be written to the stick)` : node.name"
+            >
               {{ node.name }}
             </span>
+            <span v-if="node.pending" class="size-1.5 shrink-0 rounded-full bg-accent" aria-label="Waiting to be written" />
             <button
-              v-if="node.kind === 'playlist'"
+              v-if="node.kind === 'playlist' && !library"
               tabindex="-1"
               class="shrink-0 rounded p-0.5 hover:bg-surface-3"
               :class="watched.has(node.id) ? 'text-accent' : 'text-text-muted opacity-0 group-hover:opacity-100 focus:opacity-100'"
@@ -458,7 +671,7 @@ const nameInputClass =
       <li v-if="!playlists.length && !naming" class="px-4 py-2 text-text-muted">No playlists yet.</li>
     </ul>
     <!-- A playlist's settings, over the whole window. -->
-    <Teleport to="body">
+    <Teleport v-if="!library" to="body">
       <div
         v-if="settingsNode"
         class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-6"
@@ -574,37 +787,5 @@ const nameInputClass =
         </div>
       </div>
     </Teleport>
-    <!-- Icons that are always there, so picking a playlist or asking to delete one moves nothing. -->
-    <div class="flex shrink-0 items-center gap-1 border-t border-border p-1.5">
-      <button :class="treeButtonClass" class="whitespace-nowrap" title="New playlist" @click="startCreate(false)">+ Playlist</button>
-      <button :class="treeButtonClass" class="whitespace-nowrap" title="New folder" @click="startCreate(true)">+ Folder</button>
-      <span class="flex-1" />
-        <button
-          :class="iconButtonClass"
-          :disabled="!selectedNode"
-          :title="selectedNode ? `Rename “${selectedNode.name}”` : 'Rename (pick a playlist first)'"
-          aria-label="Rename"
-          @click="selectedNode && startRename(selectedNode)"
-        >
-          <svg viewBox="0 0 16 16" class="size-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M11 2.5l2.5 2.5L5.5 13H3v-2.5l8-8zM9.5 4l2.5 2.5" />
-          </svg>
-        </button>
-        <button
-          :class="iconButtonClass"
-          :disabled="!selectedNode"
-          :title="!selectedNode
-            ? 'Delete (pick a playlist first)'
-            : selectedNode.kind === 'folder'
-              ? 'Delete this folder and the playlists in it. Tracks stay in the collection.'
-              : 'Delete this playlist. Its tracks stay in the collection.'"
-          aria-label="Delete"
-          @click="selectedNode && deletePlaylist(selectedNode)"
-        >
-          <svg viewBox="0 0 16 16" class="size-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path :d="TRASH_ICON" />
-          </svg>
-        </button>
-    </div>
   </div>
 </template>

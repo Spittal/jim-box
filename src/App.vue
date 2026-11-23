@@ -47,6 +47,8 @@ watch(libraryOpen, async (open) => {
   if (!open) return;
   // The library is read while the rest loads, so the list is there sooner.
   useCollectionStore().open();
+  void librariesStore.refresh();
+  void librariesStore.refreshPlugged();
   await Promise.all([settingsStore.load(), soulseekStore.load(), jobsStore.load(), libraryStore.load()]);
   loaded.value = true;
 });
@@ -100,7 +102,7 @@ function typing() {
 
 /** Undoes or redoes the last change to the library, and says what it was. */
 async function undo(redo: boolean) {
-  const what = await useCollectionStore().undo(redo);
+  const what = await useCollectionStore().undo(redo, useBrowseStore().library);
   // A failure says so itself.
   if (what === undefined) return;
   useBrowseStore().notice = what

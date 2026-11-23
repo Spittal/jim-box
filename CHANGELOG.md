@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Other libraries beside yours.** Open library… at the foot of the sidebar opens a USB stick, or a folder with a rekordbox master.db in it (a backup, another computer's library, one kept on a drive). It gets its own part of the sidebar under yours, which is then labelled Master library, and you can open several.
+  - Browse and play its tracks as you do your own, with their beat grids, cues and waveforms.
+  - Drag tracks or playlists from one library to another. Whatever they come from wins: tracks you don't have are copied in, and ones you have take its beat grid, cues, rating and colour. Playlists with the same names in the same folders are updated to match.
+  - Right-click a library's title to import or update your library from all of it, read it again, or close it. Right-click tracks or playlists to send them elsewhere.
+  - A drive plugged in with a library on it is offered in the sidebar. A stick's library closes when it's pulled out, and the libraries you had open open again next time.
+- **Changing a stick, then writing it.** Playlists made, renamed, deleted or filled on a stick, and your library's tracks and playlists dragged onto it, wait to be written, shown in italics. The USB button says how many changes are waiting; Apply to drive writes them all at once, both of the stick's databases alike. "Update Stick from Library" lines up the playlists it was exported with.
+- New playlist and New folder are icons beside PLAYLISTS, in each library.
+
 ## 1.7.0
 
 ### New

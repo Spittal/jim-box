@@ -6,9 +6,11 @@ import { asking } from '@/composables/useConfirm';
 import { formatBytes } from '@/composables/useFormat';
 import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
+import { useLibrariesStore } from '@/stores/libraries';
 import { useUiStore } from '@/stores/ui';
 import { useUsbStore } from '@/stores/usb';
 import type { PlaylistNode } from '@/types/collection';
+import type { StagedSummary } from '@/types/libraries';
 import type { UsbConvert, UsbDevice, UsbEstimate, UsbStage } from '@/types/usb';
 
 /**
@@ -20,6 +22,27 @@ const ui = useUiStore();
 const usb = useUsbStore();
 const { devices, looking, exporting, progress, percent, stopping, report, error } = storeToRefs(usb);
 const { playlists } = storeToRefs(useCollectionStore());
+const libraries = useLibrariesStore();
+
+// --- Changes waiting for sticks -------------------------------------------------
+
+/** What's waiting for a stick, in a few words. */
+function describeStaged(staged: StagedSummary): string {
+  const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+  const parts: string[] = [];
+  if (staged.exported) parts.push(`${count(staged.exported, 'playlist')} from your library`);
+  if (staged.playlistsMade) parts.push(`${count(staged.playlistsMade, 'new playlist')}`);
+  if (staged.renamed) parts.push(`${staged.renamed} renamed`);
+  if (staged.deleted) parts.push(`${staged.deleted} deleted`);
+  if (staged.added) parts.push(`${count(staged.added, 'track')} added to playlists`);
+  if (staged.removed) parts.push(`${staged.removed} taken out`);
+  if (staged.tracksToCopy) parts.push(`${count(staged.tracksToCopy, 'track')} to copy`);
+  return parts.join(' · ') || count(staged.changes, 'change');
+}
+
+async function applyStaged(id: string) {
+  await libraries.apply(id, ejectAfter.value, convert.value);
+}
 
 // --- The stick ----------------------------------------------------------------
 
@@ -253,6 +276,41 @@ watch(devices, (now) => {
         </header>
 
         <div class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-5">
+          <!-- Changes made to open sticks in the sidebar, waiting to be written. -->
+          <section v-if="libraries.staged.length" class="flex flex-col gap-2">
+            <h2 class="section-label">Changes waiting</h2>
+            <div
+              v-for="stick in libraries.staged"
+              :key="stick.id"
+              class="flex items-center gap-3 rounded border border-accent/50 bg-accent/5 px-3 py-2"
+            >
+              <span class="flex min-w-0 flex-1 flex-col">
+                <span class="truncate text-sm">{{ stick.name }}</span>
+                <span class="text-xs text-text-muted">{{ describeStaged(stick.staged!) }}</span>
+              </span>
+              <button
+                class="shrink-0 rounded px-2 py-1 text-xs text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary disabled:opacity-50"
+                :disabled="!!exporting"
+                title="Forget these changes. The stick stays as it is."
+                @click="libraries.discard(stick.id)"
+              >
+                Discard
+              </button>
+              <button
+                class="shrink-0 rounded bg-accent px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
+                :disabled="!!exporting"
+                :title="ejectAfter ? 'Write the changes to the stick, then eject it' : 'Write the changes to the stick'"
+                @click="applyStaged(stick.id)"
+              >
+                Apply to drive
+              </button>
+            </div>
+            <p class="text-xs text-text-muted">
+              Made in the sidebar. Your library’s tracks are copied on first, with their cues, grids and waveforms;
+              playlists only on the stick stay as they are.
+            </p>
+          </section>
+
           <p class="text-xs text-text-muted">
             Makes a stick that CDJs and other players read: the playlists ticked, with their tracks’ cues, grids and
             waveforms. Exporting again brings it up to date, copying only what changed.

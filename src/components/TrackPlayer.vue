@@ -18,6 +18,7 @@ import { editedGrid, nearestBeatIndex, sameGrid } from '@/composables/useGridEdi
 import { useKeyNotation } from '@/composables/useKeyNotation';
 import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
+import { libraryOf, useLibrariesStore } from '@/stores/libraries';
 import { useUiStore } from '@/stores/ui';
 import { commandKey, shortcut } from '@/platform';
 import type { Beat, CollectionEdit, CollectionTrack, Cue, GridChange, Preparation } from '@/types/collection';
@@ -33,6 +34,9 @@ const props = defineProps<{ track: CollectionTrack | null }>();
 const emit = defineEmits<{ close: []; ended: [] }>();
 
 const store = useCollectionStore();
+const libraries = useLibrariesStore();
+/** A track on a USB stick (or on its way to one) is played, not changed: its cues and grid are the stick's. */
+const readOnly = computed(() => !!props.track && (!!props.track.pending || libraries.kindOf(libraryOf(props.track.id)) === 'stick'));
 const browse = useBrowseStore();
 const ui = useUiStore();
 const { formatKey } = useKeyNotation();
@@ -475,6 +479,10 @@ function change(
   { show, settle, cueId }: { show?: () => void; settle?: () => Promise<void>; cueId?: string } = {},
 ): Promise<boolean> {
   if (!props.track) return Promise.resolve(false);
+  if (readOnly.value) {
+    error.value = "A stick's tracks are changed in your library, then written to the stick.";
+    return Promise.resolve(false);
+  }
   const trackId = props.track.id;
   error.value = null;
   const undo = undoStack.value;
@@ -756,7 +764,7 @@ function typePlayBpm(event: Event) {
 /** Clicking the current rating clears it, as in rekordbox. */
 function rate(stars: number) {
   const track = props.track;
-  if (!track) return;
+  if (!track || readOnly.value) return;
   const next = track.rating === stars ? 0 : stars;
   browse.patchTrack(track.id, { rating: next });
   store.edit({ kind: 'setRating', trackId: track.id, stars: next });
@@ -1439,7 +1447,7 @@ const statValueClass = 'font-mono text-base font-semibold text-text-primary';
           </button>
           <button
             :class="locked ? onClass : buttonClass"
-            :disabled="!beats.length"
+            :disabled="!beats.length || readOnly"
             :title="locked
               ? 'The grid is locked, here and in rekordbox: it can\'t be changed or analysed over. Click to unlock.'
               : 'Lock the grid, here and in rekordbox, so it can\'t be changed or analysed over'"

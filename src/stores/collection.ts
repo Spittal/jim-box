@@ -2,6 +2,7 @@ import { acceptHMRUpdate, defineStore } from 'pinia';
 import { ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { showToast } from '@/composables/useToast';
+import { libraryOf, useLibrariesStore } from './libraries';
 import type {
   AnalysisEvent,
   AnalysisProgress,
@@ -20,7 +21,25 @@ import type {
   Waiting,
 } from '@/types/collection';
 
-/** rekordbox's library, read from its master.db by the backend. */
+/** The library an edit is of, from the ids in it: null for the master. */
+function libraryOfEdit(change: CollectionEdit): string | null {
+  const ids = Object.entries(change)
+    .filter(([key]) => key !== 'kind' && key !== 'name' && key !== 'value' && key !== 'comment')
+    .flatMap(([, value]) => (Array.isArray(value) ? value : [value]))
+    .filter((value): value is string => typeof value === 'string');
+  for (const id of ids) {
+    const library = libraryOf(id);
+    if (library) return library;
+  }
+  return null;
+}
+
+/**
+ * rekordbox's library, read from its master.db by the backend: the master,
+ * whose state this holds. The other libraries opened beside it (see the
+ * libraries store) are listed and changed through it too, their ids saying
+ * which they are.
+ */
 export const useCollectionStore = defineStore('collection', () => {
   const status = ref<CollectionStatus | null>(null);
   const playlists = ref<PlaylistNode[]>([]);
@@ -97,17 +116,19 @@ export const useCollectionStore = defineStore('collection', () => {
   const fieldValues = new Map<string, { generation: number; names: Promise<string[]> }>();
 
   /**
-   * Every artist, album or genre the collection's tracks have, the most used
-   * first: what to offer as one is typed. Empty if they can't be read.
+   * Every artist, album or genre the collection's tracks have (or another
+   * library's, given its id), the most used first: what to offer as one is
+   * typed. Empty if they can't be read.
    */
-  function namesOf(field: 'artist' | 'album' | 'genre'): Promise<string[]> {
-    const held = fieldValues.get(field);
+  function namesOf(field: 'artist' | 'album' | 'genre', library: string | null = null): Promise<string[]> {
+    const key = `${library ?? ''}/${field}`;
+    const held = fieldValues.get(key);
     if (held?.generation === generation.value) return held.names;
-    const names = invoke<string[]>('collection_field_values', { field }).catch(() => {
-      fieldValues.delete(field);
+    const names = invoke<string[]>('collection_field_values', { field, library }).catch(() => {
+      fieldValues.delete(key);
       return [];
     });
-    fieldValues.set(field, { generation: generation.value, names });
+    fieldValues.set(key, { generation: generation.value, names });
     return names;
   }
 
@@ -121,11 +142,21 @@ export const useCollectionStore = defineStore('collection', () => {
    */
   async function edit(
     change: CollectionEdit,
-    { quiet = false, group = null }: { quiet?: boolean; group?: string | null } = {},
+    {
+      quiet = false,
+      group = null,
+      library = libraryOfEdit(change),
+    }: { quiet?: boolean; group?: string | null; library?: string | null } = {},
   ): Promise<string | null | undefined> {
     error.value = null;
     try {
-      const outcome = await invoke<EditOutcome>('edit_collection', { edit: change, group });
+      const outcome = await invoke<EditOutcome>('edit_collection', { edit: change, group, library });
+      if (library) {
+        // Another library's: its own state changes, not the master's.
+        useLibrariesStore().updated(library, outcome);
+        if (!quiet) generation.value++;
+        return outcome.createdId;
+      }
       status.value = outcome.status;
       // Done, though not all of it: say what wasn't.
       error.value = outcome.warning;
@@ -168,14 +199,17 @@ export const useCollectionStore = defineStore('collection', () => {
    * makes the last one undone again. Returns what it was, null when there
    * was nothing; on failure sets `error` and returns undefined.
    */
-  async function undo(redo = false): Promise<string | null | undefined> {
+  async function undo(redo = false, library: string | null = null): Promise<string | null | undefined> {
     error.value = null;
     try {
       // The last change made may not have been written yet.
       await Promise.all([...settling].map((wait) => wait()));
-      const outcome = await invoke<UndoOutcome>('undo_collection', { redo });
-      status.value = outcome.status;
-      playlists.value = outcome.playlists;
+      const outcome = await invoke<UndoOutcome>('undo_collection', { redo, library });
+      if (library) useLibrariesStore().updated(library, outcome);
+      else {
+        status.value = outcome.status;
+        playlists.value = outcome.playlists;
+      }
       generation.value++;
       if (outcome.what) undone.value = { trackIds: outcome.trackIds };
       return outcome.what;

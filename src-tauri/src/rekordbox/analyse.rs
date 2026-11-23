@@ -343,13 +343,13 @@ pub(super) fn replace_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+pub(crate) mod tests {
     use super::super::tests::{fixture, query};
     use super::super::{Sort, Source};
     use super::*;
 
     /// A 16-bit stereo WAV with a click on every beat over a quiet tone.
-    pub(in super::super) fn click_track(path: &Path, bpm: f64, secs: u32) {
+    pub(crate) fn click_track(path: &Path, bpm: f64, secs: u32) {
         const RATE: u32 = 44_100;
         let frames = RATE * secs;
         let beat = f64::from(RATE) * 60.0 / bpm;

@@ -7,6 +7,7 @@ import { formatAgo, formatClock, formatLength } from '@/composables/useFormat';
 import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
 import { useJobsStore } from '@/stores/jobs';
+import { useLibrariesStore } from '@/stores/libraries';
 import { usePlaylistStore } from '@/stores/playlist';
 import { shortcut } from '@/platform';
 
@@ -36,12 +37,22 @@ const {
 } = storeToRefs(browse);
 const playlistStore = usePlaylistStore();
 const jobs = useJobsStore();
+const libraries = useLibrariesStore();
+
+/** The library shown, when it isn't the master. */
+const other = computed(() => libraries.get(browse.library));
+/** What's said of the library shown: how many tracks, where, and whether rekordbox holds it. */
+const shownStatus = computed(() => (other.value ? other.value.status : status.value));
+const shownPath = computed(() => (other.value ? other.value.path : status.value?.masterDb));
 
 /** The names of the lists being shown together, when there are several. */
 const listNames = computed(() =>
-  lists.value.length > 1 ? lists.value.map((id) => store.playlists.find((p) => p.id === id)?.name ?? '').join(', ') : '',
+  lists.value.length > 1 ? lists.value.map((id) => browse.shownPlaylists.find((p) => p.id === id)?.name ?? '').join(', ') : '',
 );
-const heading = computed(() => selectedNode.value?.name ?? (listNames.value || 'Collection'));
+const heading = computed(() => {
+  const list = selectedNode.value?.name ?? (listNames.value || (other.value?.kind === 'stick' ? 'All tracks' : 'Collection'));
+  return other.value ? `${other.value.name} · ${list}` : list;
+});
 /** How many tracks, and how long they'd play one after another. */
 const countLabel = computed(() => {
   const count = `${total.value} ${total.value === 1 ? 'track' : 'tracks'}`;
@@ -110,7 +121,7 @@ async function toggleFilterMenu() {
   filterMenu.value = !filterMenu.value;
   if (!filterMenu.value) return;
   genreSearch.value = '';
-  genres.value = await store.namesOf('genre');
+  genres.value = await store.namesOf('genre', browse.library);
 }
 
 function toggleRating(stars: number) {
@@ -223,6 +234,7 @@ const buttonClass =
             @keydown.esc.stop="libraryMenu = false"
           >
             <button
+              v-if="!other"
               role="menuitem"
               :class="menuItemClass"
               :title="inPlaylist ? 'Add music files to the collection and this playlist' : 'Add music files to the collection'"
@@ -231,6 +243,7 @@ const buttonClass =
               Add files…
             </button>
             <button
+              v-if="!other"
               role="menuitem"
               :class="menuItemClass"
               :title="inPlaylist ? 'Add all the music in a folder to the collection and this playlist' : 'Add all the music in a folder to the collection'"
@@ -240,11 +253,10 @@ const buttonClass =
             </button>
             <button
               role="menuitem"
-              :class="menuItemClass"
-              class="mt-1 border-t border-border pt-1.5"
+              :class="[menuItemClass, other ? '' : 'mt-1 border-t border-border pt-1.5']"
               :disabled="loading"
-              title="Read the library again to pick up changes made in rekordbox"
-              @click="pickFromMenu(() => store.open())"
+              title="Read the library again to pick up changes made elsewhere"
+              @click="pickFromMenu(() => (other ? libraries.reload(other.id) : store.open()))"
             >
               Refresh
             </button>
@@ -254,18 +266,18 @@ const buttonClass =
       <div class="min-w-0 flex-1">
         <h1 class="truncate text-sm font-medium" :title="listNames || undefined">{{ heading }}</h1>
         <p class="truncate font-mono text-xs text-text-muted">
-          <template v-if="status">{{ countLabel }} · {{ status.masterDb }}</template>
+          <template v-if="shownStatus">{{ countLabel }} · {{ shownPath }}</template>
           <template v-else-if="loading">Reading your rekordbox library…</template>
         </p>
       </div>
       <div class="flex shrink-0 items-center gap-2">
         <span
-          v-if="status?.rekordboxRunning"
+          v-if="shownStatus?.rekordboxRunning && other?.kind !== 'stick'"
           class="rounded bg-status-busy/15 px-2 py-0.5 text-[11px] text-status-busy"
           title="rekordbox (or its background agent) is running. Its library can be read, but not changed, until you quit it."
         >rekordbox is open: read-only</span>
         <button
-          v-if="waiting.count"
+          v-if="waiting.count && !other"
           class="rounded bg-status-busy/15 px-2 py-0.5 text-[11px] text-status-busy hover:bg-status-busy/25"
           :title="`${waiting.error ?? 'Waiting for rekordbox to close.'} Click to try adding them now.`"
           @click="store.open()"

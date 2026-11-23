@@ -2,6 +2,7 @@ import { acceptHMRUpdate, defineStore } from 'pinia';
 import { computed, ref, shallowRef, watch } from 'vue';
 import { useCollectionStore } from './collection';
 import { useJobsStore } from './jobs';
+import { libraryOf, useLibrariesStore } from './libraries';
 import { usePlaylistStore } from './playlist';
 import { useSettingsStore } from './settings';
 import type { CollectionTrack, TrackQuery, TrackSort, TrackSource } from '@/types/collection';
@@ -35,6 +36,18 @@ export const useBrowseStore = defineStore('browse', () => {
   const jobs = useJobsStore();
   const playlist = usePlaylistStore();
   const settings = useSettingsStore();
+  const libraries = useLibrariesStore();
+
+  // --- Which library ------------------------------------------------------------
+
+  /** The library whose lists are shown: null for the master, else another library's id. */
+  const library = ref<string | null>(null);
+  /** What it is: the master, another master.db, or a USB stick. */
+  const libraryKind = computed(() => libraries.kindOf(library.value));
+  /** Its playlist tree. */
+  const shownPlaylists = computed(() =>
+    library.value ? (libraries.get(library.value)?.playlists ?? []) : collection.playlists,
+  );
 
   // --- Which list -------------------------------------------------------------
 
@@ -67,44 +80,54 @@ export const useBrowseStore = defineStore('browse', () => {
     ratingFilter.value = [];
   }
 
-  const selectedNode = computed(() => collection.playlists.find((p) => p.id === selected.value) ?? null);
+  const selectedNode = computed(() => shownPlaylists.value.find((p) => p.id === selected.value) ?? null);
   const inPlaylist = computed(() => selectedNode.value?.kind === 'playlist');
-  /** Where a fetched track goes besides the collection. */
-  const targetPlaylist = computed(() => (inPlaylist.value ? selectedNode.value : null));
+  /** Where a fetched track goes besides the collection: a playlist of the master only. */
+  const targetPlaylist = computed(() => (inPlaylist.value && !library.value ? selectedNode.value : null));
 
   /** The playlists tracks can be taken out of here: the ones shown, unless a folder or an intelligent playlist is among them. */
   const removableFrom = computed(() => {
-    const kinds = lists.value.map((id) => collection.playlists.find((p) => p.id === id)?.kind);
+    const kinds = lists.value.map((id) => shownPlaylists.value.find((p) => p.id === id)?.kind);
     return kinds.length && kinds.every((kind) => kind === 'playlist') ? lists.value : [];
   });
 
-  /** A playlist opens in its own order; the collection, newest first. */
-  function select(id: string | null) {
+  /**
+   * A playlist opens in its own order; the collection, newest first. A
+   * playlist's id says which library it's of; with none, `of` is the
+   * library whose whole collection to show.
+   */
+  function select(id: string | null, of: string | null = libraryOf(id)) {
+    library.value = id === null ? of : libraryOf(id);
     lists.value = id === null ? [] : [id];
     focus.value = null;
-    const ordered = id !== null && collection.playlists.find((p) => p.id === id)?.kind === 'playlist';
+    const ordered = id !== null && shownPlaylists.value.find((p) => p.id === id)?.kind === 'playlist';
     sort.value = ordered ? 'trackNo' : 'dateAdded';
     descending.value = !ordered;
   }
 
   /** Shows several playlists as one list, each one's tracks after the last's; one or none is as `select`. */
   function selectSeveral(ids: string[]) {
-    if (ids.length < 2) return select(ids[0] ?? null);
+    if (ids.length < 2) return select(ids[0] ?? null, library.value);
     // From the collection, they open in their own order, as one playlist does.
     if (!lists.value.length) {
       sort.value = 'trackNo';
       descending.value = false;
     }
+    library.value = libraryOf(ids[0]);
     lists.value = ids;
     focus.value = null;
   }
 
   // A playlist deleted (here or in rekordbox) is no longer shown; the last one going falls back to the collection.
+  watch(shownPlaylists, (now) => {
+    const left = lists.value.filter((id) => now.some((p) => p.id === id));
+    if (left.length !== lists.value.length) selectSeveral(left);
+  });
+  // A library closed (or its stick pulled out) is no longer shown.
   watch(
-    () => collection.playlists,
-    (now) => {
-      const left = lists.value.filter((id) => now.some((p) => p.id === id));
-      if (left.length !== lists.value.length) selectSeveral(left);
+    () => libraries.others,
+    () => {
+      if (library.value && !libraries.get(library.value)) select(null, null);
     },
   );
 
@@ -134,6 +157,7 @@ export const useBrowseStore = defineStore('browse', () => {
       // In one order, so picking the same genres another way round isn't a different list.
       genres: [...genreFilter.value].sort(),
       ratings: [...ratingFilter.value].sort(),
+      library: library.value,
     };
   });
 
@@ -399,7 +423,7 @@ export const useBrowseStore = defineStore('browse', () => {
 
   /** The Spotify side of the playlist being shown, if it came from Spotify. */
   const link = computed(() =>
-    playlist.linked && playlist.linked.playlistId === selected.value ? playlist.linked : null,
+    playlist.linked && !library.value && playlist.linked.playlistId === selected.value ? playlist.linked : null,
   );
 
   const pendingRows = computed<PendingRow[]>(() => {
@@ -438,14 +462,21 @@ export const useBrowseStore = defineStore('browse', () => {
   // By what it asks for: it's made afresh whenever something it reads changes, a setting saved among them.
   watch(() => JSON.stringify(query.value), resetList);
   watch(() => collection.generation, refreshList);
+  watch(
+    () => libraries.generation,
+    () => library.value && refreshList(),
+  );
   // The Spotify side follows the playlist shown, and the collection as tracks land.
   watch(
     [selected, inPlaylist, () => collection.generation],
-    () => playlist.show(inPlaylist.value ? selected.value : null),
+    () => playlist.show(inPlaylist.value && !library.value ? selected.value : null),
     { immediate: true },
   );
 
   return {
+    library,
+    libraryKind,
+    shownPlaylists,
     lists,
     selected,
     removableFrom,

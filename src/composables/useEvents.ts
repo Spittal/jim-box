@@ -4,6 +4,7 @@ import { useCollectionStore } from '@/stores/collection';
 import { useSoulseekStore } from '@/stores/soulseek';
 import { useJobsStore } from '@/stores/jobs';
 import { useLibraryStore } from '@/stores/library';
+import { useLibrariesStore } from '@/stores/libraries';
 import { usePlaylistStore } from '@/stores/playlist';
 import { useUsbStore } from '@/stores/usb';
 import type { AnalysisEvent, Waiting } from '@/types/collection';
@@ -21,6 +22,7 @@ export function useEvents() {
   const playlist = usePlaylistStore();
   const collection = useCollectionStore();
   const usb = useUsbStore();
+  const libraries = useLibrariesStore();
   const unlisteners: Promise<UnlistenFn>[] = [
     listen<SoulseekStatus>('soulseek-status', (e) => {
       soulseek.status = e.payload;
@@ -39,6 +41,12 @@ export function useEvents() {
       playlist.progress = e.payload;
     }),
     listen<string>('playlist-synced', (e) => playlist.synced(e.payload)),
+    // Another library opened, closed or changed (a stick pulled out closes its own).
+    listen('libraries-changed', () => libraries.refresh()),
+    listen('volumes-changed', () => {
+      void libraries.refreshPlugged();
+      if (usb.devices.length || usb.looking) void usb.load();
+    }),
     listen<UsbProgress>('usb-progress', (e) => {
       // One that arrives after the export is over says nothing new.
       if (usb.exporting) usb.progress = e.payload;

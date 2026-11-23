@@ -5,6 +5,7 @@
 //! analysis files, with its tempo mirrored on the track's row.
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 use std::path::{Path, PathBuf};
 
 use rbl_anlz::grid::{apply_with_duration, tempo_x100, validate, Edit as AnlzEdit};
@@ -40,7 +41,7 @@ pub struct Cue {
 /// rekordbox's View › Color › HOT CUE color: the colours hot cues without one
 /// of their own are drawn in, by pad.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HotCueColors {
+pub(super) enum HotCueColors {
     Cdj,
     Cold1,
     Cold2,
@@ -50,7 +51,7 @@ enum HotCueColors {
 impl HotCueColors {
     /// What rekordbox is set to (`HotCueColorType` in `rekordbox3.settings`);
     /// COLORFUL, its default, when that can't be read.
-    fn installed() -> Self {
+    pub(super) fn installed() -> Self {
         rbl_db::locate::Sources::installed()
             .ok()
             .and_then(|sources| std::fs::read_to_string(sources.rekordbox_settings?).ok())
@@ -85,7 +86,7 @@ impl HotCueColors {
     /// `djmdCue.ColorTableIndex` is `index`. One given a colour keeps it; one
     /// without (0, NULL or off the palette) takes its pad's, or if it's a
     /// loop, orange in every mode.
-    fn color_of(self, index: i64, slot: u8, is_loop: bool) -> String {
+    pub(super) fn color_of(self, index: i64, slot: u8, is_loop: bool) -> String {
         /// Every table's entry for a loop.
         const LOOP: u8 = 36;
         let own = u8::try_from(index).ok().filter(|index| (1..=64).contains(index));
@@ -135,9 +136,9 @@ pub(super) struct WavePreview {
     /// When the two files it could come from were last written.
     stamp: [Option<std::time::SystemTime>; 2],
     /// 7, 5 or 3; 0 when the files hold no waveform.
-    kind: u8,
-    columns: std::sync::Arc<Vec<u8>>,
-    duration_ms: Option<u32>,
+    pub(super) kind: u8,
+    pub(super) columns: std::sync::Arc<Vec<u8>>,
+    pub(super) duration_ms: Option<u32>,
 }
 
 /// What the track list shows of a track: its whole waveform, small, and its cues.
@@ -225,7 +226,7 @@ pub enum GridChange {
     Restore { beats: Vec<(u32, u8, u16)> },
 }
 
-fn slot_of(kind: i64) -> Option<u8> {
+pub(super) fn slot_of(kind: i64) -> Option<u8> {
     HOT_KINDS.iter().position(|&k| i64::from(k) == kind).map(|slot| slot as u8)
 }
 
@@ -340,16 +341,7 @@ impl Collection {
             return Ok(Vec::new());
         }
         let [_, ext, two_ex] = analysis_files(&loaded.location.share_root, relative);
-        let mut bytes = Vec::new();
-        for (file, kind, tag) in [(&two_ex, 7u8, b"PWV7"), (&ext, 5, b"PWV5"), (&ext, 3, b"PWV3")] {
-            let Ok(anlz) = rbl_anlz::Anlz::read(file) else { continue };
-            if let Some((_, columns)) = anlz.waveform(tag).filter(|(_, columns)| !columns.is_empty()) {
-                bytes.push(kind);
-                bytes.extend_from_slice(&(columns.len() as u32).to_le_bytes());
-                bytes.extend_from_slice(columns);
-            }
-        }
-        Ok(bytes)
+        Ok(waveform_from(&ext, &two_ex))
     }
 
     /// What the track list shows of each of these tracks: a small waveform
@@ -357,7 +349,6 @@ impl Collection {
     /// first it has of those; and its cues. Tracks no longer in the
     /// collection are left out. Blocking.
     pub fn previews(&self, track_ids: &[String], prefer: u8) -> AppResult<Vec<Preview>> {
-        const FORMS: [(u8, &[u8; 4]); 3] = [(7, b"PWV7"), (5, b"PWV5"), (3, b"PWV3")];
         let loaded = self.loaded_or_read()?;
         let index = &loaded.index;
         let db = rbl_db::Library::open(loaded.location.clone(), OpenMode::ReadOnly).map_err(rekordbox_err)?;
@@ -379,34 +370,7 @@ impl Collection {
             let relative = index.analysis_path.get(row);
             if !relative.is_empty() {
                 let [_, ext, two_ex] = analysis_files(&loaded.location.share_root, relative);
-                // Shrinking a waveform means reading the whole of its file: done
-                // once for each state of the files, not each time a row is shown.
-                let stamp = [&ext, &two_ex].map(|file| std::fs::metadata(file).and_then(|m| m.modified()).ok());
-                let key = (relative.to_owned(), prefer);
-                let held = self.wave_previews.lock().expect("previews lock poisoned").get(&key).filter(|held| held.stamp == stamp).cloned();
-                let wave = held.unwrap_or_else(|| {
-                    let mut wave = WavePreview { stamp, kind: 0, columns: std::sync::Arc::default(), duration_ms: None };
-                    let preferred = FORMS.iter().filter(|(kind, _)| *kind == prefer);
-                    let mut read: [Option<Option<rbl_anlz::Anlz>>; 2] = [None, None];
-                    for &(kind, tag) in preferred.chain(FORMS.iter().filter(|(kind, _)| *kind != prefer)) {
-                        // Each file is read once, whichever of its forms are looked for.
-                        let (at, file) = if kind == 7 { (1, &two_ex) } else { (0, &ext) };
-                        let Some(anlz) = read[at].get_or_insert_with(|| rbl_anlz::Anlz::read(file).ok()) else { continue };
-                        let Some((_, data)) = anlz.waveform(tag).filter(|(_, data)| !data.is_empty()) else { continue };
-                        wave.kind = kind;
-                        wave.columns = std::sync::Arc::new(shrink(kind, data, PREVIEW_COLUMNS));
-                        // 150 columns a second: the waveform's own length, to the millisecond.
-                        let ms = (data.len() / stride_of(kind)) as u64 * 1000 / 150;
-                        wave.duration_ms = Some(u32::try_from(ms).unwrap_or(u32::MAX));
-                        break;
-                    }
-                    let mut previews = self.wave_previews.lock().expect("previews lock poisoned");
-                    if previews.len() >= MAX_HELD_PREVIEWS {
-                        previews.clear();
-                    }
-                    previews.insert(key, wave.clone());
-                    wave
-                });
+                let wave = wave_preview(&self.wave_previews, relative, &ext, &two_ex, prefer);
                 preview.kind = wave.kind;
                 preview.columns = wave.columns.to_vec();
                 if let Some(ms) = wave.duration_ms {
@@ -424,7 +388,7 @@ impl Collection {
     /// stop. The audio is on the timeline rekordbox keeps for the file: the
     /// one its cues and beat grid are measured on, which for some MP3s is
     /// not where other players start. Blocking, for about a second.
-    pub fn decode_audio(&self, track_id: &str, mut sink: impl FnMut(Audio) -> bool) -> AppResult<()> {
+    pub fn decode_audio(&self, track_id: &str, sink: impl FnMut(Audio) -> bool) -> AppResult<()> {
         let loaded = self.loaded_or_read()?;
         let row = loaded
             .index
@@ -434,65 +398,123 @@ impl Collection {
         let path = PathBuf::from(super::local_path(loaded.index.folder_path.get(row)));
         let length_secs = u64::from(loaded.index.length_sec[row]);
         drop(loaded);
-        if !path.is_file() {
-            return Err(AppError::Rekordbox(format!("Its file is missing: {}", path.display())));
-        }
-        let mut stream = rbl_audio::MonoStream::open(&path)
-            .map_err(|e| AppError::Rekordbox(format!("The file couldn't be decoded: {e}")))?;
+        decode_file(&path, length_secs, sink)
+    }
+}
 
-        let mut pcm: Vec<u8> = Vec::new();
-        let mut started = false;
-        let mut decoded: u64 = 0;
-        // Bytes to gather before handing them on: a fifth of a second to
-        // start with, then eight seconds at a time.
-        let mut piece = 0;
-        while let Some((_, frames)) = stream.next_frames() {
-            pcm.reserve(frames.len() * 4);
-            decoded += frames.len() as u64;
-            for [left, right] in frames {
-                pcm.extend_from_slice(&left.to_le_bytes());
-                pcm.extend_from_slice(&right.to_le_bytes());
-            }
-            if !started {
-                // The rate is sure once a packet has been decoded.
-                started = true;
-                let rate = stream.sample_rate();
-                let frames = stream.expected_frames().unwrap_or((length_secs + 1) * u64::from(rate));
-                if !sink(Audio::Start { rate, frames: u32::try_from(frames).unwrap_or(u32::MAX) }) {
-                    return Ok(());
-                }
-                piece = rate as usize * 4 / 5;
-            }
-            if pcm.len() >= piece {
-                piece = stream.sample_rate() as usize * 4 * 8;
-                if !sink(Audio::Pcm(std::mem::take(&mut pcm))) {
-                    return Ok(());
-                }
-            }
+/// The small waveforms made for track lists, by analysis path and form.
+pub(super) type WavePreviews = Mutex<HashMap<(String, u8), WavePreview>>;
+
+/// A track's detailed waveforms from its `.EXT` and `.2EX`: see
+/// [`Collection::waveform`]. Empty when neither holds one.
+pub(super) fn waveform_from(ext: &Path, two_ex: &Path) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for (file, kind, tag) in [(two_ex, 7u8, b"PWV7"), (ext, 5, b"PWV5"), (ext, 3, b"PWV3")] {
+        let Ok(anlz) = rbl_anlz::Anlz::read(file) else { continue };
+        if let Some((_, columns)) = anlz.waveform(tag).filter(|(_, columns)| !columns.is_empty()) {
+            bytes.push(kind);
+            bytes.extend_from_slice(&(columns.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(columns);
+        }
+    }
+    bytes
+}
+
+/// A track's small waveform for the track list, in the form `prefer` where
+/// it has it, from its `.EXT` and `.2EX`. Kept in `held` under `key` while
+/// those files stay as they are: shrinking one reads the whole file.
+pub(super) fn wave_preview(held: &WavePreviews, key: &str, ext: &Path, two_ex: &Path, prefer: u8) -> WavePreview {
+    const FORMS: [(u8, &[u8; 4]); 3] = [(7, b"PWV7"), (5, b"PWV5"), (3, b"PWV3")];
+    let stamp = [ext, two_ex].map(|file| std::fs::metadata(file).and_then(|m| m.modified()).ok());
+    let key = (key.to_owned(), prefer);
+    if let Some(wave) = held.lock().expect("previews lock poisoned").get(&key).filter(|held| held.stamp == stamp) {
+        return wave.clone();
+    }
+    let mut wave = WavePreview { stamp, kind: 0, columns: std::sync::Arc::default(), duration_ms: None };
+    let preferred = FORMS.iter().filter(|(kind, _)| *kind == prefer);
+    let mut read: [Option<Option<rbl_anlz::Anlz>>; 2] = [None, None];
+    for &(kind, tag) in preferred.chain(FORMS.iter().filter(|(kind, _)| *kind != prefer)) {
+        // Each file is read once, whichever of its forms are looked for.
+        let (at, file) = if kind == 7 { (1, two_ex) } else { (0, ext) };
+        let Some(anlz) = read[at].get_or_insert_with(|| rbl_anlz::Anlz::read(file).ok()) else { continue };
+        let Some((_, data)) = anlz.waveform(tag).filter(|(_, data)| !data.is_empty()) else { continue };
+        wave.kind = kind;
+        wave.columns = std::sync::Arc::new(shrink(kind, data, PREVIEW_COLUMNS));
+        // 150 columns a second: the waveform's own length, to the millisecond.
+        let ms = (data.len() / stride_of(kind)) as u64 * 1000 / 150;
+        wave.duration_ms = Some(u32::try_from(ms).unwrap_or(u32::MAX));
+        break;
+    }
+    let mut previews = held.lock().expect("previews lock poisoned");
+    if previews.len() >= MAX_HELD_PREVIEWS {
+        previews.clear();
+    }
+    previews.insert(key, wave.clone());
+    wave
+}
+
+/// Decodes the audio file at `path` for the player: see
+/// [`Collection::decode_audio`]. `length_secs` is what the library measured
+/// it at, for telling a file cut short from its end. Blocking.
+pub(super) fn decode_file(path: &Path, length_secs: u64, mut sink: impl FnMut(Audio) -> bool) -> AppResult<()> {
+    if !path.is_file() {
+        return Err(AppError::Rekordbox(format!("Its file is missing: {}", path.display())));
+    }
+    let mut stream = rbl_audio::MonoStream::open(path)
+        .map_err(|e| AppError::Rekordbox(format!("The file couldn't be decoded: {e}")))?;
+
+    let mut pcm: Vec<u8> = Vec::new();
+    let mut started = false;
+    let mut decoded: u64 = 0;
+    // Bytes to gather before handing them on: a fifth of a second to
+    // start with, then eight seconds at a time.
+    let mut piece = 0;
+    while let Some((_, frames)) = stream.next_frames() {
+        pcm.reserve(frames.len() * 4);
+        decoded += frames.len() as u64;
+        for [left, right] in frames {
+            pcm.extend_from_slice(&left.to_le_bytes());
+            pcm.extend_from_slice(&right.to_le_bytes());
         }
         if !started {
-            return Err(AppError::Rekordbox("The file has no audio that could be decoded".into()));
+            // The rate is sure once a packet has been decoded.
+            started = true;
+            let rate = stream.sample_rate();
+            let frames = stream.expected_frames().unwrap_or((length_secs + 1) * u64::from(rate));
+            if !sink(Audio::Start { rate, frames: u32::try_from(frames).unwrap_or(u32::MAX) }) {
+                return Ok(());
+            }
+            piece = rate as usize * 4 / 5;
         }
-        if !pcm.is_empty() && !sink(Audio::Pcm(pcm)) {
-            return Ok(());
+        if pcm.len() >= piece {
+            piece = stream.sample_rate() as usize * 4 * 8;
+            if !sink(Audio::Pcm(std::mem::take(&mut pcm))) {
+                return Ok(());
+            }
         }
-        // The decoder ends on anything it can't read, as it does at the end of
-        // the file. Seconds short of both what the file says it holds and what
-        // rekordbox measured, it stopped early: said, so it isn't taken for the end.
-        let rate = u64::from(stream.sample_rate().max(1));
-        let short_of = |frames: u64| decoded + CUT_SHORT_SECS * rate < frames;
-        if stream.expected_frames().is_some_and(short_of) && short_of(length_secs * rate) {
-            let at = decoded / rate;
-            return Err(AppError::Rekordbox(format!(
-                "The file couldn't be read past {}:{:02} of {}:{:02}. It may be damaged.",
-                at / 60,
-                at % 60,
-                length_secs / 60,
-                length_secs % 60
-            )));
-        }
-        Ok(())
     }
+    if !started {
+        return Err(AppError::Rekordbox("The file has no audio that could be decoded".into()));
+    }
+    if !pcm.is_empty() && !sink(Audio::Pcm(pcm)) {
+        return Ok(());
+    }
+    // The decoder ends on anything it can't read, as it does at the end of
+    // the file. Seconds short of both what the file says it holds and what
+    // rekordbox measured, it stopped early: said, so it isn't taken for the end.
+    let rate = u64::from(stream.sample_rate().max(1));
+    let short_of = |frames: u64| decoded + CUT_SHORT_SECS * rate < frames;
+    if stream.expected_frames().is_some_and(short_of) && short_of(length_secs * rate) {
+        let at = decoded / rate;
+        return Err(AppError::Rekordbox(format!(
+            "The file couldn't be read past {}:{:02} of {}:{:02}. It may be damaged.",
+            at / 60,
+            at % 60,
+            length_secs / 60,
+            length_secs % 60
+        )));
+    }
+    Ok(())
 }
 
 /// How far short of its length a file's audio can stop before it's taken as cut short.

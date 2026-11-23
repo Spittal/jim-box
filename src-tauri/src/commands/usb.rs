@@ -35,7 +35,14 @@ pub async fn usb_export(
     convert: Option<CompatibilityFormat>,
     eject: bool,
 ) -> AppResult<Report> {
-    library::blocking(move || usb::export(&app, &path, &playlists, convert, eject)).await
+    library::blocking(move || {
+        let report = usb::export(&app, &path, &playlists, convert, eject);
+        if !eject {
+            crate::others::written(&app, &path);
+        }
+        report
+    })
+    .await
 }
 
 /// Stops the export under way; the stick is left as it was.

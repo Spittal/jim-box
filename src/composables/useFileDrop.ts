@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { dragging, dropTree, endDrag } from '@/composables/useDrag';
 import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
+import { libraryOf } from '@/stores/libraries';
 import { isWindows } from '@/platform';
 
 /** Adds files, and the music in folders, to the collection (and a playlist), and says how it went. */
@@ -32,6 +33,12 @@ type WebviewBridge = { postMessageWithAdditionalObjects(message: unknown, object
  * a playlist's name, '' for the collection alone, null when none are.
  */
 export function useFileDrop(ready: () => boolean) {
+  /** The master's playlist files dropped now would go into: files come into the master, whichever library is shown. */
+  function masterPlaylist(): string | null {
+    const id = dropTree.value ?? (browse.inPlaylist ? browse.selected : null);
+    return id && !id.startsWith('top:') && libraryOf(id) === null ? id : null;
+  }
+
   const browse = useBrowseStore();
   const collection = useCollectionStore();
 
@@ -79,7 +86,7 @@ export function useFileDrop(ready: () => boolean) {
     event.stopPropagation();
     depth = 0;
     if (!isOurs()) return;
-    const playlistId = dropTree.value ?? (browse.inPlaylist ? browse.selected : null);
+    const playlistId = masterPlaylist();
     endDrag();
     if (isWindows) {
       // The paths come back as a `files-dropped` event.
@@ -116,7 +123,7 @@ export function useFileDrop(ready: () => boolean) {
 
   return computed(() => {
     if (!isOurs()) return null;
-    const id = dropTree.value ?? (browse.inPlaylist ? browse.selected : null);
+    const id = masterPlaylist();
     return (id && collection.playlists.find((p) => p.id === id)?.name) || '';
   });
 }

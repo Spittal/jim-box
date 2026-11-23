@@ -115,6 +115,36 @@ fn named(name: &str) -> AppResult<&str> {
 }
 
 impl Edit {
+    /// The same change with every id in it (tracks, playlists, cues) put through `f`.
+    #[must_use]
+    pub fn map_ids(self, f: &mut impl FnMut(String) -> String) -> Self {
+        let all = |ids: Vec<String>, f: &mut dyn FnMut(String) -> String| ids.into_iter().map(f).collect::<Vec<_>>();
+        match self {
+            Self::CreatePlaylist { name, parent_id, folder } => Self::CreatePlaylist { name, parent_id: parent_id.map(&mut *f), folder },
+            Self::RenamePlaylist { id, name } => Self::RenamePlaylist { id: f(id), name },
+            Self::DeletePlaylist { id } => Self::DeletePlaylist { id: f(id) },
+            Self::MovePlaylist { id, parent_id, index } => Self::MovePlaylist { id: f(id), parent_id: parent_id.map(&mut *f), index },
+            Self::AddTracks { playlist_id, track_ids } => Self::AddTracks { playlist_id: f(playlist_id), track_ids: all(track_ids, f) },
+            Self::RemoveTracks { playlist_id, track_ids } => Self::RemoveTracks { playlist_id: f(playlist_id), track_ids: all(track_ids, f) },
+            Self::MoveTracks { playlist_id, track_ids, before } => Self::MoveTracks {
+                playlist_id: f(playlist_id),
+                track_ids: all(track_ids, f),
+                before: before.map(&mut *f),
+            },
+            Self::DeleteTracks { track_ids, trash_files } => Self::DeleteTracks { track_ids: all(track_ids, f), trash_files },
+            Self::SetRating { track_id, stars } => Self::SetRating { track_id: f(track_id), stars },
+            Self::SetColor { track_id, color } => Self::SetColor { track_id: f(track_id), color },
+            Self::SetComment { track_id, comment } => Self::SetComment { track_id: f(track_id), comment },
+            Self::SetField { track_id, field, value } => Self::SetField { track_id: f(track_id), field, value },
+            Self::AddCue { track_id, slot, position_ms, end_ms } => Self::AddCue { track_id: f(track_id), slot, position_ms, end_ms },
+            Self::DeleteCue { cue_id } => Self::DeleteCue { cue_id: f(cue_id) },
+            Self::NameCue { cue_id, comment } => Self::NameCue { cue_id: f(cue_id), comment },
+            Self::Grid { track_id, change, from_ms } => Self::Grid { track_id: f(track_id), change, from_ms },
+            Self::UseGrid { track_id, source } => Self::UseGrid { track_id: f(track_id), source },
+            Self::LockAnalysis { track_id, locked } => Self::LockAnalysis { track_id: f(track_id), locked },
+        }
+    }
+
     /// What the change is, to follow "Undid" or "Couldn't undo".
     fn what(&self) -> &'static str {
         match self {

@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
+import { libraryOf, useLibrariesStore } from '@/stores/libraries';
 import { commandKey } from '@/platform';
 import type { CollectionTrack, PlaylistNode } from '@/types/collection';
 
@@ -13,6 +14,7 @@ import type { CollectionTrack, PlaylistNode } from '@/types/collection';
 const props = defineProps<{ track: CollectionTrack }>();
 
 const store = useCollectionStore();
+const libraries = useLibrariesStore();
 const browse = useBrowseStore();
 
 const box = ref<HTMLElement | null>(null);
@@ -29,7 +31,9 @@ const MAX_OFFERED = 50;
 const SHOWN_AT_ONCE = 8;
 const OFFER_HEIGHT = 24;
 
-const byId = computed(() => new Map(store.playlists.map((p) => [p.id, p])));
+/** The playlist tree of the library the track is of. */
+const tree = computed(() => libraries.get(libraryOf(props.track.id))?.playlists ?? store.playlists);
+const byId = computed(() => new Map(tree.value.map((p) => [p.id, p])));
 
 /** The folders a playlist is in, outermost first: what tells two of a name apart. */
 function folderOf(node: PlaylistNode): string {
@@ -56,7 +60,7 @@ const offered = computed(() => {
   const starts: PlaylistNode[] = [];
   const words: PlaylistNode[] = [];
   const holds: PlaylistNode[] = [];
-  for (const node of store.playlists) {
+  for (const node of tree.value) {
     if (node.kind !== 'playlist' || inAlready.has(node.id)) continue;
     const at = node.name.toLowerCase().indexOf(typed);
     if (at === -1) continue;

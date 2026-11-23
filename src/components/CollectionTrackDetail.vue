@@ -13,6 +13,7 @@ import { formatDuration } from '@/composables/useFormat';
 import { formatKey as keyIn, useKeyNotation } from '@/composables/useKeyNotation';
 import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
+import { libraryOf, useLibrariesStore } from '@/stores/libraries';
 import { isActive, useJobsStore } from '@/stores/jobs';
 import { useLibraryStore } from '@/stores/library';
 import { useUiStore } from '@/stores/ui';
@@ -27,6 +28,12 @@ const { formatKey, allKeys } = useKeyNotation();
 const libraryStore = useLibraryStore();
 const jobsStore = useJobsStore();
 const browse = useBrowseStore();
+const libraries = useLibrariesStore();
+
+/** The track is the master's: identifying, fetching again and its grid's review are for those. */
+const inMaster = computed(() => libraryOf(props.track.id) === null);
+/** A stick's track (or one on its way to a stick) is as the stick has it: changed in the library, then written. */
+const readOnly = computed(() => !!props.track.pending || libraries.kindOf(libraryOf(props.track.id)) === 'stick');
 
 const actionError = ref<string | null>(null);
 const starting = ref(false);
@@ -50,6 +57,7 @@ async function run(action: () => Promise<unknown>) {
 }
 
 function redownload() {
+  if (!inMaster.value) return;
   starting.value = true;
   run(() => libraryStore.redownload(props.track.id)).finally(() => (starting.value = false));
 }
@@ -66,6 +74,7 @@ const fields: { id: TrackField; label: string }[] = [
 
 /** Saves a field when its box is left or Return is pressed, if it changed. */
 function commitField(field: TrackField, value: string) {
+  if (readOnly.value) return;
   if (value === props.track[field as 'title' | 'artist' | 'album' | 'genre']) return;
   browse.patchTrack(props.track.id, { [field]: value });
   store.edit({ kind: 'setField', trackId: props.track.id, field, value });
@@ -83,7 +92,7 @@ let dwell: ReturnType<typeof setTimeout> | undefined;
 
 /** A genre as the collection already spells it, or with its words capitalised: MusicBrainz's are in lower case. */
 async function spelled(genre: string): Promise<string> {
-  const names = await store.namesOf('genre');
+  const names = await store.namesOf('genre', libraryOf(props.track.id));
   const folded = genre.toLowerCase();
   return (
     names.find((name) => name.toLowerCase() === folded) ??
@@ -100,9 +109,10 @@ watch(
     clearTimeout(dwell);
     suggested.value = null;
     suggestError.value = null;
+    if (readOnly.value) return;
     dwell = setTimeout(async () => {
       try {
-        const found = await Promise.all((await libraryStore.genres(trackId)).map(spelled));
+        const found = await Promise.all((await libraryStore.genres(trackId)).map((genre) => spelled(genre)));
         if (props.track.id === trackId) suggested.value = [...new Set(found)];
       } catch (e) {
         if (props.track.id === trackId) suggestError.value = String(e);
@@ -122,6 +132,7 @@ const keyChoices = computed(() => {
 });
 
 function chooseKey(event: Event) {
+  if (readOnly.value) return;
   const value = (event.target as HTMLSelectElement).value;
   if (value === keyName.value) return;
   browse.patchTrack(props.track.id, { key: value });
@@ -129,6 +140,7 @@ function chooseKey(event: Event) {
 }
 
 function commitComment(event: Event) {
+  if (readOnly.value) return;
   const comment = (event.target as HTMLTextAreaElement).value;
   if (comment === props.track.comment) return;
   browse.patchTrack(props.track.id, { comment });
@@ -137,6 +149,7 @@ function commitComment(event: Event) {
 
 /** Clicking the current rating clears it, as in rekordbox. */
 function rate(stars: number) {
+  if (readOnly.value) return;
   const next = props.track.rating === stars ? 0 : stars;
   // Shown at once: saving takes a moment, and a star should answer the click.
   browse.patchTrack(props.track.id, { rating: next });
@@ -144,6 +157,7 @@ function rate(stars: number) {
 }
 
 function colour(color: number) {
+  if (readOnly.value) return;
   browse.patchTrack(props.track.id, { color });
   store.edit({ kind: 'setColor', trackId: props.track.id, color });
 }
@@ -191,7 +205,7 @@ function onKey(event: KeyboardEvent) {
 const beatGrid = ref<InstanceType<typeof BeatGridSection> | null>(null);
 
 function identify() {
-  if (!libraryStore.busy) run(() => libraryStore.identify([props.track.id]));
+  if (!libraryStore.busy && inMaster.value) run(() => libraryStore.identify([props.track.id]));
 }
 
 /** Keys pressed anywhere: ⌘L starts analysing the track again, ⌘I identifies it, ⌘R downloads it again and ⌘1 to ⌘5 give it its stars, from a text field too. */
@@ -233,6 +247,13 @@ const inputClass =
     <LibraryCover :key="track.path" :path="track.path" class="aspect-square w-24 self-center" />
 
     <FixCard v-if="identified" :item="identified" />
+    <p v-if="readOnly" class="rounded bg-surface-1 px-2 py-1.5 text-[11px] text-text-secondary">
+      {{ track.pending
+        ? 'On its way to the stick from your library, where it can be changed.'
+        : 'As the USB stick has it. Change it in your library, then update the stick.' }}
+    </p>
+
+    <fieldset :disabled="readOnly" class="contents">
 
     <!-- Keyed by track so the boxes reset when another track is picked. -->
     <template v-for="field in fields" :key="`${track.id}-${field.id}`">
@@ -248,7 +269,7 @@ const inputClass =
         />
       </label>
       <!-- What MusicBrainz calls it, each a button that makes it the genre. -->
-      <div v-if="field.id === 'genre'" data-keys-group class="-mt-1.5 flex flex-wrap items-center gap-1 text-[11px] text-text-muted">
+      <div v-if="field.id === 'genre' && !readOnly" data-keys-group class="-mt-1.5 flex flex-wrap items-center gap-1 text-[11px] text-text-muted">
         <span title="Genres MusicBrainz's users have given this recording, its album or its artist">MusicBrainz:</span>
         <span v-if="suggestError" :title="suggestError">couldn't be asked</span>
         <span v-else-if="!suggested">looking…</span>
@@ -297,11 +318,14 @@ const inputClass =
       </div>
     </div>
 
-    <BeatGridSection ref="beatGrid" :track="track" />
+    </fieldset>
+
+    <BeatGridSection v-if="inMaster" ref="beatGrid" :track="track" />
 
     <div class="flex flex-col gap-3 border-t border-border pt-3">
       <span class="section-label">File</span>
 
+      <fieldset :disabled="readOnly" class="contents">
       <label class="flex flex-col gap-1">
         <span class="text-[11px] text-text-muted">Comment</span>
         <textarea
@@ -328,6 +352,7 @@ const inputClass =
           />
         </div>
       </div>
+      </fieldset>
 
       <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
         <dt class="text-text-muted">Time</dt>
@@ -341,6 +366,7 @@ const inputClass =
       <div data-keys-group class="flex flex-wrap gap-1.5">
         <button :class="actionClass" @click="run(() => revealItemInDir(track.path))">{{ revealLabel }}</button>
         <button
+          v-if="inMaster"
           :class="actionClass"
           :disabled="libraryStore.busy"
           :title="`Look this track up on MusicBrainz and propose the tags and file name it should have, to review here (${shortcut('I')})`"
@@ -349,6 +375,7 @@ const inputClass =
           Identify
         </button>
         <button
+          v-if="inMaster"
           :class="actionClass"
           :disabled="downloading || starting"
           :title="lossless

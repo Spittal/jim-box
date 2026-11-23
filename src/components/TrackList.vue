@@ -18,6 +18,7 @@ import { TRACK_COLORS } from '@/composables/useTrackColors';
 import { PALETTES, chosenPalette } from '@/composables/useWaveform';
 import { useBrowseStore, type PendingRow } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
+import { libraryOf, useLibrariesStore } from '@/stores/libraries';
 import { useJobsStore } from '@/stores/jobs';
 import { useLibraryStore } from '@/stores/library';
 import { useSearchStore } from '@/stores/search';
@@ -53,6 +54,7 @@ function mixesInKey(track: CollectionTrack) {
 }
 
 const store = useCollectionStore();
+const libraries = useLibrariesStore();
 const { formatKey } = useKeyNotation();
 const { analysis } = storeToRefs(store);
 const browse = useBrowseStore();
@@ -244,33 +246,76 @@ function clickRow(index: number, track: CollectionTrack, event: MouseEvent) {
   }
 }
 
+/** The library shown is a USB stick: its tracks are as the stick has them, and change only in playlists. */
+const onStick = computed(() => browse.libraryKind === 'stick');
+/** The library shown is the master, which identifying, analysing and reviewing are for. */
+const inMaster = computed(() => browse.library === null);
+
+/** Where the selection can go in the other libraries open: each one's playlists. */
+function sendLines(ids: string[]): MenuLine[] {
+  const lines: MenuLine[] = [];
+  for (const other of libraries.others) {
+    if (other.id === browse.library) continue;
+    const lists = other.playlists.filter((p) => p.kind === 'playlist');
+    if (other.kind === 'stick') {
+      // Only the master's go onto a stick, and into one of its playlists.
+      if (!inMaster.value) continue;
+      lines.push({
+        text: other.name,
+        enabled: lists.length > 0,
+        items: lists.map((p) => ({ text: p.name, action: () => void libraries.moveTracks(ids, other.id, p.id) })),
+      });
+    } else {
+      lines.push({
+        text: other.name,
+        items: [
+          { text: 'Collection', action: () => void libraries.moveTracks(ids, other.id, null) },
+          ...(lists.length ? (['separator'] as MenuLine[]) : []),
+          ...lists.map((p) => ({ text: p.name, action: () => void libraries.moveTracks(ids, other.id, p.id) })),
+        ],
+      });
+    }
+  }
+  return lines;
+}
+
 /** A row's context menu: what can be done to the selection, which a right-click on a row outside it moves there. */
 function rowMenu(index: number, track: CollectionTrack) {
   cancelSlowEdit();
   if (!selection.value.has(track.id)) pick({ index, id: track.id });
   const one = selection.value.size === 1;
-  const playlists = store.playlists.filter((p) => p.kind === 'playlist' && p.id !== selected.value);
+  // What's still on its way to a stick isn't anywhere to take from yet.
+  const ids = selectedIds.value.filter((id) => !browse.loadedTrack(id)?.pending);
+  const playlists = browse.shownPlaylists.filter((p) => p.kind === 'playlist' && p.id !== selected.value);
   const lines: MenuLine[] = [
     { text: 'Open in Player', enabled: one, action: () => emit('open', track) },
     { text: revealLabel, enabled: one, action: () => void revealItemInDir(track.path).catch((e) => (store.error = String(e))) },
     'separator',
-    { text: 'Identify', enabled: !library.busy, action: () => void actions.identify() },
-    { text: 'Analyse', action: () => void actions.analyse() },
-    {
-      text: actions.allReviewed() ? 'Not Reviewed' : 'Reviewed',
-      enabled: actions.reviewable().length > 0,
-      action: () => void actions.review(),
-    },
-    {
-      text: 'Add to Playlist',
-      enabled: playlists.length > 0,
-      items: playlists.map((p) => ({ text: p.name, action: () => void actions.addToPlaylist(p.id) })),
-    },
-    'separator',
   ];
+  if (inMaster.value) {
+    lines.push(
+      { text: 'Identify', enabled: !library.busy, action: () => void actions.identify() },
+      { text: 'Analyse', action: () => void actions.analyse() },
+      {
+        text: actions.allReviewed() ? 'Not Reviewed' : 'Reviewed',
+        enabled: actions.reviewable().length > 0,
+        action: () => void actions.review(),
+      },
+    );
+  } else {
+    lines.push({ text: 'Import into Library', enabled: ids.length > 0, action: () => void libraries.moveTracks(ids, null, null) });
+  }
+  lines.push({
+    text: 'Add to Playlist',
+    enabled: playlists.length > 0 && ids.length > 0,
+    items: playlists.map((p) => ({ text: p.name, action: () => void actions.addToPlaylist(p.id) })),
+  });
+  const send = sendLines(ids);
+  if (send.length) lines.push({ text: 'Send to', enabled: ids.length > 0, items: send });
+  lines.push('separator');
   const shown = browse.removableFrom.length;
   if (shown) lines.push({ text: shown > 1 ? 'Remove from These Playlists' : 'Remove from Playlist', action: () => void actions.removeFromPlaylist() });
-  lines.push({ text: 'Delete from Collection…', action: () => void actions.remove() });
+  if (!onStick.value) lines.push({ text: 'Delete from Collection…', action: () => void actions.remove() });
   void showContextMenu(lines);
 }
 
@@ -402,7 +447,9 @@ function onKey(event: KeyboardEvent) {
   else if ((event.key === 'Delete' || event.key === 'Backspace') && selection.value.size) {
     // With ⌘, out of the collection and its file to the Trash, wherever it's shown.
     // Else out of a playlist at once, as its button does; out of the collection once that's been asked.
-    if (command) void actions.remove(true);
+    if (onStick.value) {
+      if (browse.removableFrom.length) void actions.removeFromPlaylist();
+    } else if (command) void actions.remove(true);
     else if (browse.removableFrom.length) void actions.removeFromPlaylist();
     else void actions.remove();
   } else return;
@@ -413,6 +460,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey));
 
 /** Clicking the current rating clears it, as in rekordbox. */
 function rate(track: CollectionTrack, stars: number) {
+  if (onStick.value || track.pending) return;
   const next = track.rating === stars ? 0 : stars;
   // Shown at once: saving takes a moment, and a star should answer the click.
   browse.patchTrack(track.id, { rating: next });
@@ -444,7 +492,7 @@ function fieldAt(event: MouseEvent): CellField | undefined {
 function doubleClickRow(event: MouseEvent, track: CollectionTrack) {
   cancelSlowEdit();
   const field = fieldAt(event);
-  if (field && track.id === props.playingId) editing.value = { id: track.id, field };
+  if (field && track.id === props.playingId && !onStick.value && !track.pending) editing.value = { id: track.id, field };
   else emit('open', track);
 }
 
@@ -468,7 +516,7 @@ function cancelSlowEdit() {
 
 /** Opens a field of the picked row for editing, unless the click turns out to start something else. */
 function slowEdit(id: string, field: CellField) {
-  if (performance.now() - windowFocusedAt < FOCUS_SETTLE_MS) return;
+  if (performance.now() - windowFocusedAt < FOCUS_SETTLE_MS || onStick.value || browse.loadedTrack(id)?.pending) return;
   slowEditTimer = window.setTimeout(() => {
     slowEditTimer = 0;
     // Still the one row picked, and not being dragged off somewhere.
@@ -571,7 +619,7 @@ const activities = computed(() => {
 
 /** Tracks can be dragged into a new order only in the playlist's own order. */
 const reorderable = computed(
-  () => inPlaylist.value && sort.value === 'trackNo' && !descending.value && !filter.value,
+  () => inPlaylist.value && sort.value === 'trackNo' && !descending.value && !filter.value && !onStick.value,
 );
 
 function dragTrack(event: DragEvent, track: CollectionTrack) {
@@ -583,6 +631,8 @@ function dragTrack(event: DragEvent, track: CollectionTrack) {
 
 function overRow(event: DragEvent, index: number) {
   if (dragging.value?.kind !== 'tracks' || !reorderable.value) return;
+  // Tracks from another library come in through the sidebar, not between these.
+  if (libraryOf(dragging.value.ids[0]) !== browse.library) return;
   event.preventDefault();
   dropRow.value = index;
 }
@@ -591,7 +641,7 @@ function overRow(event: DragEvent, index: number) {
 async function dropOnRow(index: number) {
   const drag = dragging.value;
   endDrag();
-  if (drag?.kind !== 'tracks' || !reorderable.value || !browse.selected) return;
+  if (drag?.kind !== 'tracks' || !reorderable.value || !browse.selected || libraryOf(drag.ids[0]) !== browse.library) return;
   const before = index < total.value ? (browse.trackAt(index)?.id ?? null) : null;
   await store.edit({ kind: 'moveTracks', playlistId: browse.selected, trackIds: drag.ids, before });
 }
@@ -1049,7 +1099,9 @@ const smallButtonClass =
           :class="[
             rowClass(row.track),
             dropRow === row.index ? 'border-t border-accent' : '',
+            row.track?.pending ? 'italic opacity-60' : '',
           ]"
+          :title="row.track?.pending ? 'Waiting to be copied to the stick' : undefined"
           :style="{ top: `${row.index * ROW_HEIGHT}px`, height: `${ROW_HEIGHT}px` }"
           :draggable="!!row.track && editing?.id !== row.track.id"
           @click="row.track && clickRow(row.index, row.track, $event)"

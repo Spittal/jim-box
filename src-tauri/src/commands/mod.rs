@@ -3,6 +3,7 @@ pub mod drop;
 pub mod jobs;
 pub mod libraries;
 pub mod library;
+pub mod others;
 pub mod playlist;
 pub mod search;
 pub mod settings;

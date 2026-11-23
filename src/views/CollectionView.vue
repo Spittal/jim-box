@@ -5,13 +5,14 @@ import CollectionToolbar from '@/components/CollectionToolbar.vue';
 import CollectionTrackDetail from '@/components/CollectionTrackDetail.vue';
 import FetchPanel from '@/components/FetchPanel.vue';
 import FixPanel from '@/components/FixPanel.vue';
-import PlaylistTree from '@/components/PlaylistTree.vue';
+import LibrarySidebar from '@/components/LibrarySidebar.vue';
 import ProgressBar from '@/components/ProgressBar.vue';
 import TrackList from '@/components/TrackList.vue';
 import TrackPlayer from '@/components/TrackPlayer.vue';
 import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
 import { useLibraryStore } from '@/stores/library';
+import { useLibrariesStore } from '@/stores/libraries';
 import { stepPane } from '@/composables/useDetailKeys';
 import { useUiStore } from '@/stores/ui';
 import { commandKey } from '@/platform';
@@ -23,6 +24,7 @@ const { status, analysis, loading, error } = storeToRefs(store);
 const browse = useBrowseStore();
 const { selection, focused, detailTrack, notice, opened } = storeToRefs(browse);
 const library = useLibraryStore();
+const libraries = useLibrariesStore();
 
 onMounted(() => {
   if (!status.value && !loading.value) store.open();
@@ -113,6 +115,10 @@ const buttonClass =
     <CollectionToolbar />
 
     <p v-if="error" class="error-box mx-4 mt-3">{{ error }}</p>
+    <p v-else-if="libraries.error" class="error-box mx-4 mt-3">
+      {{ libraries.error }}
+      <button class="ml-1 opacity-70 hover:opacity-100" title="Dismiss" @click="libraries.error = null">✕</button>
+    </p>
     <p v-else-if="notice" class="mx-4 mt-3 text-xs text-text-secondary">
       {{ notice }}
       <button class="ml-1 text-text-muted hover:text-text-primary" title="Dismiss" @click="notice = null">✕</button>
@@ -149,7 +155,7 @@ const buttonClass =
     </div>
 
     <div v-if="status" class="flex min-h-0 flex-1">
-      <PlaylistTree />
+      <LibrarySidebar />
       <TrackList :playing-id="opened?.id ?? null" :playing-key="playerTrack?.key || null" @open="opened = $event" />
       <FetchPanel v-if="focused" />
       <CollectionTrackDetail v-else-if="detailTrack" :track="detailTrack" @close="browse.clearSelection()" />

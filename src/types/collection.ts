@@ -17,6 +17,8 @@ export interface PlaylistNode {
   kind: PlaylistKind;
   /** Tracks in a playlist; null for folders and intelligent playlists. */
   count: number | null;
+  /** Made or changed on a USB stick, and not written to it yet. */
+  pending?: boolean;
 }
 
 export type TrackSource =
@@ -52,6 +54,8 @@ export interface TrackQuery {
   genres: string[];
   /** Only tracks with one of these ratings, in stars; 0 is tracks with none. Empty for every rating. */
   ratings: number[];
+  /** The library listed, when it isn't the master (see `OtherLibrary`); its playlists' ids say it too. */
+  library?: string | null;
 }
 
 /** What the two beat detectors disagreed about; see `Issue` in src-tauri/src/rekordbox/grid.rs. */
@@ -132,6 +136,8 @@ export interface CollectionTrack {
   analysed: boolean;
   /** What is known of its grid; null when this app hasn't analysed it and it hasn't been reviewed. */
   grid: GridState | null;
+  /** On its way to a USB stick, not written to it yet. */
+  pending?: boolean;
 }
 
 export interface TrackPage {

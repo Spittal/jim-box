@@ -260,6 +260,23 @@ pub fn export(
     eject: bool,
 ) -> AppResult<Report> {
     check_ready(destination, playlists)?;
+    write(app, destination, |collection| collection.export_selection(playlists), convert, false, eject)
+}
+
+/// Writes what `select` picks out of the collection to the stick at
+/// `destination`, as [`export`] does. With `keep_unlisted` it's added to
+/// what the stick holds rather than taking its place. Blocking.
+pub fn write(
+    app: &AppHandle,
+    destination: &Path,
+    select: impl FnOnce(&Collection) -> AppResult<ExportSelection>,
+    convert: Option<CompatibilityFormat>,
+    keep_unlisted: bool,
+    eject: bool,
+) -> AppResult<Report> {
+    if !destination.is_dir() {
+        return Err(AppError::Usb("That stick is no longer connected".into()));
+    }
     // rekordbox rewrites a stick's databases when it sees one.
     if rbl_db::is_rekordbox_app_running() {
         return Err(AppError::Usb("Quit rekordbox before exporting, so only one app writes to the stick".into()));
@@ -302,7 +319,7 @@ pub fn export(
         .map_err(|_| AppError::Usb("That stick is no longer connected".into()))?;
     // An export cut short (the stick pulled) is put right first.
     rbl_export::recover(destination).map_err(|e| AppError::Usb(format!("The stick couldn't be read: {e}")))?;
-    let selection = app.state::<Collection>().export_selection(playlists)?;
+    let selection = select(&app.state::<Collection>())?;
     let (root, _) = preferred_root(destination);
     let cache = exports.cache(app);
 
@@ -311,7 +328,7 @@ pub fn export(
         &selection.tracks,
         &selection.playlists,
         &selection.my_tags,
-        &ExportOptions { expected_volume: Some(&volume), ..options(&selection, convert, root, cache) },
+        &ExportOptions { expected_volume: Some(&volume), keep_unlisted, ..options(&selection, convert, root, cache) },
         &mut |p| {
             let per_file = p.unit != "tracks" && p.tracks_total > 0;
             emit(Progress {
@@ -365,6 +382,24 @@ pub fn export(
         ejected,
         eject_error,
     })
+}
+
+/// Says a stick is at `stage` of being written, as an export says it, for
+/// work on a stick that isn't an export.
+pub fn announce(app: &AppHandle, destination: &Path, stage: &'static str, done: usize, total: usize) {
+    let _ = app.emit(
+        "usb-progress",
+        Progress {
+            path: destination.to_owned(),
+            stage,
+            done,
+            total,
+            title: String::new(),
+            file_done: 0,
+            file_total: 0,
+            can_cancel: false,
+        },
+    );
 }
 
 /// Ejects a stick, so it's safe to pull out. Refused while it's being written.

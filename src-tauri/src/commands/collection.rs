@@ -7,7 +7,7 @@ use tauri::{AppHandle, Manager};
 use crate::analysis::{self, AnalysisProgress, AnalysisQueue};
 use crate::error::{AppError, AppResult};
 use crate::ingest::{self, ArrivalQueue, Waiting};
-use crate::library;
+use crate::{library, others};
 use crate::state::SettingsState;
 use crate::rekordbox::{GridHint, 
     Audio, Collection, CollectionStatus, Edit, EditOutcome, ImportReport, PlaylistNode, Preparation, Preview, TrackPage,
@@ -53,26 +53,38 @@ pub async fn collection_state(app: AppHandle) -> AppResult<CollectionState> {
 /// Off the main thread, as the rest here are: the first page of a list sorts all of it.
 #[tauri::command]
 pub async fn collection_tracks(app: AppHandle, query: TrackQuery, offset: usize, limit: usize) -> AppResult<TrackPage> {
-    library::blocking(move || app.state::<Collection>().tracks(&query, offset, limit.min(1000))).await
+    library::blocking(move || match others::split_query(&query)? {
+        (None, query) => app.state::<Collection>().tracks(&query, offset, limit.min(1000)),
+        (Some(other), query) => others::tracks(&app, &other, &query, offset, limit.min(1000)),
+    })
+    .await
 }
 
 /// The id of every track in a list, for selecting them all.
 #[tauri::command]
 pub async fn collection_track_ids(app: AppHandle, query: TrackQuery) -> AppResult<Vec<String>> {
-    library::blocking(move || app.state::<Collection>().track_ids(&query)).await
+    library::blocking(move || match others::split_query(&query)? {
+        (None, query) => app.state::<Collection>().track_ids(&query),
+        (Some(other), query) => others::track_ids(&app, &other, &query),
+    })
+    .await
 }
 
 /// How long these tracks are together, in seconds.
 #[tauri::command]
 pub async fn tracks_duration(app: AppHandle, track_ids: Vec<String>) -> AppResult<u64> {
-    library::blocking(move || app.state::<Collection>().duration_of(&track_ids)).await
+    library::blocking(move || others::duration_of(&app, &track_ids)).await
 }
 
 /// The artists, albums or genres already in the collection, the most used
 /// first, to offer as one is typed.
 #[tauri::command]
-pub async fn collection_field_values(app: AppHandle, field: String) -> AppResult<Vec<String>> {
-    library::blocking(move || app.state::<Collection>().field_values(&field)).await
+pub async fn collection_field_values(app: AppHandle, field: String, library: Option<String>) -> AppResult<Vec<String>> {
+    library::blocking(move || match library {
+        None => app.state::<Collection>().field_values(&field),
+        Some(other) => others::field_values(&app, &other, &field),
+    })
+    .await
 }
 
 /// A track to look for in the collection by name.
@@ -96,15 +108,22 @@ pub async fn find_in_collection(app: AppHandle, tracks: Vec<TrackName>) -> AppRe
 /// Makes one change to rekordbox's library. Refused while rekordbox is open.
 /// Changes made in a row under the same `group` are undone as one.
 #[tauri::command]
-pub async fn edit_collection(app: AppHandle, edit: Edit, group: Option<String>) -> AppResult<EditOutcome> {
-    library::blocking(move || app.state::<Collection>().edit_in(edit, group)).await
+pub async fn edit_collection(app: AppHandle, edit: Edit, group: Option<String>, library: Option<String>) -> AppResult<EditOutcome> {
+    library::blocking(move || match library {
+        None => app.state::<Collection>().edit_in(edit, group),
+        Some(other) => others::edit(&app, &other, edit, group),
+    })
+    .await
 }
 
 /// Undoes the last change made to rekordbox's library this session, or
 /// (`redo`) makes the last one undone again. Refused while rekordbox is open.
 #[tauri::command]
-pub async fn undo_collection(app: AppHandle, redo: bool) -> AppResult<UndoOutcome> {
+pub async fn undo_collection(app: AppHandle, redo: bool, library: Option<String>) -> AppResult<UndoOutcome> {
     library::blocking(move || {
+        if let Some(other) = library {
+            return others::undo(&app, &other, redo);
+        }
         let collection = app.state::<Collection>();
         if redo { collection.redo() } else { collection.undo() }
     })
@@ -179,13 +198,21 @@ pub fn analysis_progress(queue: tauri::State<'_, AnalysisQueue>) -> AnalysisProg
 /// A track's beat grid and cues, for the player.
 #[tauri::command]
 pub async fn track_preparation(app: AppHandle, track_id: String) -> AppResult<Preparation> {
-    library::blocking(move || app.state::<Collection>().preparation(&track_id)).await
+    library::blocking(move || match others::untag(&track_id) {
+        (None, id) => app.state::<Collection>().preparation(id),
+        (Some(other), id) => others::preparation(&app, other, id),
+    })
+    .await
 }
 
 /// A track's detailed waveform as bytes; see `Collection::waveform`.
 #[tauri::command]
 pub async fn track_waveform(app: AppHandle, track_id: String) -> AppResult<Response> {
-    let bytes = library::blocking(move || app.state::<Collection>().waveform(&track_id)).await?;
+    let bytes = library::blocking(move || match others::untag(&track_id) {
+        (None, id) => app.state::<Collection>().waveform(id),
+        (Some(other), id) => others::waveform(&app, other, id),
+    })
+    .await?;
     Ok(Response::new(bytes))
 }
 
@@ -195,7 +222,7 @@ pub async fn track_waveform(app: AppHandle, track_id: String) -> AppResult<Respo
 #[tauri::command]
 pub async fn track_previews(app: AppHandle, mut track_ids: Vec<String>, prefer: u8) -> AppResult<Vec<Preview>> {
     track_ids.truncate(200);
-    library::blocking(move || app.state::<Collection>().previews(&track_ids, prefer)).await
+    library::blocking(move || others::previews(&app, &track_ids, prefer)).await
 }
 
 /// The player's audio being decoded: the latest stream asked for, which is
@@ -220,13 +247,17 @@ pub async fn track_audio(
     app.state::<AudioStream>().0.store(stream, Ordering::SeqCst);
     library::blocking(move || {
         let current = || app.state::<AudioStream>().0.load(Ordering::SeqCst) == stream;
-        let decoded = app.state::<Collection>().decode_audio(&track_id, |audio| {
+        let sink = |audio| {
             let bytes = match audio {
                 Audio::Start { rate, frames } => [rate.to_le_bytes(), frames.to_le_bytes()].concat(),
                 Audio::Pcm(pcm) => pcm,
             };
             current() && on_audio.send(Response::new(bytes)).is_ok()
-        });
+        };
+        let decoded = match others::untag(&track_id) {
+            (None, id) => app.state::<Collection>().decode_audio(id, sink),
+            (Some(other), id) => others::decode_audio(&app, other, id, sink),
+        };
         // Even when it failed part-way: what there is of it plays to where it stops.
         if current() {
             let _ = on_audio.send(Response::new(Vec::new()));

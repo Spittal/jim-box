@@ -25,6 +25,7 @@ use crate::state::{Job, Settings};
 const STORE_FILE: &str = "config.json";
 const LIBRARIES_KEY: &str = "libraries";
 const ACCOUNT_KEY: &str = "account";
+const OTHERS_KEY: &str = "otherLibraries";
 
 // A library's own, in its file. Before there were libraries these were in
 // `config.json`: see `adopt_legacy`.
@@ -135,6 +136,15 @@ fn store_set<T: Serialize>(app: &AppHandle, file: &str, key: &str, value: &T) {
 }
 
 // --- The libraries ---
+
+/// The other libraries opened beside this one, and the changes waiting for each stick.
+pub fn load_others(app: &AppHandle) -> Vec<crate::others::Saved> {
+    store_get(app, STORE_FILE, OTHERS_KEY).unwrap_or_default()
+}
+
+pub fn save_others(app: &AppHandle, others: &[crate::others::Saved]) {
+    store_set(app, STORE_FILE, OTHERS_KEY, &others);
+}
 
 pub fn load_libraries(app: &AppHandle) -> Vec<KnownLibrary> {
     store_get(app, STORE_FILE, LIBRARIES_KEY).unwrap_or_default()
