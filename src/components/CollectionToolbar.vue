@@ -312,10 +312,10 @@ const buttonClass =
             v-if="pickedUnfetched.length"
             :class="buttonClass"
             :disabled="working"
-            title="Find the best lossless copy of each and add it to the collection and this playlist"
+            title="Download the best copy of each, lossless if there is one, and add it to the collection and this playlist"
             @click="fetchPicked"
           >
-            Get lossless for {{ pickedUnfetched.length }}
+            Download {{ pickedUnfetched.length }}
           </button>
         </template>
         <!-- Searching the list: put away until it's wanted. -->
@@ -460,7 +460,7 @@ const buttonClass =
         title="Fetch every missing track whose match is sure and that isn't being fetched. The others are left for you to check."
         @click="fetchAll"
       >
-        {{ fetchingAll ? 'Queuing…' : `Get lossless for ${fetchable.length} missing` }}
+        {{ fetchingAll ? 'Queuing…' : `Download ${fetchable.length} missing` }}
       </button>
       <button
         class="shrink-0 rounded bg-surface-2 px-3 py-1 text-xs transition-colors hover:bg-surface-3 disabled:opacity-50"

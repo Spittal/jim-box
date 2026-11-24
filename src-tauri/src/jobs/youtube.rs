@@ -5,40 +5,56 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
-use tracing::info;
+use tracing::{info, warn};
 use uuid::Uuid;
 
-use super::pipeline::{complete, finish};
+use super::pipeline::{complete, finish, take_over};
 use super::ranking::{version_context, MAX_LENGTH_DIFF_SECS, VERSION_WORDS};
 use super::JobStore;
 use crate::autotag;
 use crate::error::{AppError, AppResult};
 use crate::sources::youtube::{YoutubeTrack, YtDlp};
 use crate::sources::Sources;
-use crate::state::{JobSource, JobStatus, SettingsState, TrackMetadata, TransferProgress, YoutubeSource};
+use crate::state::{JobSource, JobStatus, SettingsState, TrackMetadata, TransferProgress, YoutubeMatch};
 use crate::text::{normalize, primary_artist, split_version, strip_noise, tokens, version_words};
 
 /// Songs to consider from each search.
 const ISRC_RESULTS: usize = 3;
 const TEXT_RESULTS: usize = 5;
+/// Matches kept on the job to pick from.
+const MAX_MATCHES: usize = 5;
+/// Matches tried in turn, best first, before giving up.
+const MAX_AUTO_ATTEMPTS: usize = 2;
 
-/// Downloads a job's track from YouTube Music. A job waiting to search
-/// Soulseek again stops waiting; other running jobs are left alone.
-pub fn start(app: &AppHandle, id: Uuid) -> AppResult<()> {
+/// What searching YouTube Music and trying its matches came to.
+pub(super) enum Outcome {
+    /// One was downloaded and filed.
+    Done,
+    /// Nothing matched the track, and why.
+    NoMatch(String),
+}
+
+/// Downloads a job's track from YouTube Music: the match at `index`, or
+/// when `None` the best ones a search finds, in turn. A job still on
+/// Soulseek (searching, waiting to search again, or queued at a peer) is
+/// stopped first, its transfer cancelled.
+pub async fn start(app: &AppHandle, id: Uuid, index: Option<usize>) -> AppResult<()> {
     let store = app.state::<JobStore>();
     let job = store.get(id)?;
-    if store.is_running(id) && job.status != JobStatus::Waiting {
-        return Err(AppError::Validation("This download is already running".into()));
-    }
     if job.replaces.is_some() {
         return Err(AppError::Validation(
             "This would replace a file already in your library with a lossy YouTube copy".into(),
         ));
     }
+    if index.is_some_and(|i| i >= job.youtube_matches.len()) {
+        return Err(AppError::Validation("That YouTube Music song is no longer available".into()));
+    }
+    if store.is_running(id) && job.source == JobSource::Youtube {
+        return Err(AppError::Validation("This download is already running".into()));
+    }
     // Fail now, not in the background, if yt-dlp is missing.
     YtDlp::locate(None)?;
-    // A waiting job is asleep between searches, holding no slot or transfer.
-    store.abort(id);
+    take_over(app, id).await?;
     store.update(app, id, |j| {
         j.status = JobStatus::Queued;
         j.source = JobSource::Youtube;
@@ -53,27 +69,70 @@ pub fn start(app: &AppHandle, id: Uuid) -> AppResult<()> {
     })?;
     let task_app = app.clone();
     store.spawn(id, async move {
-        let result = run(&task_app, id).await;
+        let result = async {
+            let meta = identify(&task_app, id).await?;
+            match index {
+                Some(index) => attempt(&task_app, id, index, &meta).await,
+                None => match cascade(&task_app, id, &meta).await? {
+                    Outcome::Done => Ok(()),
+                    Outcome::NoMatch(why) => Err(AppError::Youtube(why)),
+                },
+            }
+        }
+        .await;
         finish(&task_app, id, result);
     })
 }
 
-async fn run(app: &AppHandle, id: Uuid) -> AppResult<()> {
+/// The job's metadata, looked up first if it has none yet.
+async fn identify(app: &AppHandle, id: Uuid) -> AppResult<TrackMetadata> {
     let store = app.state::<JobStore>();
-    let settings = app.state::<SettingsState>().snapshot();
-    let ytdlp = YtDlp::locate(settings.youtube_cookies_browser.clone())?;
     let job = store.get(id)?;
-    let meta = match job.metadata {
-        Some(meta) => meta,
-        None => {
-            store.update(app, id, |j| j.status = JobStatus::Identifying)?;
-            let meta = autotag::resolve(&app.state::<Sources>(), &job.request).await;
-            store.update(app, id, |j| j.metadata = Some(meta.clone()))?;
-            meta
-        }
-    };
+    if let Some(meta) = job.metadata {
+        return Ok(meta);
+    }
+    store.update(app, id, |j| j.status = JobStatus::Identifying)?;
+    let meta = autotag::resolve(&app.state::<Sources>(), &job.request).await;
+    store.update(app, id, |j| j.metadata = Some(meta.clone()))?;
+    Ok(meta)
+}
 
-    store.update(app, id, |j| j.status = JobStatus::Searching)?;
+/// Searches YouTube Music for the track, keeps its matches on the job, and
+/// downloads the best ones in turn until one works. The last step of a
+/// download once no Soulseek file has worked, and the "Get from YouTube
+/// Music" button.
+pub(super) async fn cascade(app: &AppHandle, id: Uuid, meta: &TrackMetadata) -> AppResult<Outcome> {
+    let store = app.state::<JobStore>();
+    store.update(app, id, |j| {
+        j.status = JobStatus::Searching;
+        j.source = JobSource::Youtube;
+        j.active_candidate = None;
+        j.transfer_id = None;
+        j.progress = None;
+    })?;
+    let count = match find(app, id, meta).await? {
+        Ok(count) => count,
+        Err(why) => return Ok(Outcome::NoMatch(why)),
+    };
+    let mut last_error = None;
+    for index in 0..count.min(MAX_AUTO_ATTEMPTS) {
+        match attempt(app, id, index, meta).await {
+            Ok(()) => return Ok(Outcome::Done),
+            Err(e) => {
+                warn!("Job {id}: YouTube Music match {index} failed: {e}");
+                last_error = Some(e);
+            }
+        }
+    }
+    Err(last_error.expect("at least one match was tried"))
+}
+
+/// Searches YouTube Music and keeps the matches, best first, on the job:
+/// how many there are, or why none matched.
+async fn find(app: &AppHandle, id: Uuid, meta: &TrackMetadata) -> AppResult<Result<usize, String>> {
+    let store = app.state::<JobStore>();
+    let ytdlp = YtDlp::locate(None)?;
+    let job = store.get(id)?;
     let mut ids: Vec<String> = Vec::new();
     let mut isrc_hits = HashSet::new();
     if let Some(isrc) = meta.isrc.as_ref().or(job.request.isrc.as_ref()) {
@@ -82,38 +141,75 @@ async fn run(app: &AppHandle, id: Uuid) -> AppResult<()> {
             ids.push(found);
         }
     }
-    let text = search_text(&meta);
+    let text = search_text(meta);
     for found in ytdlp.search(&text, TEXT_RESULTS).await? {
         if !ids.contains(&found) {
             ids.push(found);
         }
     }
     if ids.is_empty() {
-        return Err(AppError::Youtube(format!("YouTube Music found nothing for “{text}”")));
+        store.update(app, id, |j| j.youtube_matches.clear())?;
+        return Ok(Err(format!("YouTube Music found nothing for “{text}”")));
     }
     let tracks = ytdlp.details(&ids).await?;
-    let (matches, rejected) = rank(&meta, &tracks, &isrc_hits);
-    let Some((best, _)) = matches.into_iter().next() else {
-        return Err(AppError::Youtube(no_match_message(&rejected)));
-    };
-    info!("Job {id}: downloading “{}” ({}) from YouTube Music", best.title, best.url());
+    let (matches, rejected) = rank(meta, &tracks, &isrc_hits);
+    let found: Vec<YoutubeMatch> = matches
+        .iter()
+        .take(MAX_MATCHES)
+        .map(|(t, _)| YoutubeMatch {
+            video_id: t.id.clone(),
+            title: t.track.clone().unwrap_or_else(|| t.title.clone()),
+            channel: t.channel.clone(),
+            url: t.url(),
+            length_secs: t.duration_secs(),
+            failed: false,
+        })
+        .collect();
+    let count = found.len();
+    store.update(app, id, |j| j.youtube_matches = found)?;
+    Ok(if count == 0 { Err(no_match_message(&rejected)) } else { Ok(count) })
+}
+
+/// Downloads the match at `index`, then tags and files it. Marks the match
+/// as failed on error, so the UI can show which were tried.
+async fn attempt(app: &AppHandle, id: Uuid, index: usize, meta: &TrackMetadata) -> AppResult<()> {
+    let result = download(app, id, index, meta).await;
+    if result.is_err() {
+        let _ = app.state::<JobStore>().update(app, id, |j| {
+            if let Some(m) = j.youtube_matches.get_mut(index) {
+                m.failed = true;
+            }
+            j.progress = None;
+        });
+    }
+    result
+}
+
+async fn download(app: &AppHandle, id: Uuid, index: usize, meta: &TrackMetadata) -> AppResult<()> {
+    let store = app.state::<JobStore>();
+    let settings = app.state::<SettingsState>().snapshot();
+    let ytdlp = YtDlp::locate(settings.youtube_cookies_browser.clone())?;
+    let job = store.get(id)?;
+    let found = job
+        .youtube_matches
+        .get(index)
+        .cloned()
+        .ok_or_else(|| AppError::Validation("That YouTube Music song is no longer available".into()))?;
+    info!("Job {id}: downloading “{}” ({}) from YouTube Music", found.title, found.url);
 
     store.update(app, id, |j| {
         j.status = JobStatus::Downloading;
-        j.youtube = Some(YoutubeSource {
-            video_id: best.id.clone(),
-            title: best.track.clone().unwrap_or_else(|| best.title.clone()),
-            channel: best.channel.clone(),
-            url: best.url(),
-            length_secs: best.duration_secs(),
-            bit_rate: None,
-        });
+        j.source = JobSource::Youtube;
+        j.active_candidate = None;
+        j.youtube = Some(found.source());
+        j.progress = None;
+        j.error = None;
     })?;
     let staging = staging_dir(app, id)?;
     let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging)?;
     let downloaded = ytdlp
-        .download(&best.id, &staging, |p| {
+        .download(&found.video_id, &staging, |p| {
             let progress =
                 TransferProgress { bytes_transferred: p.bytes, size: p.total, speed: p.speed, place_in_queue: None };
             let _ = store.set_progress(app, id, Some(progress));
@@ -129,7 +225,7 @@ async fn run(app: &AppHandle, id: Uuid) -> AppResult<()> {
     info!("Job {id}: got format {} at {:?} kbps", downloaded.format_id, downloaded.kbps);
 
     let kbps = downloaded.kbps;
-    let done = complete(app, id, downloaded.path, meta, None, move |j| {
+    let done = complete(app, id, downloaded.path, meta.clone(), None, move |j| {
         if let Some(yt) = j.youtube.as_mut() {
             yt.bit_rate = kbps;
         }

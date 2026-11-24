@@ -48,7 +48,7 @@ function setFormat(id: LosslessFormat, enabled: boolean) {
     />
     <ToggleRow
       label="Fall back to lossy"
-      description="When no lossless copy is found, download the best lossy one (MP3, AAC, Ogg or Opus, 192 kbps or better). Library scans can upgrade it later."
+      description="When no lossless copy can be downloaded, download the best lossy one: from Soulseek (MP3, AAC, Ogg or Opus, 192 kbps or better), then from YouTube Music if yt-dlp is installed. Never replaces a file in your library. Library scans can upgrade it later."
       :model-value="settings.lossyFallback"
       @update:model-value="(on) => save({ lossyFallback: on })"
     />

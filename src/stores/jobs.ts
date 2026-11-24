@@ -159,8 +159,9 @@ export const useJobsStore = defineStore('jobs', () => {
   }
   const downloadCandidate = (id: string, index: number) =>
     invoke('download_candidate', { id, index });
-  /** Downloads the track from YouTube Music instead, as lossy AAC. */
-  const downloadFromYoutube = (id: string) => invoke('download_from_youtube', { id });
+  /** Downloads the track from YouTube Music instead, as lossy AAC: the match at `index`, or the best found. */
+  const downloadFromYoutube = (id: string, index: number | null = null) =>
+    invoke('download_from_youtube', { id, index });
 
   return {
     jobs,

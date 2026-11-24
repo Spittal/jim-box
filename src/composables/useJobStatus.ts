@@ -36,7 +36,7 @@ export function statusLabel(job: Job): string {
     }
   }
   const used = job.activeCandidate === null ? null : job.candidates[job.activeCandidate];
-  if (job.status === 'completed' && used && !isLossless(used.format)) return 'Done (lossy, no lossless found)';
+  if (job.status === 'completed' && used && !isLossless(used.format)) return 'Done (lossy)';
   if (job.status === 'waiting' && job.retryAt) {
     const at = new Date(job.retryAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
     return `No answers, searching again at ${at}`;

@@ -139,11 +139,11 @@ const buttonClass =
           v-else
           :class="buttonClass"
           :title="targetPlaylist
-            ? `Find the best lossless copy and add it to the collection and “${targetPlaylist.name}”`
-            : 'Find the best lossless copy and add it to the collection'"
+            ? `Download the best copy, lossless if there is one, and add it to the collection and “${targetPlaylist.name}”`
+            : 'Download the best copy, lossless if there is one, and add it to the collection'"
           @click="fetch(track)"
         >
-          Get lossless
+          Download
         </button>
       </li>
     </ul>

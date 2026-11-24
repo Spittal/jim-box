@@ -42,7 +42,7 @@ function setBrowser(value: string) {
   <SettingsSection
     v-if="settings"
     title="YouTube Music"
-    description="When Soulseek has no copy of a track, its download page offers to get it from YouTube Music instead. The audio is lossy AAC, saved as is, and a later search that finds a lossless copy replaces it."
+    description="When no Soulseek file works, and Fall back to lossy is on, downloads come from YouTube Music instead. A download's page also lists the YouTube Music songs it matched, to pick by hand. The audio is lossy AAC, saved as is, and a later search that finds a lossless copy replaces it."
     :error="error"
   >
     <div class="flex flex-col gap-1">

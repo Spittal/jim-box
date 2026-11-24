@@ -3,7 +3,7 @@ mod library;
 mod settings;
 mod track;
 
-pub use job::{Candidate, Job, JobSource, JobStatus, SearchAttempt, TransferProgress, YoutubeSource};
+pub use job::{Candidate, Job, JobSource, JobStatus, SearchAttempt, TransferProgress, YoutubeMatch};
 pub use library::{
     AlbumProposal, Confidence, ExistingTags, ItemStatus, LibraryItem, LibraryPhase, LibraryProgress, Proposal,
 };

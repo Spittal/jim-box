@@ -15,7 +15,8 @@ pub enum JobStatus {
     Downloading,
     Tagging,
     Completed,
-    /// No acceptable lossless file was found on Soulseek.
+    /// Nothing usable was found: no lossless or lossy file on Soulseek,
+    /// nor a match on YouTube Music.
     NotFound,
     Failed,
     Cancelled,
@@ -62,7 +63,7 @@ pub struct Candidate {
 pub enum JobSource {
     #[default]
     Soulseek,
-    /// YouTube Music, picked by hand when Soulseek has no copy. Lossy.
+    /// YouTube Music, when no Soulseek file works, or picked by hand. Lossy.
     Youtube,
 }
 
@@ -77,6 +78,34 @@ pub struct YoutubeSource {
     pub length_secs: Option<u32>,
     /// kbps once downloaded: about 256 with Premium cookies, else 128.
     pub bit_rate: Option<u32>,
+}
+
+/// A YouTube Music upload that matched the job's track, to download
+/// automatically or pick by hand.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct YoutubeMatch {
+    pub video_id: String,
+    pub title: String,
+    pub channel: Option<String>,
+    pub url: String,
+    pub length_secs: Option<u32>,
+    /// Set once downloading it has failed.
+    #[serde(default)]
+    pub failed: bool,
+}
+
+impl YoutubeMatch {
+    pub fn source(&self) -> YoutubeSource {
+        YoutubeSource {
+            video_id: self.video_id.clone(),
+            title: self.title.clone(),
+            channel: self.channel.clone(),
+            url: self.url.clone(),
+            length_secs: self.length_secs,
+            bit_rate: None,
+        }
+    }
 }
 
 /// One Soulseek search a job ran, so a "not found" can be told apart from
@@ -137,6 +166,10 @@ pub struct Job {
     /// Set while and after downloading from YouTube Music.
     #[serde(default)]
     pub youtube: Option<YoutubeSource>,
+    /// The YouTube Music uploads found for the track, best first. Searched
+    /// once no Soulseek file works, or by hand.
+    #[serde(default)]
+    pub youtube_matches: Vec<YoutubeMatch>,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -162,6 +195,7 @@ impl Job {
             error: None,
             source: JobSource::Soulseek,
             youtube: None,
+            youtube_matches: Vec::new(),
             created_at: now,
             updated_at: now,
         }
@@ -183,5 +217,6 @@ impl Job {
         self.error = None;
         self.source = JobSource::Soulseek;
         self.youtube = None;
+        self.youtube_matches.clear();
     }
 }

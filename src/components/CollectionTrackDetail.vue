@@ -383,7 +383,7 @@ const inputClass =
             : `Download a lossless copy. The track keeps its cues and playlists; the old file goes to the Trash. (${shortcut('R')})`"
           @click="redownload"
         >
-          {{ lossless ? 'Redownload' : 'Get lossless' }}
+          {{ lossless ? 'Redownload' : 'Download' }}
         </button>
       </div>
       <button

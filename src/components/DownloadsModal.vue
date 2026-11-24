@@ -256,7 +256,7 @@ const buttonClass =
 
         <p v-if="!ordered.length" class="m-auto max-w-sm text-center text-sm text-text-muted">
           Nothing downloaded yet. Find tracks online with the search at the foot of the window
-          ({{ isMac ? '⇧⌘F' : 'Ctrl+Shift+F' }}), or pick “Get lossless” on a track.
+          ({{ isMac ? '⇧⌘F' : 'Ctrl+Shift+F' }}), or pick “Download” on a track.
         </p>
 
         <div v-else class="flex min-h-0 flex-1">

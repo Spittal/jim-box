@@ -65,18 +65,18 @@ pub async fn cancel_job(app: AppHandle, id: Uuid) -> AppResult<()> {
     jobs::cancel(&app, id).await
 }
 
-/// Downloads a specific source the user picked from the job's candidates.
+/// Downloads a specific source the user picked from the job's candidates,
+/// stopping the job's download if it's still under way.
 #[tauri::command]
-pub fn download_candidate(app: AppHandle, store: State<'_, JobStore>, id: Uuid, index: usize) -> AppResult<()> {
-    ensure_idle(&store, id)?;
-    jobs::start_candidate(&app, id, index)
+pub async fn download_candidate(app: AppHandle, id: Uuid, index: usize) -> AppResult<()> {
+    jobs::start_candidate(&app, id, index).await
 }
 
-/// Downloads the track from YouTube Music, for tracks Soulseek doesn't have,
-/// including ones still waiting to search Soulseek again.
+/// Downloads the track from YouTube Music: the match at `index`, or the best
+/// ones a search finds. Stops the Soulseek download if it's still under way.
 #[tauri::command]
-pub fn download_from_youtube(app: AppHandle, id: Uuid) -> AppResult<()> {
-    jobs::start_youtube(&app, id)
+pub async fn download_from_youtube(app: AppHandle, id: Uuid, index: Option<usize>) -> AppResult<()> {
+    jobs::start_youtube(&app, id, index).await
 }
 
 /// The installed yt-dlp, or why it can't be used.

@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Downloads try every quality in turn.** Lossless files on Soulseek come first, then lossy ones, then YouTube Music, until one works. Before, lossy files were only tried when no lossless one was found, and YouTube Music only by hand. YouTube Music is used when Fall back to lossy is on and yt-dlp is installed.
+- **Every source, to pick by hand.** A download's page lists what it found, best first: lossless and lossy files on Soulseek, the YouTube Music songs it matched, and other files found. Pick any of them to try it now, even while the download is still searching or queued at a peer.
+- Get from YouTube Music is offered on any download that hasn't finished, including one queued at a peer.
+
+### Changed
+
+- "Get lossless" is now "Download", everywhere.
+- A lossy copy never replaces a file in your library: downloading a track again only replaces it with a lossless one.
+
+### Fixed
+
+- YouTube Music downloads no longer fail with "Requested format is not available" when signed in with a browser and yt-dlp can't get the audio that way. They're downloaded signed out instead, at 128 kbps.
+
 ## 1.8.0
 
 ### New

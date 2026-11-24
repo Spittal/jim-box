@@ -10,6 +10,7 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Command;
+use tracing::warn;
 
 use crate::error::{AppError, AppResult};
 
@@ -128,16 +129,41 @@ impl YtDlp {
     }
 
     /// Downloads an upload's AAC audio into `dir`, as is (no re-encoding).
+    /// Downloads a song's AAC stream. Signed in first, for Premium's 256
+    /// kbps; if that offers no audio at all, which happens when yt-dlp can't
+    /// solve the signed-in player's challenges, signed out for 128 kbps.
     pub async fn download(
         &self,
         id: &str,
         dir: &Path,
         mut on_progress: impl FnMut(DownloadProgress),
     ) -> AppResult<Downloaded> {
+        let signed_in = self.cookies_browser.as_deref();
+        match self.fetch(id, dir, signed_in, &mut on_progress).await? {
+            Ok(done) => Ok(done),
+            Err(stderr) if signed_in.is_some() && no_audio_offered(&stderr) => {
+                warn!("yt-dlp offered no audio for {id} signed in; trying signed out");
+                match self.fetch(id, dir, None, &mut on_progress).await? {
+                    Ok(done) => Ok(done),
+                    Err(stderr) => Err(AppError::Youtube(error_message(&stderr, "The download failed"))),
+                }
+            }
+            Err(stderr) => Err(AppError::Youtube(error_message(&stderr, "The download failed"))),
+        }
+    }
+
+    /// One yt-dlp run: the file, or yt-dlp's stderr if it failed.
+    async fn fetch(
+        &self,
+        id: &str,
+        dir: &Path,
+        cookies_browser: Option<&str>,
+        on_progress: &mut impl FnMut(DownloadProgress),
+    ) -> AppResult<Result<Downloaded, String>> {
         let output = dir.join("%(id)s.%(ext)s");
         let url = format!("https://music.youtube.com/watch?v={id}");
         let mut cmd = self.command();
-        cmd.args(["--no-playlist", "--no-warnings", "-f", FORMAT, "-o"])
+        cmd.args(["--no-playlist", "-f", FORMAT, "-o"])
             .arg(&output)
             .args([
                 "--newline",
@@ -149,7 +175,7 @@ impl YtDlp {
                 "-O",
                 "after_move:TFDONE %(format_id)s %(abr)s %(filepath)s",
             ]);
-        if let Some(browser) = &self.cookies_browser {
+        if let Some(browser) = cookies_browser {
             cmd.args(["--cookies-from-browser", browser]);
         }
         cmd.arg(&url).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -185,10 +211,10 @@ impl YtDlp {
             .await
             .map_err(|_| AppError::Youtube("The download timed out".into()))??;
         let stderr = errors.await.unwrap_or_default();
-        match done {
+        Ok(match done {
             Some(d) if status.success() && d.path.is_file() => Ok(d),
-            _ => Err(AppError::Youtube(error_message(&stderr, "The download failed"))),
-        }
+            _ => Err(stderr),
+        })
     }
 
     fn command(&self) -> Command {
@@ -283,6 +309,12 @@ fn parse_done(line: &str) -> Option<Downloaded> {
     Some(Downloaded { path, format_id, kbps })
 }
 
+/// Whether yt-dlp failed because the upload offered no audio stream to
+/// pick, rather than for a reason another try wouldn't change.
+fn no_audio_offered(stderr: &str) -> bool {
+    stderr.contains("Requested format is not available") || stderr.contains("Only images are available")
+}
+
 /// yt-dlp's last error line, without its "ERROR: [youtube] id:" prefix.
 fn error_message(stderr: &str, fallback: &str) -> String {
     stderr
@@ -327,5 +359,14 @@ mod tests {
         assert_eq!(error_message(stderr, "x"), "Sign in to confirm your age");
         assert_eq!(error_message("ERROR: Requested format is not available", "x"), "Requested format is not available");
         assert_eq!(error_message("", "fallback"), "fallback");
+    }
+
+    #[test]
+    fn spots_uploads_with_no_audio() {
+        let stderr = "WARNING: [youtube] ESwLpex18mo: n challenge solving failed\n\
+                      WARNING: Only images are available for download.\n\
+                      ERROR: [youtube] ESwLpex18mo: Requested format is not available. Use --list-formats\n";
+        assert!(no_audio_offered(stderr));
+        assert!(!no_audio_offered("ERROR: [youtube] x: Sign in to confirm your age"));
     }
 }

@@ -1076,10 +1076,10 @@ const smallButtonClass =
             >check</span>
             <button
               :class="smallButtonClass"
-              title="Find the best lossless copy and add it to the collection and this playlist"
+              title="Download the best copy, lossless if there is one, and add it to the collection and this playlist"
               @click.stop="fetchEntry(row)"
             >
-              Get lossless
+              Download
             </button>
           </template>
           <template v-else>

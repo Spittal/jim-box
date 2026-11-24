@@ -34,7 +34,7 @@ export interface Candidate {
   rejected: string | null;
 }
 
-/** Where a job looks for the track: YouTube Music only when picked by hand. */
+/** Where a job gets the track: YouTube Music once no Soulseek file works, or when picked by hand. */
 export type JobSource = 'soulseek' | 'youtube';
 
 /** The YouTube Music upload a job downloaded, or is downloading. Lossy AAC. */
@@ -46,6 +46,17 @@ export interface YoutubeSource {
   lengthSecs: number | null;
   /** kbps once downloaded: about 256 with Premium cookies, else 128. */
   bitRate: number | null;
+}
+
+/** A YouTube Music upload that matched the track, to download or pick by hand. */
+export interface YoutubeMatch {
+  videoId: string;
+  title: string;
+  channel: string | null;
+  url: string;
+  lengthSecs: number | null;
+  /** Set once downloading it has failed. */
+  failed: boolean;
 }
 
 /** One Soulseek search a job ran. */
@@ -89,6 +100,8 @@ export interface Job {
   source: JobSource;
   /** Set while and after downloading from YouTube Music. */
   youtube: YoutubeSource | null;
+  /** YouTube Music uploads found for the track, best first. */
+  youtubeMatches: YoutubeMatch[];
   createdAt: number;
   updatedAt: number;
 }

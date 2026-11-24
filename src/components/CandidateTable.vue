@@ -2,15 +2,16 @@
 import { computed } from 'vue';
 import { basename, formatBytes, formatQuality, formatSpeed } from '@/composables/useFormat';
 import type { Candidate } from '@/types/job';
+import { isLossless } from '@/types/settings';
 
 const props = defineProps<{
   /** All of the job's candidates; indices refer to this list. */
   candidates: Candidate[];
-  /** Show the files that failed a check instead of those that passed. */
-  rejected?: boolean;
+  /** Which files to show: lossless or lossy ones that passed every check, or those that failed one. */
+  kind: 'lossless' | 'lossy' | 'rejected';
   activeIndex: number | null;
   completed: boolean;
-  /** Disables manual downloads while the job is running. */
+  /** Disables manual downloads, e.g. while the job's file is being filed. */
   disabled: boolean;
 }>();
 
@@ -19,7 +20,9 @@ const emit = defineEmits<{ download: [index: number] }>();
 const rows = computed(() =>
   props.candidates
     .map((candidate, index) => ({ c: candidate, index }))
-    .filter(({ c }) => !!c.rejected === !!props.rejected),
+    .filter(({ c }) =>
+      props.kind === 'rejected' ? !!c.rejected : !c.rejected && isLossless(c.format) === (props.kind === 'lossless'),
+    ),
 );
 </script>
 

@@ -4,18 +4,22 @@ import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
 import CoverArt from '@/components/CoverArt.vue';
 import ProgressBar from '@/components/ProgressBar.vue';
 import CandidateTable from '@/components/CandidateTable.vue';
+import YoutubeMatchTable from '@/components/YoutubeMatchTable.vue';
 import JobStatusBadge from '@/components/JobStatusBadge.vue';
 import { isActive, useJobsStore } from '@/stores/jobs';
+import { useSettingsStore } from '@/stores/settings';
 import { BUY_KIND_LABELS, useBuyLinks } from '@/composables/useBuyLinks';
 import { basename, formatBytes, formatSpeed } from '@/composables/useFormat';
 import { progressPercent } from '@/composables/useJobStatus';
 import { revealLabel } from '@/platform';
 import type { Job } from '@/types/job';
+import { isLossless } from '@/types/settings';
 
 const props = defineProps<{ job: Job }>();
 const emit = defineEmits<{ removed: [] }>();
 
 const jobsStore = useJobsStore();
+const settingsStore = useSettingsStore();
 const actionError = ref<string | null>(null);
 
 const meta = computed(() => props.job.metadata);
@@ -24,19 +28,27 @@ const percent = computed(() => progressPercent(props.job));
 const activeSource = computed(() =>
   props.job.activeCandidate === null ? null : props.job.candidates[props.job.activeCandidate],
 );
-// For tracks Soulseek hasn't found, including ones waiting to search again,
-// with nothing in the library: a YouTube copy is lossy and shouldn't replace
-// a file.
-const canUseYoutube = computed(
-  () => ['notFound', 'failed', 'waiting'].includes(props.job.status) && !props.job.replaces,
-);
+// Offered whenever Soulseek hasn't finished it, including while it's still
+// searching or queued at a peer, but never to replace a file: a YouTube copy
+// is lossy.
+const canUseYoutube = computed(() => {
+  const { status, source, replaces } = props.job;
+  if (replaces || status === 'completed' || status === 'tagging') return false;
+  return !(active.value && source === 'youtube');
+});
 const youtubeHint = computed(
   () =>
-    (props.job.status === 'waiting' ? 'Stop waiting for Soulseek and download' : 'Download') +
+    (active.value ? 'Stop the Soulseek download and get' : 'Download') +
     ' it from YouTube Music as lossy AAC (256 kbps with Premium cookies, else 128 kbps). A later search that finds a lossless copy replaces it.',
 );
-const acceptedCount = computed(() => props.job.candidates.filter((c) => !c.rejected).length);
-const rejectedCount = computed(() => props.job.candidates.length - acceptedCount.value);
+const passed = computed(() => props.job.candidates.filter((c) => !c.rejected));
+const losslessCount = computed(() => passed.value.filter((c) => isLossless(c.format)).length);
+const lossyCount = computed(() => passed.value.length - losslessCount.value);
+const rejectedCount = computed(() => props.job.candidates.length - passed.value.length);
+// Any source can be picked while the job runs, which stops what it's doing,
+// but not while its file is being filed into the library.
+const pickDisabled = computed(() => props.job.status === 'tagging');
+const sourceCount = computed(() => passed.value.length + props.job.youtubeMatches.length);
 // The album MusicBrainz tagged it from, once known: usually the studio album
 // rather than a single.
 const buyQuery = computed(() => ({
@@ -161,21 +173,6 @@ async function remove() {
       <p class="font-mono text-xs break-all text-text-muted">{{ job.outputPath }}</p>
     </div>
 
-    <!-- YouTube Music -->
-    <div v-if="job.youtube" class="flex flex-col gap-1">
-      <h3 class="section-label">YouTube Music</h3>
-      <p class="text-xs text-text-muted">
-        <button class="text-accent hover:text-accent-hover" @click="run(() => openUrl(job.youtube!.url))">
-          {{ job.youtube.title }}</button
-        ><template v-if="job.youtube.channel"> · {{ job.youtube.channel }}</template>
-        <template v-if="job.youtube.bitRate"> · AAC {{ job.youtube.bitRate }} kbps</template>
-      </p>
-      <p v-if="job.status === 'completed' && job.youtube.bitRate && job.youtube.bitRate < 200" class="text-xs text-text-muted">
-        YouTube gave the 128 kbps stream. With YouTube Premium, choose a browser to sign in with in Settings to get
-        256 kbps.
-      </p>
-    </div>
-
     <!-- Searches -->
     <div v-if="job.searches.length && job.status !== 'completed'" class="flex flex-col gap-1">
       <h3 class="section-label">Searches</h3>
@@ -237,30 +234,78 @@ async function remove() {
       </div>
     </div>
 
-    <!-- Sources -->
-    <div v-if="acceptedCount" class="flex flex-col gap-1.5">
-      <h3 class="section-label">Soulseek sources ({{ acceptedCount }})</h3>
+    <!-- Sources, best quality first: tried in this order, or picked by hand -->
+    <p v-if="sourceCount && job.status !== 'completed'" class="-mb-3 text-xs text-text-muted">
+      Tried best quality first: lossless, then lossy, then YouTube Music. Pick one to try it now.
+    </p>
+    <div v-if="losslessCount" class="flex flex-col gap-1.5">
+      <h3 class="section-label">Lossless on Soulseek ({{ losslessCount }})</h3>
       <CandidateTable
+        kind="lossless"
         :candidates="job.candidates"
         :active-index="job.activeCandidate"
         :completed="job.status === 'completed'"
-        :disabled="active"
+        :disabled="pickDisabled"
+        @download="(index) => run(() => jobsStore.downloadCandidate(job.id, index))"
+      />
+    </div>
+    <div v-if="lossyCount" class="flex flex-col gap-1.5">
+      <h3 class="section-label">Lossy on Soulseek ({{ lossyCount }})</h3>
+      <CandidateTable
+        kind="lossy"
+        :candidates="job.candidates"
+        :active-index="job.activeCandidate"
+        :completed="job.status === 'completed'"
+        :disabled="pickDisabled"
         @download="(index) => run(() => jobsStore.downloadCandidate(job.id, index))"
       />
     </div>
 
-    <details v-if="rejectedCount" class="flex flex-col gap-1.5" :open="!acceptedCount">
+    <!-- YouTube Music -->
+    <div v-if="job.youtubeMatches.length || job.youtube" class="flex flex-col gap-1.5">
+      <h3 class="section-label">
+        YouTube Music<template v-if="job.youtubeMatches.length"> ({{ job.youtubeMatches.length }})</template>
+      </h3>
+      <YoutubeMatchTable
+        v-if="job.youtubeMatches.length"
+        :matches="job.youtubeMatches"
+        :used="job.youtube"
+        :completed="job.status === 'completed'"
+        :disabled="pickDisabled || !!job.replaces"
+        @download="(index) => run(() => jobsStore.downloadFromYoutube(job.id, index))"
+      />
+      <p v-else-if="job.youtube" class="text-xs text-text-muted">
+        <button class="text-accent hover:text-accent-hover" @click="run(() => openUrl(job.youtube!.url))">
+          {{ job.youtube.title }}</button
+        ><template v-if="job.youtube.channel"> · {{ job.youtube.channel }}</template>
+      </p>
+      <p v-if="job.status === 'completed' && job.youtube?.bitRate" class="text-xs text-text-muted">
+        Downloaded as AAC {{ job.youtube.bitRate }} kbps.
+        <template v-if="job.youtube.bitRate < 200">
+          YouTube gave the 128 kbps stream.
+          <template v-if="settingsStore.settings?.youtubeCookiesBrowser">
+            Either the account you're signed in with doesn't have Premium, or yt-dlp couldn't get the audio signed
+            in and downloaded it signed out. Updating yt-dlp may fix the second.
+          </template>
+          <template v-else>
+            With YouTube Premium, choose a browser to sign in with in Settings to get 256 kbps.
+          </template>
+        </template>
+      </p>
+    </div>
+
+    <details v-if="rejectedCount" class="flex flex-col gap-1.5" :open="!sourceCount">
       <summary class="section-label cursor-pointer">Other files found ({{ rejectedCount }})</summary>
       <p class="mt-1.5 mb-1 text-xs text-text-muted">
         These lossless files have the right title but failed a check, so they're never downloaded automatically.
         Pick one if the check got it wrong.
       </p>
       <CandidateTable
-        rejected
+        kind="rejected"
         :candidates="job.candidates"
         :active-index="job.activeCandidate"
         :completed="job.status === 'completed'"
-        :disabled="active"
+        :disabled="pickDisabled"
         @download="(index) => run(() => jobsStore.downloadCandidate(job.id, index))"
       />
     </details>

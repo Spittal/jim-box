@@ -70,7 +70,7 @@ onMounted(search);
           class="shrink-0 rounded bg-accent px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
           @click="choose(entry.request)"
         >
-          Get lossless
+          Download
         </button>
       </div>
     </div>

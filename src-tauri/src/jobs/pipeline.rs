@@ -11,11 +11,13 @@ use uuid::Uuid;
 use super::ranking::{
     artist_free_queries, rank_for, search_queries, sort_and_cap, split_path, Anchor, MAX_CANDIDATES, MAX_REJECTED,
 };
+use super::youtube::{self, Outcome};
 use super::JobStore;
 use crate::error::{AppError, AppResult};
 use crate::library::{self, TagMode};
 use crate::rekordbox::Arrival;
 use crate::autotag;
+use crate::sources::youtube::YtDlp;
 use crate::sources::Sources;
 use crate::soulseek::types::TransferPhase;
 use crate::soulseek::{can_save, staging_dir, Soulseek, SoulseekClient, UNSAVEABLE_NAME};
@@ -52,13 +54,15 @@ pub fn start(app: &AppHandle, id: Uuid) -> AppResult<()> {
     })
 }
 
-/// Downloads one specific candidate the user picked.
-pub fn start_candidate(app: &AppHandle, id: Uuid, index: usize) -> AppResult<()> {
+/// Downloads one specific candidate the user picked, stopping whatever the
+/// job is doing first.
+pub async fn start_candidate(app: &AppHandle, id: Uuid, index: usize) -> AppResult<()> {
     let store = app.state::<JobStore>();
     let job = store.get(id)?;
     if index >= job.candidates.len() {
         return Err(AppError::Validation("That source is no longer available".into()));
     }
+    take_over(app, id).await?;
     store.update(app, id, |j| {
         j.status = JobStatus::Queued;
         j.error = None;
@@ -127,6 +131,21 @@ pub async fn cancel(app: &AppHandle, id: Uuid) -> AppResult<()> {
     Ok(())
 }
 
+/// Stops a running job so another source can be tried in its place: its
+/// transfer is cancelled. Refuses one being filed into the library, and one
+/// that finished meanwhile.
+pub(super) async fn take_over(app: &AppHandle, id: Uuid) -> AppResult<()> {
+    let store = app.state::<JobStore>();
+    if !store.is_running(id) {
+        return Ok(());
+    }
+    cancel(app, id).await?;
+    if store.get(id)?.status == JobStatus::Completed {
+        return Err(AppError::Validation("This download has already finished".into()));
+    }
+    Ok(())
+}
+
 pub(super) fn finish(app: &AppHandle, id: Uuid, result: AppResult<()>) {
     if let Err(e) = result {
         let _ = app.state::<JobStore>().update(app, id, |j| {
@@ -173,17 +192,14 @@ async fn run(app: &AppHandle, id: Uuid, slot: OwnedSemaphorePermit) -> AppResult
             None => {}
         }
     }
-    // Replacing a lossy file with another is pointless.
-    let replaces_lossy = match &job.replaces {
-        Some(path) => !is_lossless_file(path.clone()).await,
-        None => false,
-    };
-    let allow_lossy = settings.lossy_fallback && lossy_copy.is_none() && !replaces_lossy;
+    // A lossy copy never replaces a file: one already in the library is
+    // upgraded only by a lossless one.
+    let allow_lossy = settings.lossy_fallback && lossy_copy.is_none() && job.replaces.is_none();
 
     set_status(app, id, JobStatus::Searching)?;
     let (_slot, found) = search(app, id, slot, &meta, &settings, allow_lossy).await?;
 
-    if found.accepted.is_empty() {
+    if found.lossless.is_empty() {
         if let Some(existing) = lossy_copy {
             info!("Job {id}: no lossless copy; keeping the lossy one at {}", existing.display());
             store.update(app, id, |j| j.candidates = found.rejected)?;
@@ -191,27 +207,30 @@ async fn run(app: &AppHandle, id: Uuid, slot: OwnedSemaphorePermit) -> AppResult
         }
     }
 
-    // Files that failed a check come last and are only tried by hand.
-    let count = found.accepted.len();
-    // Files this computer can't save under their own name are left for the
-    // others, and don't use up an attempt.
-    let auto: Vec<usize> = (0..count).filter(|&i| can_save(&found.accepted[i].filename)).take(MAX_AUTO_ATTEMPTS).collect();
+    // Best quality first: lossless files, then lossy ones, then YouTube
+    // Music. Files that failed a check come last and are only tried by hand.
+    let lossless = found.lossless.len();
+    let lossy = found.lossy.len();
+    let found_any = lossless + lossy > 0;
     store.update(app, id, |j| {
-        j.candidates = found.accepted.into_iter().chain(found.rejected).collect();
-        if count == 0 {
-            j.status = JobStatus::NotFound;
-        }
+        j.candidates = found.lossless.into_iter().chain(found.lossy).chain(found.rejected).collect();
         // A lossless download upgrades the lossy copy, which goes to the Trash.
         if lossy_copy.is_some() {
             j.replaces = lossy_copy;
         }
     })?;
+    // Files this computer can't save under their own name are left for the
+    // others, and don't use up an attempt.
+    let candidates = store.get(id)?.candidates;
+    let saveable = |range: std::ops::Range<usize>| {
+        range.filter(|&i| can_save(&candidates[i].filename)).take(MAX_AUTO_ATTEMPTS).collect::<Vec<_>>()
+    };
+    let auto: Vec<usize> = saveable(0..lossless).into_iter().chain(saveable(lossless..lossless + lossy)).collect();
 
-    let mut last_error = None;
-    if count > 0 && auto.is_empty() {
-        return Err(AppError::Soulseek(UNSAVEABLE_NAME.into()));
-    }
+    let mut tried = 0;
+    let mut last_error = (found_any && auto.is_empty()).then(|| AppError::Soulseek(UNSAVEABLE_NAME.into()));
     for &index in &auto {
+        tried += 1;
         match attempt(app, id, index).await {
             Ok(()) => return Ok(()),
             // Soulseek is gone, which says nothing of this source or the
@@ -223,20 +242,42 @@ async fn run(app: &AppHandle, id: Uuid, slot: OwnedSemaphorePermit) -> AppResult
             }
         }
     }
+
+    // yt-dlp is optional: without it, Soulseek is all there is.
+    if allow_lossy && YtDlp::locate(None).is_ok() {
+        info!("Job {id}: no Soulseek file worked; trying YouTube Music");
+        match youtube::cascade(app, id, &meta).await {
+            Ok(Outcome::Done) => return Ok(()),
+            Ok(Outcome::NoMatch(why)) => info!("Job {id}: {why}"),
+            Err(e) => {
+                tried += 1;
+                last_error = Some(e);
+            }
+        }
+    }
+
     match last_error {
-        Some(e) => Err(AppError::Soulseek(format!(
-            "Tried {} sources without success. Last error: {e}",
-            auto.len()
+        Some(e) if tried > 1 => Err(AppError::Validation(format!(
+            "Tried {tried} sources without success. Last error: {e}"
         ))),
-        None => Ok(()), // No candidates: already marked NotFound.
+        Some(e) => Err(e),
+        None => {
+            store.update(app, id, |j| {
+                j.status = JobStatus::NotFound;
+                j.source = JobSource::Soulseek;
+            })?;
+            Ok(())
+        }
     }
 }
 
 /// What a job's searches found.
 struct Found {
-    /// Lossless files that passed every check or, failing those and if
-    /// allowed, lossy ones.
-    accepted: Vec<Candidate>,
+    /// Lossless files that passed every check.
+    lossless: Vec<Candidate>,
+    /// Lossy files that passed every check, if allowed: tried once no
+    /// lossless file works.
+    lossy: Vec<Candidate>,
     /// Files with the right title that failed a check, from every search run.
     rejected: Vec<Candidate>,
 }
@@ -244,8 +285,8 @@ struct Found {
 /// Runs the track's searches in order until one has usable results. Every
 /// search is recorded on the job. When no peer answers any of them, the job
 /// waits without its slot and searches again, per `QUIET_RETRY_DELAYS`.
-/// Lossy files are used, if `allow_lossy`, only when no search finds a
-/// lossless one. Returns the slot it holds at the end.
+/// Lossy files are collected too, if `allow_lossy`, from every search run.
+/// Returns the slot it holds at the end.
 async fn search(
     app: &AppHandle,
     id: Uuid,
@@ -260,7 +301,7 @@ async fn search(
     // A title with no words in it ("?", "…") matches every file by the
     // artist: there's nothing to search for or to tell the right file by.
     if crate::text::tokens(&crate::text::split_version(&meta.title).0).is_empty() {
-        return Ok((slot, Found { accepted: Vec::new(), rejected }));
+        return Ok((slot, Found { lossless: Vec::new(), lossy, rejected }));
     }
     for round in 0..=QUIET_RETRY_DELAYS.len() {
         if round > 0 {
@@ -323,7 +364,8 @@ async fn search(
                 let accepted = ranked.accepted;
                 rejected.retain(|r| !accepted.iter().any(|a| a.username == r.username && a.filename == r.filename));
                 sort_and_cap(&mut rejected, MAX_REJECTED);
-                return Ok((slot, Found { accepted, rejected }));
+                sort_and_cap(&mut lossy, MAX_CANDIDATES);
+                return Ok((slot, Found { lossless: accepted, lossy, rejected }));
             }
             if next == queries.len() && !artist_answered && queries.iter().all(|q| q.anchor != Anchor::ArtistInPath) {
                 info!("Job {id}: nobody answered searches naming the artist; it may be a banned phrase");
@@ -337,9 +379,9 @@ async fn search(
     sort_and_cap(&mut rejected, MAX_REJECTED);
     sort_and_cap(&mut lossy, MAX_CANDIDATES);
     if !lossy.is_empty() {
-        info!("Job {id}: no lossless copy found; falling back to {} lossy files", lossy.len());
+        info!("Job {id}: no lossless copy found; {} lossy files", lossy.len());
     }
-    Ok((slot, Found { accepted: lossy, rejected }))
+    Ok((slot, Found { lossless: Vec::new(), lossy, rejected }))
 }
 
 /// Adds the candidates `into` doesn't already have.
