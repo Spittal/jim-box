@@ -966,7 +966,7 @@ mod tests {
         assert_eq!(cues, [(None, 1_000, Some(2_000)), (Some(1), 3_000, None)]);
 
         // The three-band form by default, and when what's asked for isn't one.
-        let three_band = &collection.previews(&[id.clone()], 0).unwrap()[0];
+        let three_band = &collection.previews(std::slice::from_ref(&id), 0).unwrap()[0];
         assert_eq!((three_band.kind, three_band.columns.len()), (7, PREVIEW_COLUMNS * 3));
     }
 

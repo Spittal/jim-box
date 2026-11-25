@@ -184,18 +184,21 @@ pub struct UndoOutcome {
 }
 
 impl Collection {
-    /// Makes one change and reads the library again. Blocking.
+    /// Makes one change and reads the library again. Blocking. The app's
+    /// own changes go through [`Self::edit_in`], to be undone together.
+    #[cfg(test)]
     pub fn edit(&self, edit: Edit) -> AppResult<EditOutcome> {
         self.edit_in(edit, None)
     }
 
-    /// [`Self::edit`] as one of several changes that are undone together:
-    /// those made in a row under the same `group`.
+    /// Makes one change and reads the library again, blocking, as one of
+    /// several changes that are undone together: those made in a row under
+    /// the same `group`.
     pub fn edit_in(&self, edit: Edit, group: Option<String>) -> AppResult<EditOutcome> {
         self.edit_with(edit, group, true)
     }
 
-    /// [`Self::edit`] for a change the app makes of its own accord, as
+    /// [`Self::edit_in`], alone, for a change the app makes of its own accord, as
     /// keeping a playlist in step with Spotify is: not one for the user to
     /// find under Undo.
     pub fn edit_unasked(&self, edit: Edit) -> AppResult<EditOutcome> {
@@ -602,6 +605,39 @@ fn moved_order(
     Ok(order)
 }
 
+/// What SQLite says of a database with a page or index it can't make sense of.
+const MALFORMED: &str = "database disk image is malformed";
+
+/// A change refused because the library file is damaged says so, and says
+/// where: SQLite's own message names neither the step that met the damage
+/// nor the table it is in. The copy made before a session's first change
+/// reads every page of the file, so damage anywhere, however old and however
+/// far from what is being changed, stops that first; rekordbox, reading only
+/// what it needs, may never have met it. What a check of the file finds goes
+/// in the log, as it is what says how to mend it.
+fn damage_report(writer: &Writer, error: AppError) -> AppError {
+    let said = error.to_string();
+    if !said.contains(MALFORMED) {
+        return error;
+    }
+    let step = if writer.backed_up() { "making the change" } else { "copying the library before changing it" };
+    let found: Vec<String> = writer
+        .library()
+        .connection()
+        .prepare("PRAGMA quick_check(20)")
+        .and_then(|mut check| check.query_map([], |row| row.get::<_, String>(0))?.collect())
+        .unwrap_or_else(|e| vec![format!("the check itself failed: {e}")]);
+    tracing::error!(
+        "The rekordbox library at {} is damaged; met while {step}. quick_check: {}",
+        writer.library().location().master_db.display(),
+        found.join(" | ")
+    );
+    let first = found.first().filter(|line| line.as_str() != "ok").map(|line| format!(" ({line})")).unwrap_or_default();
+    AppError::Rekordbox(format!(
+        "rekordbox's library file is damaged{first}, which stopped {step}. Nothing was changed. The details are in the log."
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::tests::{fixture, query};
@@ -747,7 +783,7 @@ mod tests {
 
     /// (name, parent, depth) of each playlist and folder, in the tree's order.
     fn tree(collection: &Collection) -> Vec<(String, Option<String>, usize)> {
-        collection.playlists().unwrap().into_iter().map(|n| (n.name, n.parent_id, n.depth as usize)).collect()
+        collection.playlists().unwrap().into_iter().map(|n| (n.name, n.parent_id, n.depth)).collect()
     }
 
     #[test]
@@ -963,37 +999,4 @@ mod tests {
         create(&collection, "Two", None, false);
         assert_eq!(backups_in(&backups).len(), 1);
     }
-}
-
-/// What SQLite says of a database with a page or index it can't make sense of.
-const MALFORMED: &str = "database disk image is malformed";
-
-/// A change refused because the library file is damaged says so, and says
-/// where: SQLite's own message names neither the step that met the damage
-/// nor the table it is in. The copy made before a session's first change
-/// reads every page of the file, so damage anywhere, however old and however
-/// far from what is being changed, stops that first; rekordbox, reading only
-/// what it needs, may never have met it. What a check of the file finds goes
-/// in the log, as it is what says how to mend it.
-fn damage_report(writer: &Writer, error: AppError) -> AppError {
-    let said = error.to_string();
-    if !said.contains(MALFORMED) {
-        return error;
-    }
-    let step = if writer.backed_up() { "making the change" } else { "copying the library before changing it" };
-    let found: Vec<String> = writer
-        .library()
-        .connection()
-        .prepare("PRAGMA quick_check(20)")
-        .and_then(|mut check| check.query_map([], |row| row.get::<_, String>(0))?.collect())
-        .unwrap_or_else(|e| vec![format!("the check itself failed: {e}")]);
-    tracing::error!(
-        "The rekordbox library at {} is damaged; met while {step}. quick_check: {}",
-        writer.library().location().master_db.display(),
-        found.join(" | ")
-    );
-    let first = found.first().filter(|line| line.as_str() != "ok").map(|line| format!(" ({line})")).unwrap_or_default();
-    AppError::Rekordbox(format!(
-        "rekordbox's library file is damaged{first}, which stopped {step}. Nothing was changed. The details are in the log."
-    ))
 }

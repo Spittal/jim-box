@@ -394,7 +394,7 @@ pub(crate) mod tests {
         let wav = dir.path().join("Click 128.wav");
         click_track(&wav, 128.0, 30);
         let id = collection.import(&[wav], None).unwrap().track_ids.remove(0);
-        assert_eq!(collection.unanalysed(&[id.clone()]), [id.clone()]);
+        assert_eq!(collection.unanalysed(std::slice::from_ref(&id)), std::slice::from_ref(&id));
 
         let found = collection.analyse(&id, false).unwrap();
         assert!((found.bpm - 128.0).abs() < 0.5, "bpm {}", found.bpm);
@@ -404,7 +404,7 @@ pub(crate) mod tests {
         assert!(track.analysed);
         assert!((track.bpm.unwrap() - 128.0).abs() < 0.5);
         assert_eq!(track.duration_secs, 30);
-        assert!(collection.unanalysed(&[id.clone()]).is_empty());
+        assert!(collection.unanalysed(std::slice::from_ref(&id)).is_empty());
 
         // The three files are in the share folder, and the grid reads back.
         let loaded = collection.loaded().unwrap();
@@ -424,7 +424,7 @@ pub(crate) mod tests {
         let (dir, collection) = fixture();
         let wav = dir.path().join("Click.wav");
         click_track(&wav, 120.0, 20);
-        let id = collection.import(&[wav.clone()], None).unwrap().track_ids.remove(0);
+        let id = collection.import(std::slice::from_ref(&wav), None).unwrap().track_ids.remove(0);
         collection.analyse(&id, false).unwrap();
         let path_of = |collection: &Collection| {
             let loaded = collection.loaded().unwrap();
@@ -444,7 +444,7 @@ pub(crate) mod tests {
         let (dir, collection) = fixture();
         let wav = dir.path().join("Broken.wav");
         click_track(&wav, 120.0, 5);
-        let id = collection.import(&[wav.clone()], None).unwrap().track_ids.remove(0);
+        let id = collection.import(std::slice::from_ref(&wav), None).unwrap().track_ids.remove(0);
         std::fs::write(&wav, b"not audio at all").unwrap();
         assert!(collection.analyse(&id, false).is_err());
         assert!(!row(&collection, &id).analysed);
@@ -481,7 +481,7 @@ pub(crate) mod tests {
         // Reviewing is the app's own note; trying another grid takes it back.
         collection.review_grids(std::slice::from_ref(&id), true);
         assert!(row(&collection, &id).grid.unwrap().reviewed);
-        assert_eq!(collection.reviewed(&[id.clone(), "no such track".into()]), [id.clone()]);
+        assert_eq!(collection.reviewed(&[id.clone(), "no such track".into()]), std::slice::from_ref(&id));
         using(GridSource::Chosen).unwrap();
         assert_eq!(collection.preparation(&id).unwrap().beats, chosen);
         let state = row(&collection, &id).grid.unwrap();

@@ -196,7 +196,7 @@ impl YtDlp {
             while let Some(line) = lines.next_line().await? {
                 if let Some(progress) = parse_progress(&line) {
                     let finished = progress.total > 0 && progress.bytes >= progress.total;
-                    if finished || last_report.map_or(true, |t| t.elapsed() >= PROGRESS_INTERVAL) {
+                    if finished || last_report.is_none_or(|t| t.elapsed() >= PROGRESS_INTERVAL) {
                         on_progress(progress);
                         last_report = Some(Instant::now());
                     }

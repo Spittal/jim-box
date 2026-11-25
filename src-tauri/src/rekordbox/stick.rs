@@ -701,7 +701,7 @@ impl Stick {
                 }
             }
             Edit::AddTracks { playlist_id, track_ids } => {
-                if !tree.node(&playlist_id).is_some_and(|n| !n.folder) {
+                if tree.node(&playlist_id).is_none_or(|n| n.folder) {
                     return Err(AppError::Validation("Tracks go in playlists, not folders".into()));
                 }
                 let playlist = playlist_ref(&playlist_id)?;

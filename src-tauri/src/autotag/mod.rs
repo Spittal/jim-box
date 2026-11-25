@@ -223,7 +223,7 @@ pub async fn match_album(
             }
         };
         let found = album::score(files, &release);
-        if best.as_ref().map_or(true, |(r, m)| album::better((&release, &found), (r, m))) {
+        if best.as_ref().is_none_or(|(r, m)| album::better((&release, &found), (r, m))) {
             best = Some((release, found));
         }
     }

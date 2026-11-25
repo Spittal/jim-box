@@ -866,8 +866,11 @@ struct Lists {
     members: HashMap<String, Vec<String>>,
 }
 
+/// A playlist's tracks, read from whichever library it's in.
+type MembersOf<'a> = Box<dyn Fn(&str) -> AppResult<Vec<String>> + 'a>;
+
 fn lists_of(app: &AppHandle, from: &Lib) -> AppResult<Lists> {
-    let (nodes, members): (Vec<PlaylistNode>, Box<dyn Fn(&str) -> AppResult<Vec<String>>>) = match from {
+    let (nodes, members): (Vec<PlaylistNode>, MembersOf<'_>) = match from {
         Lib::Master => {
             let master = app.state::<Collection>();
             (master.playlists()?, Box::new(move |id| app.state::<Collection>().playlist_members(id)))
@@ -1447,9 +1450,9 @@ mod tests {
         std::fs::write(drive.join("PIONEER/Master/master.db"), b"").unwrap();
         let found = |at: &Path| find_in(at).into_iter().map(|(_, p)| p).collect::<Vec<_>>();
         let db = drive.join("PIONEER/Master/master.db");
-        assert_eq!(found(&drive), [db.clone()]);
-        assert_eq!(found(&drive.join("PIONEER")), [db.clone()]);
-        assert_eq!(found(dir.path()), [db.clone()]);
+        assert_eq!(found(&drive), std::slice::from_ref(&db));
+        assert_eq!(found(&drive.join("PIONEER")), std::slice::from_ref(&db));
+        assert_eq!(found(dir.path()), std::slice::from_ref(&db));
         assert_eq!(name_of(Kind::Library, &db), "DRIVE");
         assert!(find_in(&dir.path().join("nowhere")).is_empty());
     }

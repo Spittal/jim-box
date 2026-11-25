@@ -428,7 +428,8 @@ async fn reconcile(app: &AppHandle, playlist: PlaylistMatch) -> AppResult<bool> 
         let found = locate(&collection, &jobs, &work.entries);
         let plan = plan(&work, &members, &found, &jobs);
         let mut changed = false;
-        if !(plan.add.is_empty() && plan.remove.is_empty()) && !crate::rekordbox::is_running() {
+        let has_changes = !plan.add.is_empty() || !plan.remove.is_empty();
+        if has_changes && !crate::rekordbox::is_running() {
             if !plan.remove.is_empty() {
                 info!("Playlist '{}': taking out {} tracks that aren't on Spotify", work.name, plan.remove.len());
                 collection.edit_unasked(Edit::RemoveTracks { playlist_id: list_id.clone(), track_ids: plan.remove })?;

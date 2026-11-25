@@ -429,7 +429,7 @@ fn child(writer: &Writer, parent: &str, name: &str, folder: bool) -> AppResult<O
         .query_row("SELECT COALESCE(Attribute, 0) FROM djmdPlaylist WHERE ID = ?1", [&id], |r| r.get(0))
         .map_err(rekordbox_err)?;
     // A plain playlist is 0; an intelligent one, 4, isn't one to fill.
-    let fits = if folder { attribute == i64::from(ATTRIBUTE_FOLDER) } else { attribute == 0 };
+    let fits = if folder { attribute == ATTRIBUTE_FOLDER } else { attribute == 0 };
     Ok(fits.then_some(id))
 }
 
@@ -524,7 +524,7 @@ mod tests {
         // A real file for one of the other library's tracks, cued.
         let file = source.path().join("song.wav");
         wav(&file, 20);
-        let imported = from.import(&[file.clone()], None).unwrap();
+        let imported = from.import(std::slice::from_ref(&file), None).unwrap();
         let id = imported.track_ids[0].clone();
         from.edit(crate::rekordbox::Edit::AddCue { track_id: id.clone(), slot: Some(0), position_ms: 1000, end_ms: None }).unwrap();
         from.edit(crate::rekordbox::Edit::SetRating { track_id: id.clone(), stars: 4 }).unwrap();
@@ -540,12 +540,12 @@ mod tests {
         assert_eq!((report.added, report.updated), (1, 0), "{:?}", report.failed);
         assert!(report.failed.is_empty(), "{:?}", report.failed);
         let new = report.track_ids[0].clone();
-        let row = to.rows_of(&[new.clone()]).unwrap().remove(0);
+        let row = to.rows_of(std::slice::from_ref(&new)).unwrap().remove(0);
         assert_eq!(row.rating, 4);
         assert!(Path::new(&row.path).starts_with(&copy_to));
         assert_eq!(to.preparation(&new).unwrap().cues.len(), 1);
         let playlist = report.playlist_id.clone().unwrap();
-        assert_eq!(to.playlist_members(&playlist).unwrap(), [new.clone()]);
+        assert_eq!(to.playlist_members(&playlist).unwrap(), std::slice::from_ref(&new));
         let names: Vec<String> = to.playlists().unwrap().into_iter().map(|p| p.name).collect();
         assert!(names.contains(&"From USB".to_owned()) && names.contains(&"Friday".to_owned()));
 
@@ -555,8 +555,8 @@ mod tests {
         changed[0].cues.clear();
         let again = to.bring_in(&changed, &into, &copy_to).unwrap();
         assert_eq!((again.added, again.updated), (0, 1), "{:?}", again.failed);
-        assert_eq!(again.track_ids, [new.clone()]);
-        assert_eq!(to.rows_of(&[new.clone()]).unwrap()[0].rating, 2);
+        assert_eq!(again.track_ids, std::slice::from_ref(&new));
+        assert_eq!(to.rows_of(std::slice::from_ref(&new)).unwrap()[0].rating, 2);
         assert!(to.preparation(&new).unwrap().cues.is_empty());
         assert_eq!(again.playlist_id, Some(playlist));
     }

@@ -1025,7 +1025,7 @@ pub fn decide(
             unused = followed.as_ref().map(|f| Followed { times: f.times.clone(), ..*f });
             let earned = followed.filter(|followed| {
                 following == Follow::Always
-                    || constant.as_ref().map_or(true, |(grid, _, _)| {
+                    || constant.as_ref().is_none_or(|(grid, _, _)| {
                     let (bent, straight) = (on_attacks(&followed.times, attacks, from, to), on_attacks(grid, attacks, from, to));
                     bent >= (straight + TIGHTER_BY).max(straight * TIGHTER_TIMES)
                 })

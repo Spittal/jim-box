@@ -204,7 +204,7 @@ fn track_cost(file: &FileTrack, track: &AlbumTrack) -> f64 {
     };
     let index = match file.track_number {
         Some(n) => {
-            let same_disc = file.disc_number.map_or(true, |d| d == track.disc);
+            let same_disc = file.disc_number.is_none_or(|d| d == track.disc);
             if n == track.position && same_disc { 0.0 } else { 1.0 }
         }
         None => 0.3,

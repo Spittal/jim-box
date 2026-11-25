@@ -279,7 +279,7 @@ mod tests {
         std::fs::write(music.join("cover.jpg"), "art").unwrap();
         let before = collection.status().unwrap().tracks;
 
-        let report = collection.import(&[music.clone()], None).unwrap();
+        let report = collection.import(std::slice::from_ref(&music), None).unwrap();
         assert_eq!((report.added, report.existing, report.skipped.len()), (3, 0, 0));
         assert_eq!(collection.status().unwrap().tracks, before + 3);
         // An untagged file is titled by its name.
@@ -338,7 +338,7 @@ mod tests {
         let music = dir.path().join("music");
         let (old, new) = (music.join("old.wav"), music.join("sorted/new.wav"));
         wav(&old);
-        let id = collection.import(&[old.clone()], None).unwrap().track_ids.remove(0);
+        let id = collection.import(std::slice::from_ref(&old), None).unwrap().track_ids.remove(0);
         let list = collection.add_to_named_playlist("Keep", std::slice::from_ref(&id)).unwrap();
         let tracks = collection.status().unwrap().tracks;
 
