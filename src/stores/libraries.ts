@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { open as pickFolder } from '@tauri-apps/plugin-dialog';
 import { showToast } from '@/composables/useToast';
 import { useUsbStore } from './usb';
-import type { Applied, LibraryStatus, Moved, OtherKind, OtherLibrary, PluggedLibrary } from '@/types/libraries';
+import type { Applied, LibraryStatus, Moved, OtherKind, OtherLibrary, PluggedLibrary, TransferProgress } from '@/types/libraries';
 import type { UsbConvert } from '@/types/usb';
 
 /** What joins another library's id to an id of its own: `lib1~123`. The master's ids have none. */
@@ -44,6 +44,36 @@ export const useLibrariesStore = defineStore('libraries', () => {
   const generation = ref(0);
   /** Something being brought from one library to another, said in a few words. */
   const moving = ref<string | null>(null);
+  /** How the move is going, once it has said. */
+  const transfer = ref<TransferProgress | null>(null);
+  /** When copying began, and how much was copied then, for how long the rest will take. */
+  let copyStart: { at: number; bytes: number } | null = null;
+  /** Seconds the copying has left, once it has gone long enough to tell. */
+  const secondsLeft = ref<number | null>(null);
+
+  function progressed(p: TransferProgress) {
+    // One that arrives after the move is over says nothing new.
+    if (!moving.value) return;
+    transfer.value = p;
+    if (p.stage !== 'copying') {
+      copyStart = null;
+      secondsLeft.value = null;
+      return;
+    }
+    const now = Date.now();
+    copyStart ??= { at: now, bytes: p.bytesDone };
+    const seconds = (now - copyStart.at) / 1000;
+    const copied = p.bytesDone - copyStart.bytes;
+    secondsLeft.value = seconds >= 5 && copied > 0 ? ((p.bytesTotal - p.bytesDone) * seconds) / copied : null;
+  }
+
+  /** How far through its stage the move is, 0 to 100; null when the stage doesn't count. */
+  const transferPercent = computed(() => {
+    const p = transfer.value;
+    if (!p) return null;
+    if (p.stage === 'copying' && p.bytesTotal) return Math.round((p.bytesDone / p.bytesTotal) * 100);
+    return p.total ? Math.round((p.done / p.total) * 100) : null;
+  });
   const error = ref<string | null>(null);
 
   async function load() {
@@ -140,6 +170,9 @@ export const useLibrariesStore = defineStore('libraries', () => {
   async function move(what: string, to: string | null, run: () => Promise<Moved>): Promise<Moved | undefined> {
     error.value = null;
     moving.value = what;
+    transfer.value = null;
+    copyStart = null;
+    secondsLeft.value = null;
     try {
       const moved = await run();
       showToast(describeMove(moved, nameOf(to)));
@@ -151,6 +184,7 @@ export const useLibrariesStore = defineStore('libraries', () => {
       return undefined;
     } finally {
       moving.value = null;
+      transfer.value = null;
     }
   }
 
@@ -224,6 +258,10 @@ export const useLibrariesStore = defineStore('libraries', () => {
     plugged,
     generation,
     moving,
+    transfer,
+    transferPercent,
+    secondsLeft,
+    progressed,
     error,
     staged,
     stagedCount,

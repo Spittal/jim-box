@@ -11,6 +11,7 @@ import type { AnalysisEvent, Waiting } from '@/types/collection';
 import type { SoulseekStatus } from '@/types/soulseek';
 import type { Job } from '@/types/job';
 import type { LibraryItem, LibraryProgress, LibrarySnapshot } from '@/types/library';
+import type { TransferProgress } from '@/types/libraries';
 import type { PlaylistProgress } from '@/types/playlist';
 import type { UsbProgress } from '@/types/usb';
 
@@ -43,6 +44,7 @@ export function useEvents() {
     listen<string>('playlist-synced', (e) => playlist.synced(e.payload)),
     // Another library opened, closed or changed (a stick pulled out closes its own).
     listen('libraries-changed', () => libraries.refresh()),
+    listen<TransferProgress>('transfer-progress', (e) => libraries.progressed(e.payload)),
     listen('volumes-changed', () => {
       void libraries.refreshPlugged();
       if (usb.devices.length || usb.looking) void usb.load();

@@ -45,6 +45,19 @@ export interface PluggedLibrary {
   kind: OtherKind;
 }
 
+/** How bringing tracks into a library is going; see `TransferProgress` in src-tauri/src/rekordbox/transfer.rs. */
+export interface TransferProgress {
+  stage: 'matching' | 'copying' | 'adding' | 'carrying' | 'placing';
+  /** Of the stage's steps; 0 of 0 when it has none to count. */
+  done: number;
+  total: number;
+  /** Of the files being copied, while copying. */
+  bytesDone: number;
+  bytesTotal: number;
+  /** The track last done, when there's one to name. */
+  title: string;
+}
+
 /** What taking tracks or playlists from one library to another did; see `Moved` in src-tauri/src/others.rs. */
 export interface Moved {
   added: number;

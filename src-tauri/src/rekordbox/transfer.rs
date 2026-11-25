@@ -9,6 +9,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use rbl_db::write::{DeviceAnalysis, ImportOutcome, Writer, ATTRIBUTE_FOLDER, ROOT};
 use rbl_db::OpenMode;
@@ -89,6 +91,38 @@ pub struct TransferReport {
 /// How far apart two lengths can be for two files to be taken as the same song.
 const SAME_LENGTH_SECS: u32 = 3;
 
+/// Files copied at once. One copy at a time leaves the drive idle while each
+/// copy is flushed to disk and checked against the original; a few at once
+/// keep it reading. More than this gains little from one USB stick.
+const COPY_WORKERS: usize = 3;
+
+/// How a transfer is going, for a progress bar.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferProgress {
+    /// `matching` (finding the tracks the library has), `copying`, `adding`
+    /// (the copies into the collection), `carrying` (grids, cues, ratings and
+    /// colours) or `placing` (the playlists).
+    pub stage: &'static str,
+    /// Of the stage's steps; 0 of 0 when it has none to count.
+    pub done: usize,
+    pub total: usize,
+    /// Of the files being copied, while copying.
+    pub bytes_done: u64,
+    pub bytes_total: u64,
+    /// The track last done, when there's one to name.
+    pub title: String,
+}
+
+impl TransferProgress {
+    fn stage(stage: &'static str, done: usize, total: usize) -> Self {
+        Self { stage, done, total, ..Self::default() }
+    }
+}
+
+/// Hears how a transfer is going, from whichever thread is doing it.
+pub type OnProgress<'a> = &'a (dyn Fn(TransferProgress) + Sync);
+
 /// Where a copy of `file` goes under `root`: the artist's folder, then the
 /// album's, named the way an export names them.
 fn copy_place(root: &Path, artist: &str, album: &str, file: &Path) -> PathBuf {
@@ -133,16 +167,25 @@ impl Collection {
         Ok(out)
     }
 
-    /// Brings tracks in from another library, copying the files of the ones
-    /// this library hasn't got into `copy_to`, and puts them where `into`
-    /// says. Blocking, for as long as the copying takes.
+    /// [`Self::bring_in_with`], everything to one place, and saying nothing as it goes.
+    #[cfg(test)]
     pub fn bring_in(&self, items: &[Incoming], into: &Destination, copy_to: &Path) -> AppResult<TransferReport> {
-        self.bring_in_to(items, &[(into.clone(), (0..items.len()).collect())], copy_to)
+        self.bring_in_with(items, &[(into.clone(), (0..items.len()).collect())], copy_to, &|_| {})
     }
 
-    /// [`Self::bring_in`], putting each part of what comes in in a place of its own.
-    pub fn bring_in_to(&self, items: &[Incoming], placements: &[Placement], copy_to: &Path) -> AppResult<TransferReport> {
+    /// Brings tracks in from another library, copying the files of the ones
+    /// this library hasn't got into `copy_to`, and puts each part of them
+    /// where its placement says, saying how it's going as it goes. Blocking,
+    /// for as long as the copying takes.
+    pub fn bring_in_with(
+        &self,
+        items: &[Incoming],
+        placements: &[Placement],
+        copy_to: &Path,
+        progress: OnProgress<'_>,
+    ) -> AppResult<TransferReport> {
         let mut report = TransferReport::default();
+        progress(TransferProgress::stage("matching", 0, 0));
         self.refresh()?;
         let loaded = self.loaded_or_read()?;
         let mine = self.library_db_id().unwrap_or(0);
@@ -175,26 +218,22 @@ impl Collection {
         drop(loaded);
 
         // The files of the rest, copied in, each checked against the original.
-        let mut copies = Copies::new();
-        let mut copied: Vec<(usize, PathBuf)> = Vec::new();
+        let mut to_copy: Vec<usize> = Vec::new();
         for (at, item) in items.iter().enumerate().filter(|(at, _)| found[*at].is_none()) {
-            if !item.file.is_file() {
+            if item.file.is_file() {
+                to_copy.push(at);
+            } else {
                 report.failed.push(format!("{}: its file is missing ({})", item.title, item.file.display()));
-                continue;
-            }
-            let wanted = copy_place(copy_to, &item.artist, &item.album, &item.file);
-            let placed = match Copies::existing_copy(&item.file, &wanted) {
-                Ok(Some(earlier)) => Ok(earlier),
-                _ => copies.copy(&item.file, &wanted),
-            };
-            match placed {
-                Ok(at_path) => copied.push((at, at_path)),
-                Err(e) => report.failed.push(format!("{}: it couldn't be copied ({e})", item.title)),
             }
         }
+        let (copies, copied, failed) = copy_all(items, &to_copy, copy_to, progress);
+        report.failed.extend(failed);
 
+        let total = items.len();
         let written = self.write(|writer, _| {
             let files: Vec<PathBuf> = copied.iter().map(|(_, path)| path.clone()).collect();
+            // One call, which can't say how far through it is.
+            progress(TransferProgress::stage("adding", 0, 0));
             let outcomes = if files.is_empty() { Vec::new() } else { writer.import_files(&files).map_err(rekordbox_err)? };
             for ((at, path), outcome) in copied.iter().zip(outcomes) {
                 match outcome {
@@ -206,7 +245,8 @@ impl Collection {
                     ImportOutcome::Refused(reason) => report.failed.push(format!("{}: {reason}", items[*at].title)),
                 }
             }
-            for (item, target) in items.iter().zip(&found) {
+            for (at, (item, target)) in items.iter().zip(&found).enumerate() {
+                progress(TransferProgress { title: item.title.clone(), ..TransferProgress::stage("carrying", at, total) });
                 let Some((id, audio)) = target else { continue };
                 if let Err(e) = carry(writer, &share_root, id, audio, item) {
                     report.failed.push(format!("{}: {e}", item.title));
@@ -215,7 +255,8 @@ impl Collection {
                     report.track_ids.push(id.clone());
                 }
             }
-            for (into, members) in placements {
+            for (at, (into, members)) in placements.iter().enumerate() {
+                progress(TransferProgress::stage("placing", at, placements.len()));
                 let ids: Vec<String> = members.iter().filter_map(|&at| found.get(at)?.as_ref().map(|(id, _)| id.clone())).collect();
                 let playlist = place(writer, &ids, into)?;
                 report.playlist_id = report.playlist_id.take().or(playlist);
@@ -223,8 +264,10 @@ impl Collection {
             Ok(())
         });
         if let Err(e) = written {
-            if let Err(left) = copies.roll_back() {
-                tracing::warn!("Couldn't remove the copies of an import that failed: {left}");
+            for copies in copies {
+                if let Err(left) = copies.roll_back() {
+                    tracing::warn!("Couldn't remove the copies of an import that failed: {left}");
+                }
             }
             return Err(e);
         }
@@ -233,6 +276,72 @@ impl Collection {
         self.forget_view();
         Ok(report)
     }
+}
+
+/// Copies the files of `items` at `which` under `copy_to`, a few at a time
+/// ([`COPY_WORKERS`]), or finds the copies an earlier import made. Returns
+/// what was copied, to be removed should the import fail, where each went,
+/// in the order given, and "title: reason" for each that couldn't be.
+fn copy_all(
+    items: &[Incoming],
+    which: &[usize],
+    copy_to: &Path,
+    progress: OnProgress<'_>,
+) -> (Vec<Copies>, Vec<(usize, PathBuf)>, Vec<String>) {
+    let sizes: Vec<u64> = which.iter().map(|&at| std::fs::metadata(&items[at].file).map_or(0, |m| m.len())).collect();
+    let bytes_total: u64 = sizes.iter().sum();
+    let next = AtomicUsize::new(0);
+    let done = AtomicUsize::new(0);
+    let bytes_done = AtomicU64::new(0);
+    let results: Mutex<Vec<(usize, Result<PathBuf, String>)>> = Mutex::new(Vec::with_capacity(which.len()));
+    progress(TransferProgress { bytes_total, ..TransferProgress::stage("copying", 0, which.len()) });
+
+    let workers = COPY_WORKERS.min(which.len()).max(1);
+    let copies: Vec<Copies> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut copies = Copies::new();
+                    loop {
+                        let n = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(&at) = which.get(n) else { break };
+                        let item = &items[at];
+                        let wanted = copy_place(copy_to, &item.artist, &item.album, &item.file);
+                        // Two wanting the same name can't both take it: `copy` numbers the second.
+                        let placed = match Copies::existing_copy(&item.file, &wanted) {
+                            Ok(Some(earlier)) => Ok(earlier),
+                            _ => copies.copy(&item.file, &wanted),
+                        };
+                        let placed = placed.map_err(|e| format!("{}: it couldn't be copied ({e})", item.title));
+                        results.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((at, placed));
+                        let bytes = bytes_done.fetch_add(sizes[n], Ordering::Relaxed) + sizes[n];
+                        let count = done.fetch_add(1, Ordering::Relaxed) + 1;
+                        progress(TransferProgress {
+                            bytes_done: bytes,
+                            bytes_total,
+                            title: item.title.clone(),
+                            ..TransferProgress::stage("copying", count, which.len())
+                        });
+                    }
+                    copies
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap_or_default()).collect()
+    });
+
+    let mut results = results.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
+    // In the order given, as one at a time would have them.
+    results.sort_by_key(|(at, _)| *at);
+    let mut copied = Vec::with_capacity(results.len());
+    let mut failed = Vec::new();
+    for (at, placed) in results {
+        match placed {
+            Ok(path) => copied.push((at, path)),
+            Err(reason) => failed.push(reason),
+        }
+    }
+    (copies, copied, failed)
 }
 
 /// Gives a track of the library what came with `item`: its analysis files
@@ -376,6 +485,35 @@ mod tests {
         assert!(placed.starts_with("/music/Imported"));
         assert!(placed.ends_with("One More Time.mp3"));
         assert!(placed.to_string_lossy().contains("Daft Punk"));
+    }
+
+    #[test]
+    fn copies_made_at_once_keep_their_order_and_never_take_each_others_names() {
+        let source = tempfile::tempdir().unwrap();
+        let copy_to = tempfile::tempdir().unwrap();
+        // More files than workers, two different songs wanting the same name.
+        let mut items = Vec::new();
+        for n in 0..(COPY_WORKERS * 2 + 1) {
+            let dir = source.path().join(format!("from{n}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            let name = if n < 2 { "Same.wav".to_owned() } else { format!("Song {n}.wav") };
+            let file = dir.join(name);
+            wav(&file, 2 + u32::try_from(n).unwrap());
+            items.push(Incoming { title: format!("t{n}"), artist: "A".into(), album: "B".into(), file, ..Incoming::default() });
+        }
+        let which: Vec<usize> = (0..items.len()).collect();
+        let seen = Mutex::new(Vec::new());
+        let (_copies, copied, failed) =
+            copy_all(&items, &which, copy_to.path(), &|p| seen.lock().unwrap().push((p.done, p.bytes_done, p.bytes_total)));
+        assert!(failed.is_empty(), "{failed:?}");
+        assert_eq!(copied.iter().map(|(at, _)| *at).collect::<Vec<_>>(), which);
+        for (at, path) in &copied {
+            assert_eq!(std::fs::read(path).unwrap(), std::fs::read(&items[*at].file).unwrap());
+        }
+        assert_ne!(copied[0].1, copied[1].1, "the second of the same name is numbered");
+        let seen = seen.into_inner().unwrap();
+        let (done, bytes, total) = *seen.iter().max().unwrap();
+        assert_eq!((done, bytes), (items.len(), total));
     }
 
     #[test]

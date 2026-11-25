@@ -5,6 +5,11 @@
 ### New
 
 - **Drag several playlists at once.** Pick playlists with ⌘- or Shift-click and drag any of them: they all go together, between your library and a stick or another library, or into a folder or a new place in the same library, keeping their order. A move within a library is undone in one step.
+- **A real progress bar for bringing tracks in.** Bringing tracks or playlists in from a stick or another library shows which step it's on, how many tracks and gigabytes are copied, and about how long the copying has left. Before, it only said it was busy.
+
+### Changed
+
+- Tracks brought in from a stick or another library are copied three at a time, which keeps the drive busy while each copy is checked.
 
 ## 1.9.0
 

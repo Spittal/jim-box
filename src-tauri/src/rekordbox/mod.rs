@@ -22,7 +22,7 @@ pub use grid::{Hint as GridHint, Source as GridSource};
 pub use ingest::{Arrival, ImportReport};
 pub use prepare::{Audio, Cue, GridChange, Preparation, Preview};
 pub use stick::{Change, PlaylistRef, Stick, TrackRef};
-pub use transfer::{placements, Destination, Incoming, TransferReport};
+pub use transfer::{placements, Destination, Incoming, TransferProgress, TransferReport};
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};

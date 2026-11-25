@@ -19,6 +19,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 use rbl_export::device_library::{self as device, Edit as DeviceEdit};
 use serde::{Deserialize, Serialize};
@@ -31,7 +32,7 @@ use crate::rekordbox::stick::{self, ExportedList, StagedSummary};
 use crate::rekordbox::{
     Change, Collection, CollectionStatus, Destination, Edit, EditOutcome, Incoming, PlaylistKind, PlaylistNode,
     PlaylistRef, Preparation, Preview, Source as ListSource, Stick, TrackPage, TrackQuery, TrackRef, TrackRow,
-    TransferReport,
+    TransferProgress, TransferReport,
 };
 use crate::state::SettingsState;
 use crate::{persistence, usb};
@@ -763,6 +764,23 @@ fn incoming(app: &AppHandle, from: &Lib, ids: &[String]) -> AppResult<Vec<Incomi
     }
 }
 
+/// Says how a transfer is going to the window, as `transfer-progress`:
+/// every change of stage, and the rest a few times a second.
+fn progress_to(app: &AppHandle) -> impl Fn(TransferProgress) + Sync + '_ {
+    let last: Mutex<Option<(Instant, &'static str)>> = Mutex::new(None);
+    move |progress: TransferProgress| {
+        let mut last = last.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((at, stage)) = *last {
+            if stage == progress.stage && at.elapsed() < Duration::from_millis(100) {
+                return;
+            }
+        }
+        *last = Some((Instant::now(), progress.stage));
+        drop(last);
+        let _ = app.emit("transfer-progress", progress);
+    }
+}
+
 /// Where tracks copied into the master go.
 fn master_home(app: &AppHandle) -> PathBuf {
     app.state::<SettingsState>().snapshot().music_dir.join("Imported")
@@ -817,7 +835,8 @@ pub fn move_tracks(app: &AppHandle, track_ids: &[String], to: Option<&str>, play
     let (collection, home) = into_collection(app, &target).expect("not a stick");
     let items = incoming(app, &from, &own)?;
     let into = playlist.map_or(Destination::Collection, Destination::Playlist);
-    let mut report = collection.bring_in(&items, &into, &home)?;
+    let all = [(into, (0..items.len()).collect())];
+    let mut report = collection.bring_in_with(&items, &all, &home, &progress_to(app))?;
     retag(&target, &mut report);
     after_bringing_in(app, &target, &report);
     Ok(Moved { report, library: to.map(str::to_owned), staged: false })
@@ -958,7 +977,7 @@ pub fn move_playlists(app: &AppHandle, playlist_ids: &[String], to: Option<&str>
     let items = incoming(app, &from, &tracks)?;
     let placements = crate::rekordbox::placements(&items, wanted);
     // A track whose file couldn't be found leaves the rest where they are.
-    let mut report = collection.bring_in_to(&items, &placements, &home)?;
+    let mut report = collection.bring_in_with(&items, &placements, &home, &progress_to(app))?;
     retag(&target, &mut report);
     after_bringing_in(app, &target, &report);
     Ok(Moved { report, library: to.map(str::to_owned), staged: false })
@@ -990,7 +1009,7 @@ pub fn import_all(app: &AppHandle, id: &str) -> AppResult<Moved> {
     }
     let items = incoming(app, &from, &all)?;
     let placements = crate::rekordbox::placements(&items, wanted);
-    let mut report = app.state::<Collection>().bring_in_to(&items, &placements, &master_home(app))?;
+    let mut report = app.state::<Collection>().bring_in_with(&items, &placements, &master_home(app), &progress_to(app))?;
     retag(&Lib::Master, &mut report);
     after_bringing_in(app, &Lib::Master, &report);
     Ok(Moved { report, library: None, staged: false })

@@ -2,6 +2,7 @@
 import { computed, type ComponentPublicInstance } from 'vue';
 import { storeToRefs } from 'pinia';
 import PlaylistTree from '@/components/PlaylistTree.vue';
+import ProgressBar from '@/components/ProgressBar.vue';
 import { useBrowseStore } from '@/stores/browse';
 import { useLibrariesStore } from '@/stores/libraries';
 
@@ -11,7 +12,36 @@ import { useLibrariesStore } from '@/stores/libraries';
  * another master.db). At its foot, opening another.
  */
 const libraries = useLibrariesStore();
-const { others, plugged, moving } = storeToRefs(libraries);
+const { others, plugged, moving, transfer, transferPercent, secondsLeft } = storeToRefs(libraries);
+
+const STAGES: Record<string, string> = {
+  matching: 'Finding the tracks you have',
+  copying: 'Copying',
+  adding: 'Adding them to the collection',
+  carrying: 'Bringing over grids, cues and ratings',
+  placing: 'Filling the playlists',
+};
+
+const gigabytes = (bytes: number) => (bytes / 1e9).toFixed(bytes < 1e10 ? 1 : 0);
+
+/** The stage, and how far through it the move is. */
+const transferLine = computed(() => {
+  const p = transfer.value;
+  if (!p) return moving.value;
+  const parts = [STAGES[p.stage] ?? p.stage];
+  if (p.total) parts[0] += ` ${Math.min(p.done + (p.stage === 'copying' ? 0 : 1), p.total).toLocaleString()} of ${p.total.toLocaleString()}`;
+  if (p.stage === 'copying' && p.bytesTotal) parts.push(`${gigabytes(p.bytesDone)} of ${gigabytes(p.bytesTotal)} GB`);
+  return parts.join(' · ');
+});
+
+/** How long the copying has left, roughly. */
+const timeLeft = computed(() => {
+  const s = secondsLeft.value;
+  if (s === null) return null;
+  if (s < 60) return 'under a minute left';
+  const minutes = Math.round(s / 60);
+  return minutes < 90 ? `about ${minutes} min left` : `about ${Math.round(minutes / 6) / 10} h left`;
+});
 const browse = useBrowseStore();
 
 /** The master first, then the others in the order opened. */
@@ -65,9 +95,15 @@ const OPEN_ICON = 'M1.5 3.5h4.5l1.5 1.5h7v8h-13zM8 11V7.5M6.3 9.2L8 7.5l1.7 1.7'
         <button :class="buttonClass" class="text-accent" @click="libraries.open(drive.path)">Open</button>
       </li>
     </ul>
-    <p v-if="moving" class="shrink-0 animate-pulse border-t border-border px-3 py-1.5 text-[11px] text-text-secondary">
-      {{ moving }}
-    </p>
+    <div v-if="moving" class="flex shrink-0 flex-col gap-1 border-t border-border px-3 py-1.5 text-[11px]" :title="moving">
+      <p class="truncate text-text-secondary">{{ transferLine }}</p>
+      <ProgressBar :percent="transferPercent ?? 100" :class="transferPercent === null ? 'animate-pulse' : ''" />
+      <p class="flex gap-1 text-text-muted">
+        <span class="min-w-0 flex-1 truncate">{{ transfer?.title }}</span>
+        <span v-if="timeLeft" class="shrink-0">{{ timeLeft }}</span>
+      </p>
+      <p v-if="transfer?.stage === 'copying'" class="text-text-muted">Keep Jim Box open and the stick in until this is done.</p>
+    </div>
 
     <div class="flex shrink-0 items-center border-t border-border p-1.5">
       <button
