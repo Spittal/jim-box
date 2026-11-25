@@ -17,13 +17,22 @@ concurrency:
 jobs:
   build:
     name: ${{ matrix.name }}
+    # A release's commit is built by its tag's run, which publishes it: built
+    # again for main as well, the two wait for the same few macOS machines,
+    # and when none comes free in time the release fails.
+    if: >-
+      !(github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+        startsWith(github.event.head_commit.message, 'Release '))
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: macOS (Apple silicon)
-            os: macos-26
+            # macos-26's Apple silicon machines are too few: jobs waited for
+            # one until they failed. The app runs on macOS 12 and later, so
+            # nothing needs the newer image.
+            os: macos-15
             target: aarch64-apple-darwin
             test: true
           - name: Windows (x64)
