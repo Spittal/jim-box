@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 1.10.0
+
+1.9.0 was never published: its macOS build couldn't get a machine. Its changes, below, come out with this one.
 
 ### New
 
