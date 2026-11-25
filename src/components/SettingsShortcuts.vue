@@ -9,6 +9,7 @@ import { isMac } from '@/platform';
 
 const cmd = isMac ? '⌘' : 'Ctrl';
 const shift = isMac ? '⇧' : 'Shift';
+const alt = isMac ? '⌥' : 'Alt';
 const del = isMac ? '⌫' : 'Delete';
 const enter = isMac ? '↩' : 'Enter';
 
@@ -43,6 +44,8 @@ const groups: { title: string; note?: string; lines: Line[] }[] = [
       { does: 'Between the playlists, the tracks and the sidebar', keys: [[cmd, '←'], [cmd, '→']] },
       { does: 'Pick the playlist or track above or below', keys: [['↑'], ['↓']] },
       { does: 'Close or open a folder of playlists', keys: [['←'], ['→']] },
+      { does: 'Go up to its folder, or into an open one', keys: [['←'], ['→']] },
+      { does: 'Close or open a folder and every folder inside it', keys: [[alt, '←'], [alt, '→'], [alt, 'Click']] },
       { does: 'Show several playlists as one list', keys: [[cmd, 'Click'], [shift, 'Click']] },
     ],
   },

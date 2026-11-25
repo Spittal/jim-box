@@ -10,8 +10,9 @@ import { useCollectionStore } from '@/stores/collection';
 import { useJobsStore } from '@/stores/jobs';
 import { libraryOf, useLibrariesStore } from '@/stores/libraries';
 import { isPlaylistLink, usePlaylistStore } from '@/stores/playlist';
+import { useTreeStore } from '@/stores/tree';
 import { useUiStore } from '@/stores/ui';
-import { commandKey, revealLabel } from '@/platform';
+import { commandKey, isMac, revealLabel } from '@/platform';
 import type { PlaylistNode } from '@/types/collection';
 import type { SyncSettings } from '@/types/playlist';
 
@@ -34,6 +35,7 @@ const libraries = useLibrariesStore();
 const browse = useBrowseStore();
 const jobs = useJobsStore();
 const ui = useUiStore();
+const tree = useTreeStore();
 const playlistStore = usePlaylistStore();
 const { watched } = storeToRefs(playlistStore);
 
@@ -52,7 +54,46 @@ const selectedNode = computed(() => (active.value ? browse.selectedNode : null))
 /** Makes a change to this library. */
 const edit = (change: Parameters<typeof store.edit>[0]) => store.edit(change, { library: props.library });
 
-const collapsed = ref(new Set<string>());
+// Folders open and closed, kept between runs (see stores/tree.ts).
+
+/** The folders closed. */
+const collapsed = computed(() => tree.closedIn(props.library));
+/** Every folder's id. */
+const folderIds = computed(() => playlists.value.filter((p) => p.kind === 'folder').map((p) => p.id));
+
+// A folder deleted, here or in rekordbox, is forgotten. An empty list may be one still loading.
+watch(folderIds, (ids) => playlists.value.length && tree.keepOnly(props.library, ids), { immediate: true });
+
+/** The folders inside one, at any depth. */
+function foldersUnder(folder: PlaylistNode): string[] {
+  const rows = playlists.value;
+  const ids: string[] = [];
+  for (let i = rows.indexOf(folder) + 1; i < rows.length && rows[i].depth > folder.depth; i++) {
+    if (rows[i].kind === 'folder') ids.push(rows[i].id);
+  }
+  return ids;
+}
+
+/** Closes or opens a folder; `deep` (⌥), and every folder inside it too. */
+function toggleFolder(folder: PlaylistNode, deep = false) {
+  const close = !collapsed.value.has(folder.id);
+  tree.setClosed(props.library, deep ? [folder.id, ...foldersUnder(folder)] : [folder.id], close);
+}
+
+const openFolders = (ids: string[]) => tree.setClosed(props.library, ids, false);
+const collapseAll = () => tree.setClosed(props.library, folderIds.value, true);
+const expandAll = () => tree.setClosed(props.library, folderIds.value, false);
+
+// A list picked from elsewhere, as from a track's playlists, is brought into view: the folders it's in open.
+watch(selected, (id) => {
+  const ancestors: string[] = [];
+  let at = playlists.value.find((p) => p.id === id);
+  while (at?.parentId) {
+    ancestors.push(at.parentId);
+    at = playlists.value.find((p) => p.id === at!.parentId);
+  }
+  if (ancestors.some((a) => collapsed.value.has(a))) openFolders(ancestors);
+});
 
 /** Shift- and ⌘-clicks pick lists; they don't select text. */
 function keepTextUnselected(event: MouseEvent) {
@@ -110,12 +151,6 @@ function clickNode(node: PlaylistNode, event: MouseEvent) {
   } else browse.select((anchor = node.id));
 }
 
-function toggleFolder(id: string) {
-  const next = new Set(collapsed.value);
-  if (!next.delete(id)) next.add(id);
-  collapsed.value = next;
-}
-
 // Creating, renaming and deleting playlists.
 
 /** The tree row whose name is being typed: a new one, or one being renamed. */
@@ -133,7 +168,7 @@ async function focusNameInput() {
 function startCreate(folder: boolean) {
   const node = selectedNode.value;
   const parentId = node ? (node.kind === 'folder' ? node.id : node.parentId) : null;
-  if (parentId && collapsed.value.has(parentId)) toggleFolder(parentId);
+  if (parentId) openFolders([parentId]);
   naming.value = { id: null, folder, parentId, name: folder ? 'New folder' : 'New playlist' };
   focusNameInput();
 }
@@ -253,24 +288,40 @@ function unlinkSpotify() {
 
 const pane = ref<HTMLElement | null>(null);
 
-/** ↑ and ↓ pick the list above or below; ← and → close and open a folder. */
+/** Picks a list from the keyboard, and scrolls to it. */
+function pick(id: string | null) {
+  browse.select((anchor = id), props.library);
+  void nextTick(() => pane.value?.querySelector('[aria-current="true"]')?.scrollIntoView({ block: 'nearest' }));
+}
+
+/**
+ * ↑ and ↓ pick the list above or below. On a folder, → opens it, or, open,
+ * goes into it; ← closes it, or, closed, goes up to the folder it's in.
+ * With ⌥, they open or close every folder inside it too.
+ */
 function onKey(event: KeyboardEvent) {
-  if (event.defaultPrevented || event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return;
+  if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey) return;
   // A name being typed keeps its keys.
   if ((event.target as HTMLElement).closest('input')) return;
+  const sideways = event.key === 'ArrowLeft' || event.key === 'ArrowRight';
+  if (event.altKey && !sideways) return;
   if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
     const ids: (string | null)[] = [null, ...treeRows.value.map((node) => node.id)];
     const at = ids.indexOf(lead.value) + (event.key === 'ArrowDown' ? 1 : -1);
-    if (at >= 0 && at < ids.length) {
-      const id = (anchor = ids[at]);
-      browse.select(id, props.library);
-      void nextTick(() => pane.value?.querySelector('[aria-current="true"]')?.scrollIntoView({ block: 'nearest' }));
-    }
-  } else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+    if (at >= 0 && at < ids.length) pick(ids[at]);
+  } else if (sideways) {
     // On anything but a folder, they're the player's.
     const node = selectedNode.value;
     if (node?.kind !== 'folder') return;
-    if (collapsed.value.has(node.id) === (event.key === 'ArrowRight')) toggleFolder(node.id);
+    const opening = event.key === 'ArrowRight';
+    const closed = collapsed.value.has(node.id);
+    if (event.altKey) tree.setClosed(props.library, [node.id, ...foldersUnder(node)], !opening);
+    else if (closed === opening) toggleFolder(node);
+    else if (opening) {
+      const rows = treeRows.value;
+      const child = rows[rows.indexOf(node) + 1];
+      if (child && child.depth > node.depth) pick(child.id);
+    } else if (node.parentId) pick(node.parentId);
   } else return;
   event.preventDefault();
   event.stopPropagation();
@@ -334,6 +385,13 @@ function treeMenu(node: PlaylistNode | null) {
       if (targets.length) lines.push({ text: 'Send to', items: targets.map((t) => sendTo(t, picked)) });
     }
     lines.push('separator', { text: 'Delete…', action: () => void deletePlaylist(node) });
+  }
+  if (folderIds.value.length) {
+    lines.push(
+      'separator',
+      { text: 'Collapse All', action: collapseAll, enabled: folderIds.value.some((id) => !collapsed.value.has(id)) },
+      { text: 'Expand All', action: expandAll, enabled: folderIds.value.some((id) => collapsed.value.has(id)) },
+    );
   }
   void showContextMenu(lines);
 }
@@ -471,24 +529,152 @@ function dragRow(event: DragEvent, node: PlaylistNode) {
   startDrag(event, { kind: 'playlists', ids });
 }
 
+/** The closed folder being dragged over, since when, and when last. */
+let hovered: { id: string; since: number; last: number } | null = null;
+/** How long a drag rests on a closed folder before it opens, in ms. */
+const SPRING_DELAY = 600;
+
+/** A drag resting on a closed folder opens it, to drop on what's inside. */
+function springOpen(node: PlaylistNode | null) {
+  const now = performance.now();
+  if (!dragging.value || node?.kind !== 'folder' || !collapsed.value.has(node.id)) {
+    hovered = null;
+    return;
+  }
+  // A drag goes on over a row while it rests there; a gap means it went away and came back.
+  if (hovered?.id !== node.id || now - hovered.last > 250) hovered = { id: node.id, since: now, last: now };
+  else if (now - hovered.since >= SPRING_DELAY) {
+    openFolders([node.id]);
+    hovered = null;
+  } else hovered.last = now;
+}
+
+// Playlists dragged go where the line shows, as in an editor's file tree:
+// a row's top or bottom edge puts them before or after it, a folder's middle
+// into it, the Playlists heading at the top, and the space below the rows last.
+
+/** Where playlists dropped go: under `parentId`, before `before` among what's in it, or last. */
+interface Place {
+  parentId: string | null;
+  before: string | null;
+}
+
+/** The line drawn where a drop would go: along the top or bottom of a row, indented to the depth it goes in at. */
+const dropLine = ref<{ id: string; edge: 'before' | 'after'; depth: number } | null>(null);
+watch(dragging, (drag) => drag || (dropLine.value = null));
+watch(dropTree, (id) => id || (dropLine.value = null));
+
+/** The first of `parentId`'s children from the `from`th on that isn't being moved; null for last. */
+function staying(parentId: string | null, from: number, moving: string[]): string | null {
+  const children = playlists.value.filter((p) => p.parentId === parentId);
+  return children.slice(from).find((p) => !moving.includes(p.id))?.id ?? null;
+}
+
+/** Where playlists dropped on a row would go, by how far down it the pointer is, and the line that shows it. */
+function zoneOf(event: DragEvent, node: PlaylistNode, moving: string[]): { place: Place; line: Omit<NonNullable<typeof dropLine.value>, 'id'> | null } {
+  const box = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  const y = (event.clientY - box.top) / box.height;
+  const at = playlists.value.filter((p) => p.parentId === node.parentId).indexOf(node);
+  const before = { place: { parentId: node.parentId, before: staying(node.parentId, at, moving) }, line: { edge: 'before' as const, depth: node.depth } };
+  const after = { place: { parentId: node.parentId, before: staying(node.parentId, at + 1, moving) }, line: { edge: 'after' as const, depth: node.depth } };
+  if (node.kind !== 'folder') return y < 0.5 ? before : after;
+  if (y < 0.25) return before;
+  if (y > 0.75) {
+    // Below an open folder is its first place inside.
+    const open = !collapsed.value.has(node.id) && playlists.value.some((p) => p.parentId === node.id);
+    if (!open) return after;
+    return { place: { parentId: node.id, before: staying(node.id, 0, moving) }, line: { edge: 'after', depth: node.depth + 1 } };
+  }
+  return { place: { parentId: node.id, before: null }, line: null };
+}
+
+/** Whether playlists dragged can go to `place`. */
+function canPlace(drag: Extract<Drag, { kind: 'playlists' }>, place: Place, onto: PlaylistNode | null): boolean {
+  const across = crossing(drag);
+  if (across === null) return false;
+  if (across) return true;
+  // Playlists on a stick stay where they are.
+  if (isStick.value) return false;
+  // Dropped where it is.
+  if (onto && drag.ids.length === 1 && drag.ids[0] === onto.id) return false;
+  // A folder can't go inside itself.
+  const parent = playlists.value.find((p) => p.id === place.parentId);
+  return !parent || !drag.ids.some((id) => isWithin(parent, id));
+}
+
+/** Moves playlists dragged to `place`: from another library, into its folder, in order within this one. */
+async function movePlaylistsTo(drag: Extract<Drag, { kind: 'playlists' }>, place: Place) {
+  if (crossing(drag)) {
+    await libraries.movePlaylists(drag.ids, props.library, place.parentId);
+    return;
+  }
+  // Several move as one change, undone together, keeping their order: each goes in just before `before`.
+  const group = drag.ids.length > 1 ? `move-playlists-${Date.now()}` : null;
+  for (const id of drag.ids) {
+    const siblings = playlists.value.filter((p) => p.parentId === place.parentId && p.id !== id);
+    const at = place.before ? siblings.findIndex((p) => p.id === place.before) : -1;
+    await store.edit(
+      { kind: 'movePlaylist', id, parentId: place.parentId, index: at === -1 ? null : at },
+      { group, library: props.library },
+    );
+  }
+}
+
+/** Where the Playlists heading (`top`) or the space below the rows (`end`) puts playlists: the top level, first or last. */
+function rootPlace(where: 'top' | 'end', moving: string[]): Place {
+  return { parentId: null, before: where === 'top' ? staying(null, 0, moving) : null };
+}
+
+const rootTarget = (where: 'top' | 'end') => `${where}-root:${props.library ?? ''}`;
+
+function overRoot(event: DragEvent, where: 'top' | 'end') {
+  const drag = dragging.value;
+  if (drag?.kind !== 'playlists' || !canPlace(drag, rootPlace(where, drag.ids), null)) return;
+  event.preventDefault();
+  dropTree.value = rootTarget(where);
+  const last = treeRows.value[treeRows.value.length - 1];
+  dropLine.value = where === 'end' && last ? { id: last.id, edge: 'after', depth: 0 } : null;
+}
+
+async function dropOnRoot(where: 'top' | 'end') {
+  const drag = dragging.value;
+  endDrag();
+  if (drag?.kind !== 'playlists') return;
+  const place = rootPlace(where, drag.ids);
+  if (canPlace(drag, place, null)) await movePlaylistsTo(drag, place);
+}
+
 function overTree(event: DragEvent, node: PlaylistNode | null) {
+  springOpen(node);
+  const drag = dragging.value;
+  if (drag?.kind === 'playlists' && node) {
+    const zone = zoneOf(event, node, drag.ids);
+    if (!canPlace(drag, zone.place, node)) return;
+    event.preventDefault();
+    dropTree.value = node.id;
+    dropLine.value = zone.line && { id: node.id, ...zone.line };
+    return;
+  }
   if (!acceptsDrop(node)) return;
   event.preventDefault();
   dropTree.value = node ? node.id : `top:${props.library ?? ''}`;
 }
 
-async function dropOnTree(node: PlaylistNode | null) {
+async function dropOnTree(event: DragEvent, node: PlaylistNode | null) {
   const drag = dragging.value;
+  if (drag?.kind === 'playlists' && node) {
+    const zone = zoneOf(event, node, drag.ids);
+    endDrag();
+    if (canPlace(drag, zone.place, node)) await movePlaylistsTo(drag, zone.place);
+    return;
+  }
   const accepted = acceptsDrop(node);
   endDrag();
   // Files from outside are taken by `useFileDrop`, before this hears of the drop.
   if (!drag || !accepted || drag.kind === 'files') return;
   if (crossing(drag)) {
     if (drag.kind === 'tracks') await libraries.moveTracks(drag.ids, props.library, node?.id ?? null);
-    else if (drag.kind === 'playlists') {
-      const under = node ? (node.kind === 'folder' ? node.id : node.parentId) : null;
-      await libraries.movePlaylists(drag.ids, props.library, under);
-    }
+    else if (drag.kind === 'playlists') await libraries.movePlaylists(drag.ids, props.library, null);
     return;
   }
   if (!node) return;
@@ -502,22 +688,6 @@ async function dropOnTree(node: PlaylistNode | null) {
         await jobs.fetch(drag.track, node.id);
       } catch (e) {
         store.error = String(e);
-      }
-    }
-  } else if (drag.kind === 'playlists') {
-    // Several move as one change, undone together, keeping their order.
-    const group = drag.ids.length > 1 ? `move-playlists-${Date.now()}` : null;
-    for (const id of drag.ids) {
-      if (id === node.id) continue;
-      if (node.kind === 'folder') {
-        await store.edit({ kind: 'movePlaylist', id, parentId: node.id, index: null }, { group, library: props.library });
-      } else {
-        // Onto a playlist: in just before it among its siblings, after any moved already.
-        const siblings = playlists.value.filter((p) => p.parentId === node.parentId && p.id !== id);
-        await store.edit(
-          { kind: 'movePlaylist', id, parentId: node.parentId, index: siblings.findIndex((p) => p.id === node.id) },
-          { group, library: props.library },
-        );
       }
     }
   }
@@ -537,6 +707,7 @@ const iconButtonClass =
 const GEAR_ICON =
   'M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z';
 const NEW_PLAYLIST_ICON = 'M2 4h8M2 8h8M2 12h5M12.5 9.5v5M10 12h5';
+const COLLAPSE_ALL_ICON = 'M4.5 2.5L8 6l3.5-3.5M4.5 13.5L8 10l3.5 3.5';
 const NEW_FOLDER_ICON = 'M1.5 3.5h4.5l1.5 1.5h7v8h-13zM8 7.5v4M6 9.5h4';
 const STICK_ICON = 'M5 1.5h6v4H5zM3.5 5.5h9v8a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1zM6.5 3v1M9.5 3v1';
 const LIBRARY_ICON = 'M2.5 2.5h3v11h-3zM6.5 2.5h3v11h-3zM10.5 3l2.6-.6 2.4 10.6-2.6.6z';
@@ -555,7 +726,7 @@ const nameInputClass =
       @contextmenu.prevent="libraryMenu"
       @dragover="overTree($event, null)"
       @dragleave="dropTree === `top:${library ?? ''}` && (dropTree = null)"
-      @drop.prevent="dropOnTree(null)"
+      @drop.prevent="dropOnTree($event, null)"
     >
       <svg viewBox="0 0 16 16" class="size-3.5 shrink-0 text-text-muted" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" aria-hidden="true">
         <path :d="isStick ? STICK_ICON : LIBRARY_ICON" />
@@ -577,7 +748,13 @@ const nameInputClass =
         </svg>
       </button>
     </div>
-    <ul class="min-h-0 flex-1 overflow-y-auto py-1 text-xs select-none" @contextmenu.prevent="treeMenu(null)">
+    <ul
+      class="min-h-0 flex-1 overflow-y-auto py-1 text-xs select-none"
+      @contextmenu.prevent="treeMenu(null)"
+      @dragover="overRoot($event, 'end')"
+      @dragleave="dropTree === rootTarget('end') && (dropTree = null)"
+      @drop.prevent="dropOnRoot('end')"
+    >
       <li
         class="flex cursor-default items-center gap-1 py-1 pr-2 pl-4"
         :class="[
@@ -586,15 +763,27 @@ const nameInputClass =
         ]"
         :aria-current="active && !lists.length"
         @click="showCollection"
-        @dragover="overTree($event, null)"
+        @dragover.stop="overTree($event, null)"
         @dragleave="dropTree === `top:${library ?? ''}` && (dropTree = null)"
-        @drop.prevent="dropOnTree(null)"
+        @drop.prevent.stop="dropOnTree($event, null)"
       >
         <span class="min-w-0 flex-1 truncate">{{ isStick ? 'All tracks' : 'Collection' }}</span>
         <span class="shrink-0 font-mono text-[10px] text-text-muted">{{ status?.tracks }}</span>
       </li>
-      <li class="flex items-center gap-0.5 pt-2 pr-1.5 pb-0.5 pl-4">
+      <!-- Playlists dropped on the heading go to the top level, first. -->
+      <li
+        class="flex items-center gap-0.5 pt-2 pr-1.5 pb-0.5 pl-4"
+        :class="dropTree === rootTarget('top') ? 'outline outline-1 -outline-offset-1 outline-accent' : ''"
+        @dragover.stop="overRoot($event, 'top')"
+        @dragleave="dropTree === rootTarget('top') && (dropTree = null)"
+        @drop.prevent.stop="dropOnRoot('top')"
+      >
         <span class="section-label flex-1 text-[10px]">Playlists</span>
+        <button v-if="folderIds.length" :class="iconButtonClass" title="Collapse all folders" aria-label="Collapse all folders" @click.stop="collapseAll">
+          <svg viewBox="0 0 16 16" class="size-3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path :d="COLLAPSE_ALL_ICON" />
+          </svg>
+        </button>
         <button :class="iconButtonClass" title="New playlist" aria-label="New playlist" @click.stop="startCreate(false)">
           <svg viewBox="0 0 16 16" class="size-3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path :d="NEW_PLAYLIST_ICON" />
@@ -611,10 +800,10 @@ const nameInputClass =
       </li>
       <template v-for="node in treeRows" :key="node.id">
         <li
-          class="group flex cursor-default items-center gap-1 py-1 pr-2"
+          class="group relative flex cursor-default items-center gap-1 py-1 pr-2"
           :class="[
             lists.includes(node.id) ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:bg-surface-1',
-            dropTree === node.id ? 'outline outline-1 -outline-offset-1 outline-accent' : '',
+            dropTree === node.id && !dropLine ? 'outline outline-1 -outline-offset-1 outline-accent' : '',
           ]"
           :style="{ paddingLeft: `${node.depth * 12 + 4}px` }"
           :aria-current="lead === node.id"
@@ -628,13 +817,20 @@ const nameInputClass =
           @dragend="endDrag"
           @dragover.stop="overTree($event, node)"
           @dragleave="dropTree === node.id && (dropTree = null)"
-          @drop.prevent.stop="dropOnTree(node)"
+          @drop.prevent.stop="dropOnTree($event, node)"
         >
+          <div
+            v-if="dropLine?.id === node.id"
+            class="pointer-events-none absolute right-1 z-10 h-0.5 rounded-full bg-accent"
+            :class="dropLine.edge === 'before' ? '-top-px' : '-bottom-px'"
+            :style="{ left: `${dropLine.depth * 12 + 4}px` }"
+          />
           <button
             tabindex="-1"
             class="w-3 shrink-0 text-[9px] text-text-muted"
             :class="{ invisible: node.kind !== 'folder' }"
-            @click.stop="toggleFolder(node.id)"
+            :title="node.kind === 'folder' ? `${collapsed.has(node.id) ? 'Open' : 'Close'} (${isMac ? '⌥' : 'Alt'}-click for every folder inside too)` : undefined"
+            @click.stop="toggleFolder(node, $event.altKey)"
           >
             {{ collapsed.has(node.id) ? '▶' : '▼' }}
           </button>

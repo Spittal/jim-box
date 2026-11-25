@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Folders stay as you left them.** Which folders of playlists are open and closed is kept between runs, for your library and for each stick or other library, which comes back as it was when it's opened again.
+- **Folders work like an editor's.** ⌥-click a folder's arrow (Alt-click on Windows), or press ⌥← or ⌥→, to close or open it and every folder inside it. Collapse All is a button over the playlists, and Collapse All and Expand All are in their right-click menu. With a folder picked, ← on a closed one goes up to the folder it's in and → on an open one goes into it. A drag resting on a closed folder opens it, and a playlist picked from elsewhere, as from a track's playlists, opens the folders it's in.
+- **Drop playlists exactly where the line shows.** Dragging playlists over the top or bottom edge of a row shows a line where they'll go, before or after it, and over a folder's middle puts them inside it. Drop them on the Playlists heading to take them out of every folder to the top, or on the space below the playlists to put them last. Before, a playlist could only go into a folder or just before another playlist.
+
 ## 1.10.0
 
 1.9.0 was never published: its macOS build couldn't get a machine. Its changes, below, come out with this one.
