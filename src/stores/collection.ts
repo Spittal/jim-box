@@ -23,6 +23,7 @@ import type {
 
 /** The library an edit is of, from the ids in it: null for the master. */
 function libraryOfEdit(change: CollectionEdit): string | null {
+  if (change.kind === 'several') return change.edits.length ? libraryOfEdit(change.edits[0]) : null;
   const ids = Object.entries(change)
     .filter(([key]) => key !== 'kind' && key !== 'name' && key !== 'value' && key !== 'comment')
     .flatMap(([, value]) => (Array.isArray(value) ? value : [value]))

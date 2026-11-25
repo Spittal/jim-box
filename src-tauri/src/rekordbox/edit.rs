@@ -67,6 +67,9 @@ pub enum Edit {
     /// Sets or clears rekordbox's analysis lock, which keeps a track's beat
     /// grid from being changed or analysed over.
     LockAnalysis { track_id: String, locked: bool },
+    /// Several of a track's ratings, colours, comments or fields set at once,
+    /// as for tracks selected together: made in one write, and undone as one.
+    Several { edits: Vec<Edit> },
 }
 
 /// The library after a change.
@@ -142,6 +145,7 @@ impl Edit {
             Self::Grid { track_id, change, from_ms } => Self::Grid { track_id: f(track_id), change, from_ms },
             Self::UseGrid { track_id, source } => Self::UseGrid { track_id: f(track_id), source },
             Self::LockAnalysis { track_id, locked } => Self::LockAnalysis { track_id: f(track_id), locked },
+            Self::Several { edits } => Self::Several { edits: edits.into_iter().map(|edit| edit.map_ids(f)).collect() },
         }
     }
 
@@ -167,6 +171,7 @@ impl Edit {
             Self::Grid { .. } | Self::UseGrid { .. } => "the grid change",
             Self::LockAnalysis { locked: true, .. } => "locking the analysis",
             Self::LockAnalysis { .. } => "unlocking the analysis",
+            Self::Several { edits } => edits.first().map_or("the edit", Self::what),
         }
     }
 }
@@ -229,15 +234,25 @@ impl Collection {
         };
 
         let (created_id, kept) = self.write(|writer, index| {
-            let (created_id, steps) = self.apply(writer, index, edit)?;
+            let (created_id, steps, failed) = match edit {
+                Edit::Several { edits } => {
+                    let (steps, failed) = self.apply_several(writer, index, edits);
+                    (None, steps, failed)
+                }
+                edit => {
+                    let (created_id, steps) = self.apply(writer, index, edit)?;
+                    (created_id, steps, None)
+                }
+            };
             if !undoable {
                 self.history().changed();
-                return Ok((created_id, false));
+                return failed.map_or(Ok((created_id, false)), Err);
             }
             let kept = !steps.is_empty();
+            // What was made before one of several failed is still there, and kept to undo.
             let let_go = self.history().record(what, group, steps);
             self.grids.forget(&let_go);
-            Ok((created_id, kept))
+            failed.map_or(Ok((created_id, kept)), Err)
         })?;
         let warning = trash_files(&doomed);
         // A delete that can be undone keeps what was known of the tracks' grids, to come back with them.
@@ -374,6 +389,38 @@ impl Collection {
                 tracing::warn!("Couldn't remove old backup {}: {e}", old.display());
             }
         }
+    }
+
+    /// Makes each of several changes to tracks' ratings, colours, comments or
+    /// fields, all checked first. Returns what it takes to undo the ones made,
+    /// and why the rest weren't if one failed.
+    fn apply_several(
+        &self,
+        writer: &mut Writer,
+        index: &rbl_index::Library,
+        edits: Vec<Edit>,
+    ) -> (Vec<Step>, Option<AppError>) {
+        let mut steps = Vec::new();
+        for edit in &edits {
+            let wrong = match edit {
+                Edit::SetRating { stars, .. } => *stars > 5,
+                Edit::SetColor { color, .. } => *color > 8,
+                Edit::SetComment { .. } => false,
+                // A tempo isn't one to undo (see `apply`), so not one to make among others.
+                Edit::SetField { field, .. } => TrackField::parse(field).is_none_or(|f| f == TrackField::Bpm),
+                _ => true,
+            };
+            if wrong {
+                return (steps, Some(AppError::Validation("That can't be changed on several tracks at once".into())));
+            }
+        }
+        for edit in edits {
+            match self.apply(writer, index, edit) {
+                Ok((_, made)) => steps.extend(made),
+                Err(e) => return (steps, Some(e)),
+            }
+        }
+        (steps, None)
     }
 
     /// Makes a change, and returns what it takes to undo it: nothing for a
@@ -524,6 +571,10 @@ impl Collection {
                 if before != locked {
                     steps.push(Step::Lock { track_id, before, after: locked });
                 }
+            }
+            // Made one by one by `apply_several`, which `edit_with` hands them to.
+            Edit::Several { .. } => {
+                return Err(AppError::Validation("Changes to several tracks aren't made inside others".into()));
             }
         }
         steps.retain(|step| !matches!(step, Step::Track(change) if change.is_empty()));
@@ -915,6 +966,42 @@ mod tests {
             assert!(redone(&collection).is_some());
         }
         assert_eq!(row(&collection), edited);
+    }
+
+    #[test]
+    fn several_tracks_are_changed_and_undone_together() {
+        let (_dir, collection) = fixture();
+        let picked: Vec<String> = ids(&collection, Source::Collection, Sort::Title).into_iter().take(3).collect();
+        let rows = |collection: &Collection| {
+            let rows = collection.tracks(&query(Source::Collection, Sort::Title), 0, 1000).unwrap().rows;
+            picked
+                .iter()
+                .map(|id| rows.iter().find(|r| &r.id == id).map(|r| (r.genre.clone(), r.rating)).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let start = rows(&collection);
+        let edits = picked
+            .iter()
+            .flat_map(|id| {
+                [
+                    Edit::SetField { track_id: id.clone(), field: "genre".into(), value: "Dub".into() },
+                    Edit::SetRating { track_id: id.clone(), stars: 3 },
+                ]
+            })
+            .collect();
+        collection.edit(Edit::Several { edits }).unwrap();
+        assert!(rows(&collection).iter().all(|row| row == &("Dub".to_owned(), 3)));
+
+        // All of it is one thing to undo.
+        assert_eq!(undone(&collection), Some("the edit"));
+        assert_eq!(rows(&collection), start);
+        assert_eq!(undone(&collection), None);
+
+        // Only tracks' details are changed together.
+        let refused = Edit::Several { edits: vec![Edit::DeletePlaylist { id: "1".into() }] };
+        assert!(collection.edit(refused).is_err());
+        let tempo = Edit::SetField { track_id: picked[0].clone(), field: "bpm".into(), value: "120".into() };
+        assert!(collection.edit(Edit::Several { edits: vec![tempo] }).is_err());
     }
 
     #[test]

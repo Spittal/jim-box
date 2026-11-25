@@ -7,6 +7,7 @@ import FetchPanel from '@/components/FetchPanel.vue';
 import FixPanel from '@/components/FixPanel.vue';
 import LibrarySidebar from '@/components/LibrarySidebar.vue';
 import ProgressBar from '@/components/ProgressBar.vue';
+import SelectionDetail from '@/components/SelectionDetail.vue';
 import TrackList from '@/components/TrackList.vue';
 import TrackPlayer from '@/components/TrackPlayer.vue';
 import { useBrowseStore } from '@/stores/browse';
@@ -22,7 +23,7 @@ import type { LibraryItem } from '@/types/library';
 const store = useCollectionStore();
 const { status, analysis, loading, error } = storeToRefs(store);
 const browse = useBrowseStore();
-const { selection, focused, detailTrack, opened } = storeToRefs(browse);
+const { selection, selectedTracks, focused, detailTrack, opened } = storeToRefs(browse);
 const library = useLibraryStore();
 const libraries = useLibrariesStore();
 
@@ -156,6 +157,12 @@ const buttonClass =
       <FetchPanel v-if="focused" />
       <CollectionTrackDetail v-else-if="detailTrack" :track="detailTrack" @close="browse.clearSelection()" />
       <FixPanel v-else-if="identified.length" :items="identified" @close="browse.clearSelection()" />
+      <SelectionDetail
+        v-else-if="selection.size > 1"
+        :tracks="selectedTracks"
+        :count="selection.size"
+        @close="browse.clearSelection()"
+      />
     </div>
   </div>
 </template>

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### New
+
+- **Edit several tracks at once.** Select more than one track and the sidebar shows how many, with their title, artist, album, genre, key, rating, comment and colour: what they all have, or `…` where they differ. Whatever you set there is set on all of them, and undone in one step. ⌘1 to ⌘5 rate them all.
+
 ### Changed
 
 - Undo, redo and adding files say how it went in a toast that goes by itself. Before, it was a line over the track list that stayed until dismissed.

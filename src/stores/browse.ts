@@ -280,14 +280,34 @@ export const useBrowseStore = defineStore('browse', () => {
    * and read again, which then replaces it with what was saved.
    */
   function patchTrack(id: string, patch: Partial<CollectionTrack>) {
-    const place = places.value.get(id);
-    const rows = place && pages.value.get(place.page);
-    if (!place || !rows) return;
-    const patched = rows.slice();
-    patched[place.at] = { ...rows[place.at], ...patch };
+    patchTracks(new Map([[id, patch]]));
+  }
+
+  /** `patchTrack` for many tracks at once, each with its own change. */
+  function patchTracks(patches: Map<string, Partial<CollectionTrack>>) {
     const next = new Map(pages.value);
-    next.set(place.page, patched);
-    pages.value = next;
+    let changed = false;
+    for (const [id, patch] of patches) {
+      const place = places.value.get(id);
+      const rows = place && next.get(place.page);
+      if (!place || !rows) continue;
+      // Each page copied once, however many of its rows change.
+      const patched = rows === pages.value.get(place.page) ? rows.slice() : rows;
+      patched[place.at] = { ...rows[place.at], ...patch };
+      next.set(place.page, patched);
+      changed = true;
+    }
+    if (changed) pages.value = next;
+    // Selected tracks read from outside the rows held show it too.
+    const read = outside.value;
+    if (read && [...patches.keys()].some((id) => read.tracks.has(id))) {
+      const tracks = new Map(read.tracks);
+      for (const [id, patch] of patches) {
+        const track = tracks.get(id);
+        if (track) tracks.set(id, { ...track, ...patch });
+      }
+      outside.value = { ...read, tracks };
+    }
   }
 
   /** A track among the rows fetched so far. */
@@ -384,6 +404,60 @@ export const useBrowseStore = defineStore('browse', () => {
 
   /** The one selected track, for the detail panel; fresh after each change. */
   const detailTrack = computed(() => (selection.value.size === 1 ? loadedTrack(selectedIds.value[0]) : null));
+
+  /**
+   * Selected tracks that aren't among the rows held, read from the whole
+   * library: for this selection, as the collection was at `generation`.
+   */
+  const outside = shallowRef<{ of: Set<string>; generation: number; tracks: Map<string, CollectionTrack> } | null>(
+    null,
+  );
+  let outsideAsked: { of: Set<string>; generation: number } | null = null;
+
+  /**
+   * The selected tracks, when there are several, for the sidebar that changes
+   * them together; fresh after each change. Null while ones past the rows
+   * held are being read. Ones no longer in the library are left out.
+   */
+  const selectedTracks = computed<CollectionTrack[] | null>(() => {
+    const picked = selection.value;
+    if (picked.size < 2) return null;
+    const read = outside.value?.of === picked ? outside.value.tracks : null;
+    const found: CollectionTrack[] = [];
+    for (const id of picked) {
+      const track = loadedTrack(id) ?? read?.get(id);
+      if (track) found.push(track);
+      else if (!read) return null;
+    }
+    return found;
+  });
+
+  watch([selection, () => collection.generation, places], async ([picked, generation]) => {
+    if (picked.size < 2 || [...picked].every((id) => places.value.has(id))) return;
+    const asked = outsideAsked;
+    if (asked?.of === picked && asked.generation === generation) return;
+    outsideAsked = { of: picked, generation };
+    // The whole library, unfiltered: a track changed so it no longer passes the list's filter is still selected.
+    const everything: TrackQuery = {
+      source: { kind: 'collection' },
+      sort: 'dateAdded',
+      descending: true,
+      query: '',
+      reviewed: null,
+      genres: [],
+      ratings: [],
+      playlisted: null,
+      library: library.value,
+    };
+    try {
+      const { rows } = await collection.tracks(everything, 0, Number.MAX_SAFE_INTEGER);
+      if (selection.value !== picked) return;
+      outside.value = { of: picked, generation, tracks: new Map(rows.filter((r) => picked.has(r.id)).map((r) => [r.id, r])) };
+    } catch (e) {
+      if (outsideAsked?.of === picked) outsideAsked = null;
+      listError.value = String(e);
+    }
+  });
 
   function showPending(next: Focus) {
     selection.value = new Set();
@@ -520,6 +594,8 @@ export const useBrowseStore = defineStore('browse', () => {
     idsBetween,
     trackAfter,
     patchTrack,
+    patchTracks,
+    selectedTracks,
     selection,
     selectedIds,
     pendingSelection,

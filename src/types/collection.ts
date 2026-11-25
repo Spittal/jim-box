@@ -176,7 +176,9 @@ export type CollectionEdit =
   | { kind: 'grid'; trackId: string; change: GridChange; fromMs: number | null }
   /** Gives a track another of the grids its analysis made, to try. */
   | { kind: 'useGrid'; trackId: string; source: GridSource }
-  | { kind: 'lockAnalysis'; trackId: string; locked: boolean };
+  | { kind: 'lockAnalysis'; trackId: string; locked: boolean }
+  /** Tracks' ratings, colours, comments or fields set together: one write, undone as one. */
+  | { kind: 'several'; edits: CollectionEdit[] };
 
 /** A change to a track's beat grid. */
 export type GridChange =

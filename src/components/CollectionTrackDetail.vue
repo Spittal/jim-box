@@ -7,7 +7,7 @@ import FixCard from '@/components/FixCard.vue';
 import JobStatusBadge from '@/components/JobStatusBadge.vue';
 import LibraryCover from '@/components/LibraryCover.vue';
 import PlaylistPills from '@/components/PlaylistPills.vue';
-import { stepEntry, stepInGroup } from '@/composables/useDetailKeys';
+import { onDetailKey } from '@/composables/useDetailKeys';
 import { TRACK_COLORS } from '@/composables/useTrackColors';
 import { formatDuration } from '@/composables/useFormat';
 import { formatKey as keyIn, useKeyNotation } from '@/composables/useKeyNotation';
@@ -166,42 +166,6 @@ function colour(color: number) {
 
 const ui = useUiStore();
 
-/**
- * Keys pressed in the sidebar: Tab and ↑ ↓ go round its entries, ← and → along
- * a row of buttons. A field showing suggestions has taken ↑ and ↓ for those
- * before this hears them.
- */
-function onKey(event: KeyboardEvent) {
-  if (event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey) return;
-  const panel = event.currentTarget as HTMLElement;
-  const target = event.target as HTMLElement;
-  if (event.key === 'Tab') stepEntry(panel, target, event.shiftKey ? -1 : 1);
-  else if (event.shiftKey) return;
-  else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
-    const up = event.key === 'ArrowUp';
-    // In the comment, the arrows go through its lines first.
-    if (target instanceof HTMLTextAreaElement) {
-      if (up ? target.selectionStart !== 0 : target.selectionEnd !== target.value.length) return;
-    }
-    stepEntry(panel, target, up ? -1 : 1);
-  } else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
-    // Off a row of buttons, the arrows are a text field's or the player's.
-    if (target.tagName !== 'BUTTON' || !stepInGroup(target, event.key === 'ArrowLeft' ? -1 : 1)) return;
-  } else if (event.key === 'Enter' && target instanceof HTMLSelectElement) {
-    // The menu's own keys are taken: ↑ and ↓ go past it, Space plays. Return opens it.
-    try {
-      target.showPicker();
-    } catch {
-      return;
-    }
-  } else if (event.key === 'Escape' && target !== panel) {
-    // Out of the entry, though not out of the track: Escape again lets go of that.
-    panel.focus();
-  } else return;
-  event.preventDefault();
-  event.stopPropagation();
-}
-
 const beatGrid = ref<InstanceType<typeof BeatGridSection> | null>(null);
 
 function identify() {
@@ -237,7 +201,7 @@ const inputClass =
     data-pane="detail"
     tabindex="-1"
     class="flex w-64 shrink-0 flex-col gap-3 overflow-y-auto scroll-py-8 border-l border-border p-3 text-xs outline-none"
-    @keydown="onKey"
+    @keydown="onDetailKey"
   >
     <div class="flex items-center justify-between">
       <span class="section-label">Track</span>
