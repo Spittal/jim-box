@@ -22,7 +22,7 @@ import type { LibraryItem } from '@/types/library';
 const store = useCollectionStore();
 const { status, analysis, loading, error } = storeToRefs(store);
 const browse = useBrowseStore();
-const { selection, focused, detailTrack, notice, opened } = storeToRefs(browse);
+const { selection, focused, detailTrack, opened } = storeToRefs(browse);
 const library = useLibraryStore();
 const libraries = useLibrariesStore();
 
@@ -118,10 +118,6 @@ const buttonClass =
     <p v-else-if="libraries.error" class="error-box mx-4 mt-3">
       {{ libraries.error }}
       <button class="ml-1 opacity-70 hover:opacity-100" title="Dismiss" @click="libraries.error = null">✕</button>
-    </p>
-    <p v-else-if="notice" class="mx-4 mt-3 text-xs text-text-secondary">
-      {{ notice }}
-      <button class="ml-1 text-text-muted hover:text-text-primary" title="Dismiss" @click="notice = null">✕</button>
     </p>
 
     <div v-if="analysis && showAnalysis" class="mx-4 mt-3 flex flex-col gap-1.5 text-xs">

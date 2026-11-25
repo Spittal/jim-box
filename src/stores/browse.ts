@@ -363,8 +363,6 @@ export const useBrowseStore = defineStore('browse', () => {
   const pendingSelection = ref(new Set<string>());
   const selectedPending = computed(() => pendingRows.value.filter((row) => pendingSelection.value.has(row.key)));
   const focus = ref<Focus | null>(null);
-  /** Something to tell the user about the last thing they did. */
-  const notice = ref<string | null>(null);
 
   /** How long the selected tracks are together, in seconds; 0 until it's known. */
   const selectionSecs = ref(0);
@@ -532,7 +530,6 @@ export const useBrowseStore = defineStore('browse', () => {
     clearSelection,
     focus,
     focused,
-    notice,
     detailTrack,
     showPending,
     link,

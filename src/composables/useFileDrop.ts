@@ -4,20 +4,19 @@ import { listen } from '@tauri-apps/api/event';
 import { dragging, dropTree, endDrag } from '@/composables/useDrag';
 import { useBrowseStore } from '@/stores/browse';
 import { useCollectionStore } from '@/stores/collection';
+import { showToast } from '@/composables/useToast';
 import { libraryOf } from '@/stores/libraries';
 import { isWindows } from '@/platform';
 
 /** Adds files, and the music in folders, to the collection (and a playlist), and says how it went. */
 export async function addFromPaths(paths: string[], playlistId: string | null) {
   if (!paths.length) return;
-  const browse = useBrowseStore();
-  browse.notice = null;
   const report = await useCollectionStore().importPaths(paths, playlistId);
   if (!report) return;
   const parts = [`Added ${report.added} ${report.added === 1 ? 'track' : 'tracks'}`];
   if (report.existing) parts.push(`${report.existing} already in the collection`);
   if (report.skipped.length) parts.push(`${report.skipped.length} couldn't be read`);
-  browse.notice = `${parts.join(' · ')}.`;
+  showToast(parts.join(' · '));
 }
 
 /** WebView2's way to hand the app what a page can't read itself: here, where dropped files are. */

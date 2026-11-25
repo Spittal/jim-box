@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Undo, redo and adding files say how it went in a toast that goes by itself. Before, it was a line over the track list that stayed until dismissed.
+
 ## 1.11.0
 
 ### New

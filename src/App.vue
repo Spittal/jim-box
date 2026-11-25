@@ -21,7 +21,7 @@ import { useSearchStore } from '@/stores/search';
 import { useUiStore } from '@/stores/ui';
 import { useEvents } from '@/composables/useEvents';
 import { useFileDrop } from '@/composables/useFileDrop';
-import { toast } from '@/composables/useToast';
+import { showToast, toast } from '@/composables/useToast';
 import { commandKey, isMac } from '@/platform';
 
 const soulseekStore = useSoulseekStore();
@@ -105,9 +105,11 @@ async function undo(redo: boolean) {
   const what = await useCollectionStore().undo(redo, useBrowseStore().library);
   // A failure says so itself.
   if (what === undefined) return;
-  useBrowseStore().notice = what
-    ? `${redo ? 'Redid' : 'Undid'} ${what}.`
-    : `Nothing to ${redo ? 'redo' : 'undo'}: only changes made to the library since the app opened can be.`;
+  showToast(
+    what
+      ? `${redo ? 'Redid' : 'Undid'} ${what}`
+      : `Nothing to ${redo ? 'redo' : 'undo'}: only changes made since the app opened can be`,
+  );
 }
 
 function runCommand(command: string) {
