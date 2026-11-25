@@ -26,6 +26,7 @@ const {
   pendingSelection,
   selectedPending,
   reviewedFilter,
+  playlistedFilter,
   genreFilter,
   ratingFilter,
   filterCount,
@@ -108,6 +109,12 @@ const reviewChoices: { label: string; value: boolean | null }[] = [
   { label: 'All', value: null },
   { label: 'Reviewed', value: true },
   { label: 'Not reviewed', value: false },
+];
+
+const playlistedChoices: { label: string; value: boolean | null }[] = [
+  { label: 'All', value: null },
+  { label: 'In a playlist', value: true },
+  { label: 'In no playlist', value: false },
 ];
 
 /** The genres to tick: the ones picked (still listed if no track has them now), then the rest. */
@@ -384,6 +391,22 @@ const buttonClass =
                   name="filter-reviewed"
                   :checked="reviewedFilter === choice.value"
                   @change="reviewedFilter = choice.value"
+                />
+                {{ choice.label }}
+              </label>
+              <p class="mt-1 border-t border-border px-3 pt-2 pb-0.5 text-[10px] tracking-wide text-text-muted uppercase">
+                Playlists
+              </p>
+              <label
+                v-for="choice in playlistedChoices"
+                :key="choice.label"
+                class="flex cursor-default items-center gap-2 px-3 py-1 hover:bg-surface-2"
+              >
+                <input
+                  type="radio"
+                  name="filter-playlisted"
+                  :checked="playlistedFilter === choice.value"
+                  @change="playlistedFilter = choice.value"
                 />
                 {{ choice.label }}
               </label>

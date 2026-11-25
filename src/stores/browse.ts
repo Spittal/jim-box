@@ -69,13 +69,20 @@ export const useBrowseStore = defineStore('browse', () => {
   const genreFilter = ref<string[]>([]);
   /** Show only tracks with these ratings, in stars; 0 is tracks with none. Empty for every rating. */
   const ratingFilter = ref<number[]>([]);
+  /** Show only tracks in a playlist (true) or in none (false); null for both. */
+  const playlistedFilter = ref<boolean | null>(null);
   /** How many filters are narrowing the list. */
   const filterCount = computed(
-    () => (reviewedFilter.value === null ? 0 : 1) + genreFilter.value.length + ratingFilter.value.length,
+    () =>
+      (reviewedFilter.value === null ? 0 : 1) +
+      (playlistedFilter.value === null ? 0 : 1) +
+      genreFilter.value.length +
+      ratingFilter.value.length,
   );
 
   function clearFilters() {
     reviewedFilter.value = null;
+    playlistedFilter.value = null;
     genreFilter.value = [];
     ratingFilter.value = [];
   }
@@ -154,6 +161,7 @@ export const useBrowseStore = defineStore('browse', () => {
       descending: descending.value,
       query: filter.value,
       reviewed: reviewedFilter.value,
+      playlisted: playlistedFilter.value,
       // In one order, so picking the same genres another way round isn't a different list.
       genres: [...genreFilter.value].sort(),
       ratings: [...ratingFilter.value].sort(),
@@ -492,6 +500,7 @@ export const useBrowseStore = defineStore('browse', () => {
     sort,
     descending,
     reviewedFilter,
+    playlistedFilter,
     genreFilter,
     filterCount,
     clearFilters,

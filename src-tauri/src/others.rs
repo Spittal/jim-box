@@ -1403,6 +1403,34 @@ mod tests {
     }
 
     #[test]
+    fn a_stick_sorts_and_filters_by_playlists() {
+        let (dir, master) = fixture();
+        let music = dir.path().join("music");
+        std::fs::create_dir_all(&music).unwrap();
+        let (_, peak) = cued_track(&master, &music, "Peak");
+        let (loose_track, _) = cued_track(&master, &music, "Loose");
+        let usb = tempfile::tempdir().unwrap();
+        // Peak's track in its playlist; Loose's on the stick in none.
+        export(&master, usb.path(), std::slice::from_ref(&peak), std::slice::from_ref(&loose_track), false);
+        let stick = Stick::open(usb.path().to_path_buf(), Vec::new()).unwrap();
+        let listed = |q: &TrackQuery| -> Vec<Vec<String>> {
+            stick.tracks(q, 0, 10, None).unwrap().rows.into_iter().map(|r| r.playlists).collect()
+        };
+
+        // In none sorts lowest: first going up, last coming down.
+        let mut q = crate::rekordbox::tests::query(ListSource::Collection, Sort::Playlists);
+        assert_eq!(listed(&q), [vec![], vec!["Peak".to_owned()]]);
+        q.descending = true;
+        assert_eq!(listed(&q), [vec!["Peak".to_owned()], vec![]]);
+
+        let mut q = query(ListSource::Collection);
+        q.playlisted = Some(false);
+        assert_eq!(listed(&q), [Vec::<String>::new()]);
+        q.playlisted = Some(true);
+        assert_eq!(listed(&q), [vec!["Peak".to_owned()]]);
+    }
+
+    #[test]
     fn ids_say_which_library_they_are_of() {
         assert_eq!(untag("123"), (None, "123"));
         assert_eq!(untag(&tag("lib2", "123")), (Some("lib2"), "123"));

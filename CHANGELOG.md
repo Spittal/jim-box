@@ -7,6 +7,12 @@
 - **Folders stay as you left them.** Which folders of playlists are open and closed is kept between runs, for your library and for each stick or other library, which comes back as it was when it's opened again.
 - **Folders work like an editor's.** ⌥-click a folder's arrow (Alt-click on Windows), or press ⌥← or ⌥→, to close or open it and every folder inside it. Collapse All is a button over the playlists, and Collapse All and Expand All are in their right-click menu. With a folder picked, ← on a closed one goes up to the folder it's in and → on an open one goes into it. A drag resting on a closed folder opens it, and a playlist picked from elsewhere, as from a track's playlists, opens the folders it's in.
 - **Drop playlists exactly where the line shows.** Dragging playlists over the top or bottom edge of a row shows a line where they'll go, before or after it, and over a folder's middle puts them inside it. Drop them on the Playlists heading to take them out of every folder to the top, or on the space below the playlists to put them last. Before, a playlist could only go into a folder or just before another playlist.
+- **Filter by whether a track is in a playlist.** Filter has a Playlists part: In a playlist, or In no playlist, to find the tracks you haven't put anywhere yet.
+
+### Changed
+
+- Sorting by Playlists puts tracks in no playlist first going up and last coming down, as an empty value sorts in any other column. Before, they always came last.
+- Sorting by Playlists works on a USB stick too. Before, it left the stick's tracks in their own order.
 
 ## 1.10.0
 

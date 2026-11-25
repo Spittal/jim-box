@@ -54,6 +54,8 @@ export interface TrackQuery {
   genres: string[];
   /** Only tracks with one of these ratings, in stars; 0 is tracks with none. Empty for every rating. */
   ratings: number[];
+  /** Only tracks in a playlist (true) or in none (false); null for both. */
+  playlisted: boolean | null;
   /** The library listed, when it isn't the master (see `OtherLibrary`); its playlists' ids say it too. */
   library?: string | null;
 }

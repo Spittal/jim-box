@@ -342,31 +342,51 @@ impl Stick {
             Sort::KeyCamelot => SortColumn::KeyCamelot,
             other => SortColumn::from(other),
         };
+        let by_playlists = query.sort == Sort::Playlists;
         let spec = ViewSpec {
             source: TrackSource::Collection,
             sort,
-            descending: query.descending,
+            // By playlists is sorted below, from the list's own order.
+            descending: query.descending && !by_playlists,
             query: query.query.trim().to_owned(),
             filter: Default::default(),
         };
         let genres: HashSet<&str> = query.genres.iter().map(|g| g.trim()).collect();
-        let keep = |genre: &str, rating: u8| {
-            (genres.is_empty() || genres.contains(genre.trim())) && (query.ratings.is_empty() || query.ratings.contains(&rating.min(5)))
+        let keep = |genre: &str, rating: u8, listed: bool| {
+            (genres.is_empty() || genres.contains(genre.trim()))
+                && (query.ratings.is_empty() || query.ratings.contains(&rating.min(5)))
+                && query.playlisted.is_none_or(|wanted| listed == wanted)
         };
+        let listed = |id: u32| tree.memberships.get(&id).is_some_and(|lists| !lists.is_empty());
         let view = DeviceView::open(rows, &spec, SearchField::All);
         let mut listed: Vec<Listed> = view
             .rows
             .iter()
-            .filter(|row| keep(&row.genre, row.rating))
+            .filter(|row| keep(&row.genre, row.rating, listed(row.id)))
             .map(|row| Listed { track: Shown::Stick(row.id), position: row.position })
             .collect();
+        if by_playlists {
+            // By the names in the Playlists column, as the collection is: in
+            // none sorts lowest. Stable, so tracks in the same playlists keep
+            // the list's order.
+            let names = |listed: &Listed| match listed.track {
+                Shown::Stick(id) => tree.memberships.get(&id).map_or_else(String::new, |lists| {
+                    lists.iter().map(|(_, name)| name.as_str()).collect::<Vec<_>>().join(", ").to_lowercase()
+                }),
+                Shown::Master(_) => String::new(),
+            };
+            let mut keyed: Vec<(String, Listed)> = listed.into_iter().map(|l| (names(&l), l)).collect();
+            keyed.sort_by(|(a, _), (b, _)| if query.descending { b.cmp(a) } else { a.cmp(b) });
+            listed = keyed.into_iter().map(|(_, l)| l).collect();
+        }
         // What's on its way from the collection goes after, as it was added.
         if let (Some(master), false) = (master, masters.is_empty()) {
             let ids: Vec<String> = masters.iter().map(|(id, _)| id.clone()).collect();
             let words: Vec<String> = query.query.split_whitespace().map(str::to_lowercase).collect();
             for (row, (id, position)) in master.rows_of(&ids)?.into_iter().zip(masters) {
                 let text = format!("{} {} {}", row.title, row.artist, row.album).to_lowercase();
-                if keep(&row.genre, row.rating) && words.iter().all(|w| text.contains(w)) {
+                // On its way to the stick only in a playlist.
+                if keep(&row.genre, row.rating, true) && words.iter().all(|w| text.contains(w)) {
                     listed.push(Listed { track: Shown::Master(id), position });
                 }
             }

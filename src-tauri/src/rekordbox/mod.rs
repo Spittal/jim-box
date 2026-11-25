@@ -113,7 +113,8 @@ pub enum Sort {
     DateAdded,
     /// Where the file is.
     Path,
-    /// The names of the playlists a track is in; tracks in none come last.
+    /// The names of the playlists a track is in; tracks in none sort as
+    /// lowest, first going up and last coming down.
     Playlists,
     /// How sure the beat grid is, reviewed ones the surest; tracks nothing
     /// is known of come last.
@@ -158,6 +159,9 @@ pub struct TrackQuery {
     /// none. Empty for every rating.
     #[serde(default)]
     pub ratings: Vec<u8>,
+    /// Only tracks in a playlist, or only those in none.
+    #[serde(default)]
+    pub playlisted: Option<bool>,
     /// The library to list, when it isn't the one Jim Box manages: see `others`.
     #[serde(default)]
     pub library: Option<String>,
@@ -252,6 +256,11 @@ struct Loaded {
 }
 
 impl Loaded {
+    /// Whether the track at `row` is in any playlist.
+    fn in_a_playlist(&self, row: usize) -> bool {
+        self.memberships.get(row).is_some_and(|lists| !lists.is_empty())
+    }
+
     /// The names of the playlists the track at `row` is in, in the tree's stored order.
     fn playlist_names(&self, row: usize) -> Vec<String> {
         let playlists = self.index.playlists();
@@ -600,7 +609,7 @@ impl Collection {
             }
         }
         let mut numbers: Option<Vec<u32>> = None;
-        if query.reviewed.is_some() || !query.genres.is_empty() || !query.ratings.is_empty() {
+        if query.reviewed.is_some() || query.playlisted.is_some() || !query.genres.is_empty() || !query.ratings.is_empty() {
             let index = &loaded.index;
             let genres: HashSet<&str> = query.genres.iter().map(|genre| genre.trim()).collect();
             let keep: Vec<bool> = view
@@ -609,6 +618,7 @@ impl Collection {
                 .map(|&row| {
                     (genres.is_empty() || genres.contains(index.genre_name(row).trim()))
                         && (query.ratings.is_empty() || query.ratings.contains(&index.rating[row as usize].min(5)))
+                        && query.playlisted.is_none_or(|wanted| loaded.in_a_playlist(row as usize) == wanted)
                         && query.reviewed.is_none_or(|wanted| {
                             let reviewed =
                                 self.grids.get(&index.ids[row as usize].to_string()).is_some_and(|state| state.reviewed);
@@ -639,8 +649,8 @@ impl Collection {
             // Stable, so tracks in the same playlists keep the list's order.
             order.sort_by(|(a, _), (b, _)| {
                 let (a, b) = (&keys[a], &keys[b]);
-                let named = if query.descending { b.cmp(a) } else { a.cmp(b) };
-                a.is_empty().cmp(&b.is_empty()).then(named)
+                // In none is an empty key: lowest, as for any other column.
+                if query.descending { b.cmp(a) } else { a.cmp(b) }
             });
         }
         if by_confidence {
@@ -803,7 +813,7 @@ pub(crate) mod tests {
     use rbl_db::fixture::Shape;
 
     pub(crate) fn query(source: Source, sort: Sort) -> TrackQuery {
-        TrackQuery { source, sort, descending: false, query: String::new(), reviewed: None, genres: Vec::new(), ratings: Vec::new(), library: None }
+        TrackQuery { source, sort, descending: false, query: String::new(), reviewed: None, genres: Vec::new(), ratings: Vec::new(), playlisted: None, library: None }
     }
 
     /// A fixture library with rekordbox's real schema, in a temp folder.
@@ -981,11 +991,28 @@ pub(crate) mod tests {
         let all = collection.tracks(&query(Source::Collection, Sort::Playlists), 0, 1000).unwrap();
         assert_eq!(all.total, 50);
         let keys: Vec<String> = all.rows.iter().map(|r| r.playlists.join(", ").to_lowercase()).collect();
-        let named: Vec<&String> = keys.iter().take_while(|k| !k.is_empty()).collect();
-        assert!(!named.is_empty());
-        assert!(named.windows(2).all(|pair| pair[0] <= pair[1]));
-        // Tracks in no playlist come last.
-        assert!(keys[named.len()..].iter().all(String::is_empty));
+        // Tracks in no playlist sort lowest: first going up...
+        let none = keys.iter().take_while(|k| k.is_empty()).count();
+        assert!(none > 0 && none < keys.len());
+        assert!(keys.windows(2).all(|pair| pair[0] <= pair[1]));
+        // ...and last coming down.
+        let mut down = query(Source::Collection, Sort::Playlists);
+        down.descending = true;
+        let down: Vec<String> =
+            collection.tracks(&down, 0, 1000).unwrap().rows.iter().map(|r| r.playlists.join(", ").to_lowercase()).collect();
+        assert!(down.windows(2).all(|pair| pair[0] >= pair[1]));
+        assert!(down[down.len() - none..].iter().all(String::is_empty));
+
+        // Filtered to tracks in a playlist, or in none.
+        let mut q = query(Source::Collection, Sort::TrackNo);
+        q.playlisted = Some(false);
+        let loose = collection.tracks(&q, 0, 1000).unwrap();
+        assert_eq!(loose.total, none);
+        assert!(loose.rows.iter().all(|r| r.playlists.is_empty()));
+        q.playlisted = Some(true);
+        let listed = collection.tracks(&q, 0, 1000).unwrap();
+        assert_eq!(listed.total, 50 - none);
+        assert!(listed.rows.iter().all(|r| !r.playlists.is_empty()));
 
         let by_path = collection.tracks(&query(Source::Collection, Sort::Path), 0, 1000).unwrap();
         assert_eq!(by_path.total, 50);
