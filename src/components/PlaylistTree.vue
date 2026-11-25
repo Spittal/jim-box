@@ -428,7 +428,7 @@ function isWithin(node: PlaylistNode, ancestorId: string): boolean {
 /** The library a drag is from; undefined for what isn't of one (files, search results). */
 function fromLibrary(drag: Drag): string | null | undefined {
   if (drag.kind === 'tracks') return libraryOf(drag.ids[0]);
-  if (drag.kind === 'playlist') return libraryOf(drag.id);
+  if (drag.kind === 'playlists') return libraryOf(drag.ids[0]);
   return undefined;
 }
 
@@ -455,7 +455,20 @@ function acceptsDrop(node: PlaylistNode | null): boolean {
   if (drag.kind === 'tracks') return node.kind === 'playlist' && node.id !== selected.value;
   if (drag.kind === 'result' || drag.kind === 'files') return node.kind === 'playlist' && !props.library;
   // Playlists on a stick stay where they are; a folder can't go inside itself.
-  return !isStick.value && !isWithin(node, drag.id);
+  return !isStick.value && !drag.ids.some((id) => isWithin(node, id));
+}
+
+/** What dragging a row takes: every list picked, if it's one of them, but not those inside another picked. */
+function dragRow(event: DragEvent, node: PlaylistNode) {
+  let ids = [node.id];
+  if (lists.value.length > 1 && lists.value.includes(node.id)) {
+    const picked = new Set(lists.value);
+    ids = playlists.value
+      .filter((p) => picked.has(p.id) && !p.pending)
+      .filter((p) => ![...picked].some((other) => other !== p.id && isWithin(p, other)))
+      .map((p) => p.id);
+  }
+  startDrag(event, { kind: 'playlists', ids });
 }
 
 function overTree(event: DragEvent, node: PlaylistNode | null) {
@@ -472,9 +485,9 @@ async function dropOnTree(node: PlaylistNode | null) {
   if (!drag || !accepted || drag.kind === 'files') return;
   if (crossing(drag)) {
     if (drag.kind === 'tracks') await libraries.moveTracks(drag.ids, props.library, node?.id ?? null);
-    else if (drag.kind === 'playlist') {
+    else if (drag.kind === 'playlists') {
       const under = node ? (node.kind === 'folder' ? node.id : node.parentId) : null;
-      await libraries.movePlaylists([drag.id], props.library, under);
+      await libraries.movePlaylists(drag.ids, props.library, under);
     }
     return;
   }
@@ -491,17 +504,22 @@ async function dropOnTree(node: PlaylistNode | null) {
         store.error = String(e);
       }
     }
-  } else if (node.kind === 'folder') {
-    await edit({ kind: 'movePlaylist', id: drag.id, parentId: node.id, index: null });
-  } else {
-    // Onto a playlist: take its place among its siblings.
-    const siblings = playlists.value.filter((p) => p.parentId === node.parentId && p.id !== drag.id);
-    await edit({
-      kind: 'movePlaylist',
-      id: drag.id,
-      parentId: node.parentId,
-      index: siblings.findIndex((p) => p.id === node.id),
-    });
+  } else if (drag.kind === 'playlists') {
+    // Several move as one change, undone together, keeping their order.
+    const group = drag.ids.length > 1 ? `move-playlists-${Date.now()}` : null;
+    for (const id of drag.ids) {
+      if (id === node.id) continue;
+      if (node.kind === 'folder') {
+        await store.edit({ kind: 'movePlaylist', id, parentId: node.id, index: null }, { group, library: props.library });
+      } else {
+        // Onto a playlist: in just before it among its siblings, after any moved already.
+        const siblings = playlists.value.filter((p) => p.parentId === node.parentId && p.id !== id);
+        await store.edit(
+          { kind: 'movePlaylist', id, parentId: node.parentId, index: siblings.findIndex((p) => p.id === node.id) },
+          { group, library: props.library },
+        );
+      }
+    }
   }
 }
 
@@ -606,7 +624,7 @@ const nameInputClass =
           @click="clickNode(node, $event)"
           @dblclick="startRename(node)"
           @contextmenu.prevent.stop="treeMenu(node)"
-          @dragstart="startDrag($event, { kind: 'playlist', id: node.id })"
+          @dragstart="dragRow($event, node)"
           @dragend="endDrag"
           @dragover.stop="overTree($event, node)"
           @dragleave="dropTree === node.id && (dropTree = null)"

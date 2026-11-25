@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Drag several playlists at once.** Pick playlists with ⌘- or Shift-click and drag any of them: they all go together, between your library and a stick or another library, or into a folder or a new place in the same library, keeping their order. A move within a library is undone in one step.
+
 ## 1.9.0
 
 ### New
