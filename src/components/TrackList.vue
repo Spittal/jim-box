@@ -665,8 +665,6 @@ interface Column {
   grow?: number;
   /** How its header and cells are set, where not to the left. */
   class?: string;
-  /** Shown only for the whole collection. */
-  collectionOnly?: boolean;
 }
 
 const COLUMNS: Column[] = [
@@ -677,7 +675,7 @@ const COLUMNS: Column[] = [
   { id: 'artist', label: 'Artist', grow: 2 },
   { id: 'album', label: 'Album', grow: 2 },
   { id: 'genre', label: 'Genre', grow: 1 },
-  { id: 'playlists', label: 'Playlists', grow: 2, collectionOnly: true },
+  { id: 'playlists', label: 'Playlists', grow: 2 },
   { id: 'bpm', label: 'BPM', width: 56, class: 'text-center' },
   { id: 'confidence', label: 'Grid', name: 'Grid confidence', width: 44, class: 'text-center' },
   { id: 'key', label: 'Key', width: 40, class: 'text-center' },
@@ -720,11 +718,7 @@ watch([columnOrder, hiddenColumns, columnWidths], () =>
 );
 
 /** Every column this list can show, in the order chosen. */
-const available = computed(() =>
-  columnOrder.value
-    .map((id) => COLUMNS.find((c) => c.id === id)!)
-    .filter((column) => !column.collectionOnly || selected.value === null),
-);
+const available = computed(() => columnOrder.value.map((id) => COLUMNS.find((c) => c.id === id)!));
 const columns = computed(() => available.value.filter((column) => !hiddenColumns.value.has(column.id)));
 
 const columnsMenu = ref(false);

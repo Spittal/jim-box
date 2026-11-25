@@ -13,6 +13,7 @@
 
 - Sorting by Playlists puts tracks in no playlist first going up and last coming down, as an empty value sorts in any other column. Before, they always came last.
 - Sorting by Playlists works on a USB stick too. Before, it left the stick's tracks in their own order.
+- The Playlists column can be shown while looking at a playlist, not only the whole collection, to see where else its tracks are.
 
 ## 1.10.0
 
